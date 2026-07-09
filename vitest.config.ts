@@ -11,7 +11,9 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["**/*.test.ts", "**/*.test.tsx"],
-    exclude: ["node_modules", ".next", "dist"],
+    // Integration tests (real Postgres via Testcontainers) run via
+    // `npm run test:integration` with their own config.
+    exclude: ["node_modules", ".next", "dist", "**/*.integration.test.ts"],
   },
   resolve: {
     alias: {
