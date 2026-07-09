@@ -20,6 +20,10 @@
 # production
 /build
 
+# local data (bind-mounted Postgres data, downloads)
+/data
+/downloads
+
 # misc
 .DS_Store
 *.pem
