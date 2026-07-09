@@ -1,0 +1,27 @@
+# Rebuilt inside the image
+node_modules
+.next
+out
+dist
+
+# VCS / tooling
+.git
+.gitignore
+.idea
+.codegraph
+.vscode
+
+# Secrets / local env (compose provides env at runtime)
+.env
+.env.*
+!.env.example
+
+# Local data / artifacts
+data
+downloads
+coverage
+*.log
+
+# Docs (not needed in the image)
+docs
+*.md

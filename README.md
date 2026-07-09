@@ -13,6 +13,22 @@ cp .env.example .env   # then fill in required values
 npm run dev            # http://localhost:3200
 ```
 
+## Run with Docker
+
+```bash
+cp .env.example .env   # optional; compose has sane defaults for DB
+docker compose up -d --build
+# dashboard: http://localhost:3200  ·  health: http://localhost:3200/api/health
+```
+
+`docker compose` starts Postgres (pgvector image) and the app. The app container
+applies pending migrations (`drizzle-kit migrate`) before serving, so it never
+runs against an unmigrated database. `DATABASE_URL` is built from the `POSTGRES_*`
+vars and points at the bundled `db` service; override it to use an external
+database. Postgres persists into a bind-mounted host directory (`PG_DATA_DIR`,
+default `./data/pg`). Stop with `docker compose down`; to reset the database,
+delete that directory.
+
 ## Scripts
 
 | Script | Purpose |

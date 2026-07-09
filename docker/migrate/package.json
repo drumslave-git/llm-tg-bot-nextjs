@@ -1,0 +1,10 @@
+{
+  "name": "migrate",
+  "private": true,
+  "type": "module",
+  "description": "Isolated migration runner for the production image. Uses drizzle's programmatic migrator so the slim standalone app image needs no drizzle-kit toolchain.",
+  "dependencies": {
+    "drizzle-orm": "^0.45.2",
+    "pg": "^8.22.0"
+  }
+}

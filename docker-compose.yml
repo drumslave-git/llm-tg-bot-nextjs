@@ -1,0 +1,58 @@
+services:
+  app:
+    build: .
+    ports:
+      - "${PORT:-3200}:3200"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3200
+      # Built from the bundled db service; override DATABASE_URL to use an
+      # external database.
+      DATABASE_URL: ${DATABASE_URL:-postgres://${POSTGRES_USER:-bot}:${POSTGRES_PASSWORD:-bot}@db:5432/${POSTGRES_DB:-bot}}
+      # Telegram
+      BOT_TOKEN: ${BOT_TOKEN:-}
+      BOT_TOKEN_FILE: ${BOT_TOKEN_FILE:-}
+      TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:-}
+      # LLM (OpenAI-compatible)
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+      # Optional integrations
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      # Runtime
+      LOGGING_LEVEL: ${LOGGING_LEVEL:-}
+      TZ: ${TZ:-UTC}
+    healthcheck:
+      # 127.0.0.1 (not localhost): the standalone server binds IPv4 0.0.0.0, and
+      # localhost can resolve to IPv6 ::1, which would refuse the connection.
+      test:
+        ["CMD-SHELL", "wget -qO- http://127.0.0.1:3200/api/health >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    restart: unless-stopped
+
+  db:
+    # pgvector image: plain Postgres today, with the vector extension available
+    # for future embedding/memory features.
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-bot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bot}
+      POSTGRES_DB: ${POSTGRES_DB:-bot}
+      TZ: ${TZ:-UTC}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      # Bind-mounted host directory for persistence (configurable via PG_DATA_DIR).
+      - "${PG_DATA_DIR:-./data/pg}:/var/lib/postgresql/data"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-bot} -d ${POSTGRES_DB:-bot}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped

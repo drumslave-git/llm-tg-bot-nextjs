@@ -45,6 +45,25 @@ Next: Phase 3 settings (DB-backed) using Drizzle + `server/http.ts`, then define
   `vitest.integration.config.ts`). Deps: `drizzle-orm`, `pg`; dev: `drizzle-kit`,
   `@testcontainers/postgresql`, `@next/env`, `@types/pg`. Removed `pg-mem`.
 
+- 2026-07-09: Dockerized the app (Phase 11 brought forward so it can actually
+  run). Multi-stage `Dockerfile` (deps → builder → runner, non-root) + `.dockerignore`
+  + `docker-compose.yml` (app + `pgvector/pgvector:pg17` db, healthchecks, Postgres
+  data bind-mounted to `./data/pg` via `PG_DATA_DIR`). Entrypoint runs migrations
+  then serves — no in-app
+  auto-migration. Moved `drizzle-kit` + `@next/env` to `dependencies` (runtime
+  migrate needs them in the pruned image). Used `npm install` (not `npm ci`) in
+  the build because the Windows-generated lockfile lacks Linux/musl optional
+  native deps. Verified: `docker compose up` applies migrations, creates tables,
+  serves dashboard + `/api/health` (DATABASE_URL true).
+- 2026-07-09: Slimmed the image 1.76GB → **423MB** via Next `output: 'standalone'`.
+  Because standalone excludes the drizzle-kit CLI toolchain, the container applies
+  migrations with drizzle's **programmatic migrator** (`docker/migrate/migrate.mjs`,
+  isolated `drizzle-orm`+`pg` deps) — drizzle-kit stays a dev-only tool for
+  `db:generate`/`db:migrate` locally. Moved `drizzle-kit`+`@next/env` back to
+  devDependencies. Entrypoint: `node migrate/migrate.mjs && node server.js`.
+  Fixed a healthcheck that failed on IPv6 `localhost` (standalone binds IPv4
+  `0.0.0.0`; use `127.0.0.1`). Re-verified on a fresh DB volume.
+
 ## Phase Progress
 
 | Phase | Status | Proof | Next |
@@ -60,7 +79,7 @@ Next: Phase 3 settings (DB-backed) using Drizzle + `server/http.ts`, then define
 | Phase 8: Background Work Design | todo | none | Choose operating model per job |
 | Phase 9: Feature Recreation | todo | none | Start features in priority order |
 | Phase 10: Testing Strategy | todo | none | Configure unit/route/dashboard tests |
-| Phase 11: Docker and Self-Hosting | todo | none | Draft standard Next Dockerfile |
+| Phase 11: Docker and Self-Hosting | in-progress | Multi-stage Dockerfile (Next standalone) + docker-compose (app + pgvector db); **423MB** image; entrypoint applies migrations (drizzle programmatic migrator) then serves; migrations + `/api/health` + dashboard verified in-container on a fresh volume | Add Traefik/secrets/downloads volume when needed |
 | Phase 12: Cutover | todo | none | Prepare backup and rollback checklist |
 
 ## Feature Progress
@@ -187,6 +206,16 @@ No blockers recorded.
   when adding tests for server modules.
 - Stale `.next/types` can fail `tsc` after routes change. `rm -rf .next` and
   rebuild (or run `next typegen`) to regenerate route types before typecheck.
+- Docker: the app image is Next **standalone** (`output: 'standalone'`), so the
+  drizzle-kit CLI is intentionally NOT in it. Container migrations run via
+  `docker/migrate/migrate.mjs` (drizzle's programmatic migrator, isolated
+  `drizzle-orm`+`pg`). Keep migration-running out of the app's node_modules.
+- Docker build uses `npm install` (not `npm ci`) because the Windows-generated
+  lockfile lacks Linux/musl optional native deps. Set `HOSTNAME=0.0.0.0` for the
+  standalone server, and use `127.0.0.1` (not `localhost`) in the container
+  healthcheck — standalone binds IPv4 and `localhost` may resolve to IPv6 `::1`.
+- After changing `db/schema.ts`: `npm run db:generate`, commit the SQL. Both the
+  local dev tool (drizzle-kit) and the container runner read `db/migrations`.
 
 ### Commands that passed
 
