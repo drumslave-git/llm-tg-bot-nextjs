@@ -1,0 +1,131 @@
+import "server-only";
+
+import { readFileSync } from "node:fs";
+import { z } from "zod";
+
+import { ApiError } from "@/lib/api-error";
+
+/**
+ * Server-only environment access.
+ *
+ * Single source of truth for process configuration. Values are resolved once,
+ * lazily, with support for Docker secret `<NAME>_FILE` variants (matching the
+ * MVP contract). Required-for-a-capability checks are explicit via
+ * {@link requireEnv} rather than failing the whole process at boot, so the
+ * dashboard can run and report what is missing.
+ */
+
+/**
+ * Resolve a raw env value, honoring the `<NAME>_FILE` Docker-secret convention:
+ * if `NAME` is unset but `NAME_FILE` points to a readable file, its trimmed
+ * contents are used.
+ */
+function resolveRaw(name: string): string | undefined {
+  const direct = process.env[name];
+  if (direct !== undefined && direct !== "") return direct;
+
+  const fileVar = process.env[`${name}_FILE`];
+  if (fileVar) {
+    try {
+      const contents = readFileSync(fileVar, "utf8").trim();
+      if (contents) return contents;
+    } catch {
+      // Fall through to undefined; requireEnv reports the missing capability.
+    }
+  }
+  return undefined;
+}
+
+const optionalString = z
+  .string()
+  .trim()
+  .min(1)
+  .optional()
+  .transform((v) => (v === "" ? undefined : v));
+
+/**
+ * Known environment variables. All optional at parse time; capability-specific
+ * requirements are enforced where the capability is used.
+ */
+const envSchema = z.object({
+  // Telegram
+  BOT_TOKEN: optionalString,
+  TELEGRAM_WEBHOOK_SECRET: optionalString,
+
+  // LLM (OpenAI-compatible)
+  LLM_BASE_URL: optionalString,
+  LLM_API_KEY: optionalString,
+  LLM_MODEL: optionalString,
+  EMBEDDING_BASE_URL: optionalString,
+  EMBEDDING_API_KEY: optionalString,
+  IMAGE_GENERATION_BASE_URL: optionalString,
+  IMAGE_GENERATION_API_KEY: optionalString,
+
+  // Persistence
+  DATABASE_URL: optionalString,
+
+  // Optional integrations
+  TAVILY_API_KEY: optionalString,
+
+  // Runtime
+  TZ: optionalString,
+  DOWNLOADS_DIR: optionalString,
+  LOGGING_LEVEL: z.enum(["ERROR", "DEBUG"]).optional(),
+  NODE_ENV: z.enum(["development", "production", "test"]).optional(),
+});
+
+export type Env = z.infer<typeof envSchema>;
+
+/** Env keys that support `<NAME>_FILE` Docker-secret resolution. */
+const KNOWN_KEYS = Object.keys(envSchema.shape) as (keyof Env)[];
+
+let cached: Env | null = null;
+
+/** Parsed, validated environment. Resolved once and cached. */
+export function getEnv(): Env {
+  if (cached) return cached;
+
+  const resolved: Record<string, string | undefined> = {};
+  for (const key of KNOWN_KEYS) resolved[key] = resolveRaw(key);
+
+  const parsed = envSchema.safeParse(resolved);
+  if (!parsed.success) {
+    throw ApiError.internal("Invalid environment configuration", {
+      details: parsed.error.flatten().fieldErrors,
+      cause: parsed.error,
+    });
+  }
+  cached = parsed.data;
+  return cached;
+}
+
+/**
+ * Read an env var that is required for the current operation. Throws a
+ * `service_unavailable` {@link ApiError} with a clear message when it is unset,
+ * so callers surface a clean 503 rather than a raw crash.
+ */
+export function requireEnv(key: keyof Env): string {
+  const value = getEnv()[key];
+  if (typeof value !== "string" || value.length === 0) {
+    throw ApiError.serviceUnavailable(
+      `Missing required configuration: ${key}. Set ${key} (or ${key}_FILE) in the environment.`,
+    );
+  }
+  return value;
+}
+
+/** Report presence of capability-critical vars without exposing their values. */
+export function envPresence(): Record<string, boolean> {
+  const env = getEnv();
+  return {
+    BOT_TOKEN: Boolean(env.BOT_TOKEN),
+    LLM_BASE_URL: Boolean(env.LLM_BASE_URL),
+    DATABASE_URL: Boolean(env.DATABASE_URL),
+    TAVILY_API_KEY: Boolean(env.TAVILY_API_KEY),
+  };
+}
+
+/** Test-only: reset the cache so a new env can be parsed. */
+export function resetEnvCache(): void {
+  cached = null;
+}

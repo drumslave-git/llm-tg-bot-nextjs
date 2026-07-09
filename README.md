@@ -1,36 +1,54 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# llm-tg-bot-nextjs
+
+A Next.js rewrite of the [ollama-tg-bot](https://github.com/drumslave-git/ollama-tg-bot)
+MVP: a Telegram bot powered by an OpenAI-compatible chat completions API, with a
+control/observability dashboard. See `NEXTJS_REWRITE_PLAN.md` for scope and
+`NEXTJS_REWRITE_PROGRESS.md` for current status.
 
 ## Getting Started
 
-First, run the development server:
-
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+cp .env.example .env   # then fill in required values
+npm run dev            # http://localhost:3200
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Scripts
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+| Script | Purpose |
+| --- | --- |
+| `npm run dev` | Dev server on port 3200 |
+| `npm run build` | Production build (`next build`) |
+| `npm run start` | Serve the production build |
+| `npm run lint` | ESLint |
+| `npm run typecheck` | `tsc --noEmit` |
+| `npm run test` | Vitest (run once) |
+| `npm run test:watch` | Vitest watch mode |
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Repository Layout
 
-## Learn More
+Boundaries are intentional; keep feature-specific plumbing out of shared modules.
 
-To learn more about Next.js, take a look at the following resources:
+| Path | Responsibility |
+| --- | --- |
+| `app/` | App Router routes, layouts, and Route Handlers (`app/api/**/route.ts`). Handlers stay thin and delegate to `server/`. |
+| `components/` | Shared, presentational dashboard UI (no feature business logic). |
+| `features/` | Product feature modules (server service, schemas, API, UI, tests) following the feature contract in the plan. |
+| `server/` | Server-only domain logic and shared infrastructure. Modules that touch secrets, DB, filesystem, Telegram, or the LLM provider import `server-only`. |
+| `db/` | Database schema, migrations, and typed query helpers. |
+| `lib/` | Small shared utilities and pure contracts (error shape, trace types) importable by both client and server. |
+| `test/` | Test support (stubs, fixtures). |
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+### Import boundary
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Server-only modules (`server/env.ts`, `server/http.ts`, …) import `server-only`
+so they cannot be pulled into a client bundle. Pure contracts that the dashboard
+needs to render (`lib/api-error.ts`, `lib/trace.ts`) are intentionally **not**
+server-only. Path alias `@/*` maps to the repo root.
 
-## Deploy on Vercel
+## Configuration
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+All environment variables are documented in `.env.example`. Every variable also
+accepts a `<NAME>_FILE` Docker-secret variant. Required values are enforced at
+the point of use (`requireEnv`) rather than at process boot, so the dashboard can
+run and report what is missing.
