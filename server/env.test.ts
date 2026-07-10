@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { envPresence, getEnv, requireEnv, resetEnvCache } from "@/server/env";
+import { getEnv, requireEnv, resetEnvCache } from "@/server/env";
 
 const MANAGED = [
   "BOT_TOKEN",
@@ -65,15 +65,5 @@ describe("requireEnv", () => {
     expect(() => requireEnv("DATABASE_URL")).toThrowError(
       expect.objectContaining({ code: "service_unavailable" }),
     );
-  });
-});
-
-describe("envPresence", () => {
-  it("reports booleans without exposing values", () => {
-    process.env.BOT_TOKEN = "abc";
-    const presence = envPresence();
-    expect(presence.BOT_TOKEN).toBe(true);
-    expect(presence.DATABASE_URL).toBe(false);
-    expect(Object.values(presence)).not.toContain("abc");
   });
 });

@@ -15,11 +15,25 @@ Status values:
 Status: in-progress
 Owner: agent/2026-07-10
 Last updated: 2026-07-10
-Proof: `npm run lint` ✓, `npm run typecheck` ✓, `npm run test` ✓ (29 unit), `npm run test:integration` ✓ (12, real Postgres via Testcontainers), `npm run build` ✓, `npm run db:migrate` ✓. **DB-backed LLM-connection settings** verified live end-to-end against a real endpoint: Test connection lists the endpoint's `/v1/models` (13 models), model select populates, save persists (`GET /api/settings`), API key masked. Error path is a real probe: unreachable host → 503, auth-required host → 400 with the provider's message.
+Proof: `npm run lint` ✓, `npm run typecheck` ✓, `npm run test` ✓ (28 unit), `npm run test:integration` ✓ (14, real Postgres via Testcontainers), `npm run build` ✓, `npm run db:migrate` ✓. Config is fully DB-backed and all status is real-probe (env presence removed everywhere, incl. `/api/health`). Verified live: settings test-connection lists a real endpoint's 13 models + persists; Overview shows probed DB/LLM/model status; `/api/health` → 200 gated on a real `SELECT 1`.
 Next: Define acceptance criteria for priority 1 (bot messaging text receive/reply); resolve the Telegram webhook-vs-polling decision. Build the shared Debug UI (settings already records traces with no viewer yet).
 
 ### Session log
 
+- 2026-07-10: **Reworked `/api/health` into a real readiness probe** and deleted
+  the last env-presence code. `server/status.ts` gained `getHealth()` (gated on a
+  real `SELECT 1`; DB-stored config presence as informational, **not** a readiness
+  gate; no live LLM probe so healthchecks stay fast). `app/api/health/route.ts`
+  now returns `200`/`503` by real DB reachability with `checks.database` +
+  `checks.configuration`. Removed `envPresence()` (dead) from `server/env.ts` and
+  its test. Added `server/status.integration.test.ts` (health ready path + config
+  presence; system-status unconfigured path). Threaded an optional `db` param
+  through `getSystemStatus`/`getConfigReadiness`/`getHealth` for testability.
+  Checks: lint ✓, typecheck ✓, unit 28 ✓, integration 14 ✓, build ✓. Verified
+  live: `GET /api/health` → 200 `{status:"ok", checks.database.ok:true,
+  configuration.configured:true}`. `envPresence` is gone; `server/env.ts` still
+  holds the env *contract* (DATABASE_URL etc.) — which keys stay env vs move to DB
+  is a per-feature decision.
 - 2026-07-10: **Reworked the Overview + shell off env presence onto real probes.**
   New `server/status.ts`: `getSystemStatus()` runs a real `SELECT 1` and a real
   `/v1/models` call (5s timeout) against the DB-saved LLM settings — never env
@@ -268,9 +282,9 @@ No blockers recorded.
   thing (memory `verify-real-state-not-env-presence`). Never invent
   fields/placeholders — ground in `../ollama-tg-bot` and ask (memory
   `no-placeholders-ask-instead`).
-- Overview + shell are **done** on real probes (`server/status.ts`). The only
-  remaining `envPresence()` caller is `/api/health` (liveness) — decide whether
-  that should probe real state too.
+- Overview, shell, and `/api/health` are **done** on real probes
+  (`server/status.ts`: `getSystemStatus`/`getConfigReadiness`/`getHealth`).
+  `envPresence()` is deleted — do not reintroduce presence-style status.
 - Define acceptance criteria for **priority 1 — bot messaging: text
   receive/reply** (settings + LLM client now exist; still needs Telegram intake,
   chat-completion in the provider client, shared traces). Blocker to resolve

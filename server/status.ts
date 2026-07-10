@@ -2,7 +2,7 @@ import "server-only";
 
 import { sql } from "drizzle-orm";
 
-import { getDb } from "@/db/drizzle";
+import { getDb, type DrizzleDb } from "@/db/drizzle";
 import { getSettingsRecord } from "@/features/settings/server/repository";
 import { listModels } from "@/server/llm/client";
 
@@ -54,9 +54,9 @@ export interface ConfigReadiness {
  * probe — that would run on every page). "Configured" means an endpoint and a
  * model are saved; the Overview page does the live reachability check.
  */
-export async function getConfigReadiness(): Promise<ConfigReadiness> {
+export async function getConfigReadiness(db: DrizzleDb = getDb()): Promise<ConfigReadiness> {
   try {
-    const settings = await getSettingsRecord(getDb());
+    const settings = await getSettingsRecord(db);
     const configured = Boolean(settings?.llmBaseUrl && settings?.model);
     return {
       configured,
@@ -70,9 +70,7 @@ export async function getConfigReadiness(): Promise<ConfigReadiness> {
 }
 
 /** Probe the database, the LLM endpoint, and the model selection. */
-export async function getSystemStatus(): Promise<SystemStatus> {
-  const db = getDb();
-
+export async function getSystemStatus(db: DrizzleDb = getDb()): Promise<SystemStatus> {
   // 1. Database — a real query. If it fails, nothing downstream can be checked.
   try {
     await db.execute(sql`SELECT 1`);
@@ -110,4 +108,35 @@ export async function getSystemStatus(): Promise<SystemStatus> {
     : { selected: false, detail: "No model selected" };
 
   return { db: { connected: true, detail: "Connected" }, llm, model };
+}
+
+export interface HealthReport {
+  /** True when the app can serve requests — i.e. its bootstrap dependency (DB) works. */
+  ready: boolean;
+  database: { ok: boolean; detail: string };
+  /** DB-stored config presence (cheap). Not a readiness gate — the LLM being down
+   *  must not make the dashboard "unhealthy". Live LLM reachability is on Overview. */
+  configuration: ConfigReadiness;
+}
+
+/**
+ * Readiness for the `/api/health` endpoint. Gated on a real database probe
+ * (`SELECT 1`) — the one bootstrap dependency — not env presence. Deliberately
+ * omits the live LLM probe so healthchecks stay fast and don't flap on an
+ * external endpoint blip.
+ */
+export async function getHealth(db: DrizzleDb = getDb()): Promise<HealthReport> {
+  let database: HealthReport["database"];
+  try {
+    await db.execute(sql`SELECT 1`);
+    database = { ok: true, detail: "Connected" };
+  } catch (err) {
+    database = { ok: false, detail: errorMessage(err) };
+  }
+
+  const configuration: ConfigReadiness = database.ok
+    ? await getConfigReadiness(db)
+    : { configured: false, detail: "Requires a database connection." };
+
+  return { ready: database.ok, database, configuration };
 }

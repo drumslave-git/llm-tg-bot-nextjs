@@ -114,17 +114,6 @@ export function requireEnv(key: keyof Env): string {
   return value;
 }
 
-/** Report presence of capability-critical vars without exposing their values. */
-export function envPresence(): Record<string, boolean> {
-  const env = getEnv();
-  return {
-    BOT_TOKEN: Boolean(env.BOT_TOKEN),
-    LLM_BASE_URL: Boolean(env.LLM_BASE_URL),
-    DATABASE_URL: Boolean(env.DATABASE_URL),
-    TAVILY_API_KEY: Boolean(env.TAVILY_API_KEY),
-  };
-}
-
 /** Test-only: reset the cache so a new env can be parsed. */
 export function resetEnvCache(): void {
   cached = null;
