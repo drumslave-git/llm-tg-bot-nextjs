@@ -3,6 +3,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 
 import { AppShell } from "@/components/layout/AppShell";
 import { ThemeScript } from "@/components/theme/theme-script";
+import { getConfigReadiness } from "@/server/status";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -20,11 +21,13 @@ export const metadata: Metadata = {
   description: "Telegram LLM bot control dashboard",
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const readiness = await getConfigReadiness();
+
   return (
     <html
       lang="en"
@@ -37,7 +40,7 @@ export default function RootLayout({
         <ThemeScript />
       </head>
       <body className="min-h-full">
-        <AppShell>{children}</AppShell>
+        <AppShell botStatus={readiness}>{children}</AppShell>
       </body>
     </html>
   );

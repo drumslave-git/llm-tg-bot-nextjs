@@ -16,10 +16,25 @@ Status: in-progress
 Owner: agent/2026-07-10
 Last updated: 2026-07-10
 Proof: `npm run lint` ✓, `npm run typecheck` ✓, `npm run test` ✓ (29 unit), `npm run test:integration` ✓ (12, real Postgres via Testcontainers), `npm run build` ✓, `npm run db:migrate` ✓. **DB-backed LLM-connection settings** verified live end-to-end against a real endpoint: Test connection lists the endpoint's `/v1/models` (13 models), model select populates, save persists (`GET /api/settings`), API key masked. Error path is a real probe: unreachable host → 503, auth-required host → 400 with the provider's message.
-Next: Rework the Overview page — its env-presence cards (LLM_BASE_URL/BOT_TOKEN/TAVILY) are now obsolete since config moved to the DB. Then define acceptance criteria for priority 1 (bot messaging text receive/reply).
+Next: Define acceptance criteria for priority 1 (bot messaging text receive/reply); resolve the Telegram webhook-vs-polling decision. Build the shared Debug UI (settings already records traces with no viewer yet).
 
 ### Session log
 
+- 2026-07-10: **Reworked the Overview + shell off env presence onto real probes.**
+  New `server/status.ts`: `getSystemStatus()` runs a real `SELECT 1` and a real
+  `/v1/models` call (5s timeout) against the DB-saved LLM settings — never env
+  presence. `app/page.tsx` rebuilt onto it (Database / LLM endpoint / Model /
+  Telegram status cards; dropped the fabricated metric StatCards and the
+  non-functional "Send test message" button; header links to Settings). Sidebar
+  "Bot status" card was hardcoded "Setup needed / Connect a Telegram token" —
+  now fed real, cheap DB-only readiness (`getConfigReadiness()`, no per-page LLM
+  probe) threaded `layout.tsx → AppShell → Sidebar`; shows Configured/Setup
+  needed and points to Overview for live status. Verified live: overview shows DB
+  Connected, LLM Connected "13 models available", model `gemma4:12B`, Telegram
+  "Not built"; sidebar "Configured". Checks: lint ✓, typecheck ✓, unit 29 ✓,
+  build ✓. Note: `server/env.ts` `envPresence()` is now used only by
+  `/api/health` (a liveness endpoint) — revisit if health should probe real
+  state too.
 - 2026-07-10: **Phase 3 — DB-backed LLM-connection settings** (first `features/`
   module). Major direction change from the user: **configuration moves out of env
   vars into DB-backed Settings entered via the dashboard** (bootstrap-only
@@ -177,7 +192,7 @@ Foundation work supports features but is not a substitute for feature completion
 | Settings and health | in-progress | DB-backed LLM-connection settings (`features/settings/*`) with `GET`/`PATCH` + `test-connection` real probe, key masking + trace redaction, unit + integration tests. Config source is the DB, not env (`config-in-db-not-env`) | Extend settings columns per feature; rework Overview off env presence onto real DB/LLM probes |
 | LLM provider core | in-progress | `server/llm/client.ts` (`openai`): `listModels`/health probe, base-URL normalization, `ApiError` mapping; connection sourced from DB settings; unit-tested + verified live against a real endpoint | Add chat completion + context assembly with priority-1 bot messaging |
 | Telegram intake foundation | todo | none | Decide webhook-first route shape |
-| Dashboard overview | in-progress | `app/page.tsx` overview with config status cards, layout shell + nav | **Rework needed:** its env-presence cards (LLM_BASE_URL/BOT_TOKEN/TAVILY) are obsolete now config lives in the DB — replace with real DB/LLM/Telegram probes |
+| Dashboard overview | in-progress | `app/page.tsx` on real probes (`server/status.ts`: `SELECT 1` + live `/v1/models`); sidebar bot-status on cheap DB readiness; verified live | Add real metrics + Telegram status once those features land |
 | Debug traces and LLM usage | in-progress | `lib/trace.ts` types + `server/trace` recorder/repository on Drizzle, tested | Add Debug UI + trace-context in Route Handler wrapper |
 
 ## Shared Infrastructure Progress
@@ -253,12 +268,10 @@ No blockers recorded.
   thing (memory `verify-real-state-not-env-presence`). Never invent
   fields/placeholders — ground in `../ollama-tg-bot` and ask (memory
   `no-placeholders-ask-instead`).
-- **Rework the Overview page** (`app/page.tsx`): its cards read `envPresence()`
-  for LLM_BASE_URL/BOT_TOKEN/TAVILY, which is now both obsolete (config is in the
-  DB) and exactly the env-presence anti-pattern the user rejected. Replace with
-  real probes: DB (`SELECT 1`), LLM (`listModels` against saved settings),
-  Telegram (once intake lands).
-- Then define acceptance criteria for **priority 1 — bot messaging: text
+- Overview + shell are **done** on real probes (`server/status.ts`). The only
+  remaining `envPresence()` caller is `/api/health` (liveness) — decide whether
+  that should probe real state too.
+- Define acceptance criteria for **priority 1 — bot messaging: text
   receive/reply** (settings + LLM client now exist; still needs Telegram intake,
   chat-completion in the provider client, shared traces). Blocker to resolve
   first: **Telegram webhook vs polling** (still `todo` — ask the user).

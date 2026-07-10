@@ -4,7 +4,7 @@ import { X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/cn";
 import { Button } from "@/components/ui/Button";
-import { Sidebar } from "./Sidebar";
+import { Sidebar, type BotStatus } from "./Sidebar";
 import { Topbar } from "./Topbar";
 
 /**
@@ -13,7 +13,13 @@ import { Topbar } from "./Topbar";
  * width-constrained and padded consistently so every page shares the same
  * rhythm.
  */
-export function AppShell({ children }: { children: React.ReactNode }) {
+export function AppShell({
+  children,
+  botStatus,
+}: {
+  children: React.ReactNode;
+  botStatus: BotStatus;
+}) {
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   // Close the drawer on Escape for keyboard users.
@@ -30,7 +36,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     <div className="min-h-screen bg-background">
       {/* Desktop sidebar */}
       <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 border-r border-border bg-surface md:block">
-        <Sidebar />
+        <Sidebar botStatus={botStatus} />
       </aside>
 
       {/* Mobile drawer */}
@@ -66,7 +72,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           >
             <X className="h-5 w-5" />
           </Button>
-          <Sidebar onNavigate={() => setDrawerOpen(false)} />
+          <Sidebar botStatus={botStatus} onNavigate={() => setDrawerOpen(false)} />
         </div>
       </div>
 

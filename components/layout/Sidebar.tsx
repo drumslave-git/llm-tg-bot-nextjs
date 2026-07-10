@@ -8,6 +8,12 @@ import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { NAV_GROUPS, type NavItem } from "./nav-config";
 
+/** Cheap configuration readiness shown in the shell (live probe is on Overview). */
+export interface BotStatus {
+  configured: boolean;
+  detail: string;
+}
+
 function isActive(pathname: string, href: string): boolean {
   return href === "/" ? pathname === "/" : pathname.startsWith(href);
 }
@@ -64,7 +70,13 @@ function NavLink({
 }
 
 /** Dashboard sidebar contents. Reused by the fixed desktop rail and the mobile drawer. */
-export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
+export function Sidebar({
+  botStatus,
+  onNavigate,
+}: {
+  botStatus: BotStatus;
+  onNavigate?: () => void;
+}) {
   const pathname = usePathname();
 
   return (
@@ -108,12 +120,10 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
             <Sparkles className="h-4 w-4 text-primary" />
             Bot status
           </div>
-          <p className="mt-1 text-xs text-muted">
-            Connect a Telegram token and LLM endpoint to bring the bot online.
-          </p>
+          <p className="mt-1 text-xs text-muted">{botStatus.detail}</p>
           <div className="mt-3 flex items-center justify-between">
-            <Badge tone="warning" dot>
-              Setup needed
+            <Badge tone={botStatus.configured ? "success" : "warning"} dot>
+              {botStatus.configured ? "Configured" : "Setup needed"}
             </Badge>
             <Button asChild size="sm" variant="primary">
               <Link href="/settings">Configure</Link>

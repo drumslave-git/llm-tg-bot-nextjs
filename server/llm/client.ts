@@ -64,11 +64,15 @@ function toLlmError(err: unknown, baseUrl: string): ApiError {
 /**
  * List distinct model ids from an OpenAI-compatible endpoint, sorted. Doubles as
  * the connection health probe: success proves the endpoint is reachable and the
- * key (if any) is accepted.
+ * key (if any) is accepted. `timeoutMs` bounds the wait (shorter for status
+ * dashboards, longer for an explicit test).
  */
-export async function listModels(conn: LlmConnection): Promise<string[]> {
+export async function listModels(
+  conn: LlmConnection,
+  timeoutMs: number = LIST_MODELS_TIMEOUT_MS,
+): Promise<string[]> {
   try {
-    const page = await client(conn).models.list({ timeout: LIST_MODELS_TIMEOUT_MS });
+    const page = await client(conn).models.list({ timeout: timeoutMs });
     const seen = new Set<string>();
     for (const entry of page.data ?? []) {
       const id = (entry.id ?? "").trim();
