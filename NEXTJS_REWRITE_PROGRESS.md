@@ -20,6 +20,26 @@ Next: Define acceptance criteria for priority 1 (bot messaging text receive/repl
 
 ### Session log
 
+- 2026-07-10: **Re-validated `NEXTJS_REWRITE_PLAN.md` against the repo and the
+  decision log; aligned it.** Drift fixed: (1) Phase 3 rewritten from the
+  env-var config design onto the decided DB-backed Settings direction
+  (bootstrap-only env, secrets write-only, real-probe status — memories
+  `config-in-db-not-env`, `verify-real-state-not-env-presence`); (2) the
+  standard feature contract now matches the implemented shape
+  (`features/<f>/server` + `ui`, thin `app/api/**` handlers via `defineRoute`,
+  shared `lib/api-error`/`server/trace` instead of per-feature
+  `errors.ts`/`trace.ts`, colocated tests; `features/settings` named the
+  reference); (3) every "write a design note in `docs/decisions/`" requirement
+  replaced with the decided ask-the-user + Decision Notes table process
+  (AGENTS.md updated to match; empty `docs/` dir removed); (4) decided items
+  annotated inline in Phase 2 (Drizzle, committed SQL migrations,
+  Testcontainers, fresh-DB/no-MVP-import). Also rewrote `.env.example` to the
+  bootstrap-only contract — it still claimed `BOT_TOKEN`/`LLM_BASE_URL` were
+  "Required" although only `DATABASE_URL` is consumed (`db/pool.ts`).
+  Doc-only change (plus deleting the empty dir); no code touched. Known
+  leftover: `server/env.ts` still declares superseded `LLM_*` /
+  `EMBEDDING_*` / `IMAGE_GENERATION_*` / `TAVILY_API_KEY` keys — trim when a
+  feature decision settles each, or as cleanup.
 - 2026-07-10: **Reworked `/api/health` into a real readiness probe** and deleted
   the last env-presence code. `server/status.ts` gained `getHealth()` (gated on a
   real `SELECT 1`; DB-stored config presence as informational, **not** a readiness
@@ -164,7 +184,7 @@ Next: Define acceptance criteria for priority 1 (bot messaging text receive/repl
 | Phase 0: Product and Behavior Inventory | todo | none | Define v1 must-have/nice/drop list |
 | Phase 1: Next.js Foundation | done | lint/typecheck/test/build all pass; folders + scripts + shared infra in place | Documented in README "Repository Layout" |
 | Phase 2: Data Model and Persistence | in-progress | Drizzle schema + migrations + trace repository/recorder + `settings` table; unit 27 + integration 11 (Testcontainers); `db:migrate` verified | Add feature tables (chats/messages) with their features |
-| Phase 3: Configuration and Settings | in-progress | Config moved env→DB (user direction). DB-backed LLM-connection settings (`features/settings/*`, typed columns: base URL/API key/model), `openai` provider client (`server/llm/client.ts`), `GET`/`PATCH` `app/api/settings` + `POST /test-connection` (real `/v1/models` probe); key masked + trace-redacted; verified live | Rework Overview (env cards obsolete); add model params/prompts with their features; surface traces in shared Debug UI |
+| Phase 3: Configuration and Settings | in-progress | Config moved env→DB (user direction). DB-backed LLM-connection settings (`features/settings/*`, typed columns: base URL/API key/model), `openai` provider client (`server/llm/client.ts`), `GET`/`PATCH` `app/api/settings` + `POST /test-connection` (real `/v1/models` probe); key masked + trace-redacted; verified live. Overview/shell/health reworked onto real probes. Plan Phase 3 realigned to this direction | Add model params/prompts with their features; surface traces in shared Debug UI |
 | Phase 4: Telegram Bot Interface | todo | none | Decide webhook-first bot intake design |
 | Phase 5: LLM Conversation Core | todo | none | Design provider and conversation service |
 | Phase 6: Dashboard Shell | in-progress | UI kit + responsive AppShell (sidebar/drawer/topbar) built and refactored overview onto it; lint/typecheck/test/build ✓, verified live in-browser | Add feature routes/pages + shared table/debug components as features land |
@@ -203,7 +223,7 @@ Foundation work supports features but is not a substitute for feature completion
 
 | Area | Status | Proof | Next |
 | --- | --- | --- | --- |
-| Settings and health | in-progress | DB-backed LLM-connection settings (`features/settings/*`) with `GET`/`PATCH` + `test-connection` real probe, key masking + trace redaction, unit + integration tests. Config source is the DB, not env (`config-in-db-not-env`) | Extend settings columns per feature; rework Overview off env presence onto real DB/LLM probes |
+| Settings and health | in-progress | DB-backed LLM-connection settings (`features/settings/*`) with `GET`/`PATCH` + `test-connection` real probe, key masking + trace redaction, unit + integration tests. Config source is the DB, not env (`config-in-db-not-env`); Overview + `/api/health` probe real state | Extend settings columns per feature |
 | LLM provider core | in-progress | `server/llm/client.ts` (`openai`): `listModels`/health probe, base-URL normalization, `ApiError` mapping; connection sourced from DB settings; unit-tested + verified live against a real endpoint | Add chat completion + context assembly with priority-1 bot messaging |
 | Telegram intake foundation | todo | none | Decide webhook-first route shape |
 | Dashboard overview | in-progress | `app/page.tsx` on real probes (`server/status.ts`: `SELECT 1` + live `/v1/models`); sidebar bot-status on cheap DB readiness; verified live | Add real metrics + Telegram status once those features land |
@@ -255,12 +275,16 @@ No blockers recorded.
 - Do not copy MVP modules by default.
 - Keep shared patterns ahead of feature-specific code.
 
-### Current state (2026-07-09)
+### Current state (2026-07-10)
 
-- Phases 1 and 2 done/verified: `npm run lint`, `npm run typecheck`,
-  `npm run test` (21 unit), `npm run test:integration` (7, Testcontainers),
-  `npm run build`, and `npm run db:migrate` all pass. Health route smoke-tested
-  live.
+- Phase 1 done; Phases 2/3/6/11 in-progress and verified: `npm run lint`,
+  `npm run typecheck`, `npm run test` (28 unit), `npm run test:integration`
+  (14, Testcontainers), `npm run build`, and `npm run db:migrate` all pass.
+  Health route verified live as a real readiness probe.
+- The plan (`NEXTJS_REWRITE_PLAN.md`) was re-validated 2026-07-10 and now
+  matches the decided directions: DB-backed config, real-probe status,
+  ask-the-user decisions (no `docs/decisions/`), and the `features/settings`
+  reference shape for the feature contract.
 - Persistence is **Drizzle ORM**. Schema in `db/schema.ts`; migrations in
   `db/migrations/` (`npm run db:generate` after schema changes). Drizzle handle
   via `getDb()`; migrations applied with `npm run db:migrate` (drizzle-kit) —

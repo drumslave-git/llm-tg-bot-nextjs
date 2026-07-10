@@ -54,7 +54,8 @@ The rewrite should preserve useful product behavior, not old implementation boun
 5. Realtime updates use standard Next-compatible mechanisms first: SSE Route Handler or polling. WebSockets/Socket.IO require a separate design decision.
 6. Background work is designed explicitly. Prefer supported deployment primitives such as webhooks, cron-triggered Route Handlers, external workers, or startup instrumentation over implicit long-running loops.
 7. Database schema should be intentional and versioned. Do not blindly recreate MVP table sprawl if a cleaner schema is warranted.
-8. Compatibility with the existing `.env` and Docker deployment is desirable, but not at the cost of carrying poor MVP design forward.
+8. Runtime configuration lives in DB-backed settings edited through the dashboard. Environment variables are bootstrap-only (`DATABASE_URL`, deployment plumbing); whether any future key stays env-side is a per-feature decision made with the user. Status and health must probe the real dependency (database query, provider call), never env or config presence.
+9. Compatibility with the MVP's Docker deployment shape is desirable, but not at the cost of carrying poor MVP design forward.
 
 ## Engineering Standards
 
@@ -75,26 +76,28 @@ Code quality is a first-class requirement for the rewrite.
 
 Every feature should follow the same structure unless a design note explains why it cannot.
 
-Recommended feature shape:
+Recommended feature shape, as established by `features/settings` (the
+reference implementation):
 
 ```text
 features/<feature>/
   server/
-    service.ts
-    schema.ts
-    repository.ts
-    trace.ts
-    errors.ts
-  api/
-    routes.ts
+    service.ts                # domain logic, secret handling, trace recording
+    schema.ts                 # zod input/output schemas
+    repository.ts             # typed Drizzle access
+    *.test.ts                 # unit tests, colocated
+    *.integration.test.ts     # real-Postgres (Testcontainers) tests, colocated
   ui/
-    page.tsx
-    DebugPage.tsx
-    components.tsx
-  tests/
-    service.test.ts
-    routes.test.ts
+    <Feature>Form.tsx, ...    # Client Components
+
+app/<feature>/page.tsx        # normal dashboard page (Server Component)
+app/<feature>/debug/page.tsx  # dedicated Debug page (shared debug components)
+app/api/<feature>/**/route.ts # thin Route Handlers via shared `defineRoute`
 ```
+
+Errors use the shared `lib/api-error` shape and traces use the shared
+`server/trace` recorder; a feature adds its own `errors.ts`/`trace.ts` only
+when it has feature-specific policy to encode.
 
 Each feature must provide:
 
@@ -137,7 +140,7 @@ Agents should track progress in repository files, not only in chat.
 Required tracking files:
 
 - `NEXTJS_REWRITE_PROGRESS.md`: phase and feature progress tracker.
-- `docs/decisions/<date>-<topic>.md`: case-by-case design notes for non-standard decisions.
+- the Decision Notes table in `NEXTJS_REWRITE_PROGRESS.md`: outcomes of case-by-case decisions, made by asking the user directly (no `docs/decisions/*.md` files, per user preference).
 - feature-local test files: executable proof that a feature meets its contract.
 
 Progress rules:
@@ -217,7 +220,7 @@ Steps:
    - mood/personality injection
    - image/sticker handling
 3. Inventory operational requirements:
-   - required env vars
+   - bootstrap env vars (`DATABASE_URL`) and the settings the DB-backed configuration area must cover
    - Postgres + pgvector
    - Docker self-hosting
    - downloads directory
@@ -296,10 +299,9 @@ Steps:
    - browser-agent runs
 2. Compare the MVP schema only to understand what data was needed.
 3. Design a normalized v1 schema with clear ownership and indexes.
-4. Decide migration/backfill policy:
-   - fresh database only
-   - import selected MVP data
-   - one-time import script from old database
+4. Migration/backfill policy — decided: fresh database only; MVP data import
+   is out of scope for v1. Reconfirm with the user before cutover if import
+   turns out to be needed.
 5. Design shared tables/contracts for cross-feature observability:
    - traces
    - trace events
@@ -307,10 +309,15 @@ Steps:
    - LLM usage
    - job/action status
    - downloadable log bundles
-6. Add migrations or idempotent schema setup.
-7. Implement a small typed database access layer.
+6. Add migrations — decided: drizzle-kit generated SQL committed to
+   `db/migrations/`, applied via `npm run db:migrate` locally and the
+   programmatic migrator in the Docker entrypoint; no in-app auto-migration.
+7. Implement a small typed database access layer — decided: Drizzle ORM
+   (`getDb()`).
 8. Add shared repository helpers for pagination, filtering, time ranges, trace lookup, and log export.
-9. Add tests for schema initialization and critical queries.
+9. Add tests for schema initialization and critical queries — decided:
+   integration tests against real Postgres via Testcontainers
+   (`*.integration.test.ts`).
 
 Exit criteria:
 
@@ -323,33 +330,40 @@ Exit criteria:
 
 Goal: recreate configuration as a first-class product area.
 
+Decided direction (user): runtime configuration lives in DB-backed Settings
+edited via the dashboard, not env vars. Env is bootstrap-only. Which keys, if
+any, stay env-side is a per-feature decision made with the user.
+
 Steps:
 
-1. Define server environment variables:
-   - `BOT_TOKEN`
-   - `LLM_BASE_URL`
-   - `DATABASE_URL`
-   - optional provider keys
-   - optional Tavily key
-   - `TZ`
-2. Support Docker secret file variants only where still needed.
-3. Define database-backed settings:
-   - model
+1. Keep the bootstrap env surface minimal and validated (`server/env.ts`):
+   `DATABASE_URL` (with the Docker `_FILE` secret variant) plus deployment
+   plumbing such as `TZ`. Do not add runtime product configuration to env.
+2. Define database-backed settings as typed columns on the single `settings`
+   row (`id = 'singleton'`), added with the features that need them:
+   - LLM connection: base URL, optional API key, model (implemented)
    - prompts/personality
-   - owner
+   - owner (deferred to Telegram intake — needs @username→id resolution)
    - maintenance mode
    - context/performance limits
    - feature toggles
    - vision/browser/memory settings
-4. Implement validation with `zod`.
-5. Implement `app/api/settings/**` Route Handlers.
-6. Build the settings dashboard page using Server Components for initial data and Client Components for forms.
+3. Implement validation with `zod`; secrets are write-only in API shapes
+   (expose `*Configured` booleans, never values) and redacted from traces.
+4. Implement `app/api/settings/**` Route Handlers on the shared wrapper.
+5. Build the settings dashboard page using Server Components for initial data and Client Components for forms.
+6. Report configuration status through real probes (database query, provider
+   `/v1/models` call), never env or config presence.
 
 Exit criteria:
 
-- Missing required env vars produce clear errors.
 - Settings can be read and updated from the dashboard.
-- Settings writes are validated server-side.
+- Settings writes are validated server-side; secret values never round-trip
+  to the client.
+- Unconfigured or unreachable dependencies surface as clear real-probe status
+  on the Overview and `/api/health`.
+- New runtime configuration lands as settings columns + migration, not env
+  vars.
 
 ## Phase 4: Telegram Bot Interface
 
@@ -359,7 +373,7 @@ Steps:
 
 1. Decide the standard Telegram delivery model:
    - preferred: Telegram webhook handled by a Route Handler
-   - fallback: polling only after a design note explains why webhook is not suitable
+   - fallback: polling only after the trade-off is put to the user and the decision recorded in the tracker
 2. Implement webhook Route Handler if selected:
    - `app/api/telegram/webhook/route.ts`
    - validate secret/path/token strategy
@@ -460,7 +474,7 @@ Steps:
 3. Use SSE Route Handler for one-way live status streams if polling is not sufficient.
 4. Keep event payloads small and typed.
 5. Add reconnect/retry behavior in the client hook.
-6. If true bidirectional WebSocket behavior is required, create a design note before adding Socket.IO or another WebSocket stack.
+6. If true bidirectional WebSocket behavior is required, ask the user and record the decision before adding Socket.IO or another WebSocket stack.
 
 Exit criteria:
 
@@ -626,7 +640,7 @@ Steps:
 4. Recreate Compose services:
    - app
    - Postgres + pgvector
-5. Preserve useful environment contract from the MVP.
+5. Keep the env surface bootstrap-only (`DATABASE_URL` + compose plumbing); runtime configuration is entered through the dashboard after deploy.
 6. Preserve downloads volume if browser/download features are in v1.
 7. Preserve Traefik labels if still used.
 8. Add health checks.
@@ -668,9 +682,14 @@ Exit criteria:
 - v1 acceptance criteria are met.
 - Rollback path is known and tested enough for the deployment risk.
 
-## Case-by-Case Design Notes Required
+## Case-by-Case Decisions Required
 
-Write a short design note before implementing any of these if standard Next.js behavior is not enough:
+Per user preference, these decisions are made by asking the user directly and
+recording the outcome in the Decision Notes table in
+`NEXTJS_REWRITE_PROGRESS.md` — not by writing `docs/decisions/*.md` files.
+
+Stop and ask before implementing any of these if standard Next.js behavior is
+not enough:
 
 - Telegram polling instead of webhook Route Handler
 - Socket.IO or custom WebSocket server
@@ -681,7 +700,7 @@ Write a short design note before implementing any of these if standard Next.js b
 - Playwright browser lifecycle beyond per-job execution
 - any feature that requires process-global mutable state
 
-Each design note should include:
+When asking, present:
 
 - problem
 - standard Next.js option tried or rejected
@@ -706,5 +725,5 @@ The rewrite is complete when:
 - Logs/traces can be downloaded consistently.
 - Shared code/components are used for common behavior instead of case-by-case implementations.
 - API responses, errors, statuses, pagination, timestamps, trace records, and exports are unified.
-- Any non-standard infrastructure has an accepted case-by-case design note.
+- Any non-standard infrastructure has an accepted decision recorded in the tracker's Decision Notes table.
 - The deployment can replace the MVP service with a known rollback path.

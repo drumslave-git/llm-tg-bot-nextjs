@@ -46,8 +46,8 @@ This is a rewrite, not a migration.
   Components, Client Components, `instrumentation.ts` where appropriate,
   standard env handling, `next dev`, `next build`, and `next start`.
 - If a capability appears unsafe or impossible with supported Next.js
-  mechanisms, stop and write a case-by-case design note before adding custom
-  infrastructure.
+  mechanisms, stop and ask the user before adding custom infrastructure (see
+  Decision Notes below).
 
 ## Engineering Standards
 
@@ -144,10 +144,12 @@ known pitfalls, and commands that passed or failed.
 
 ## Decision Notes
 
-Create notes under `docs/decisions/<date>-<topic>.md` before implementing
-non-standard infrastructure or behavior.
+Per user preference, non-standard infrastructure or behavior decisions are
+made by asking the user directly and recording the outcome in the Decision
+Notes table in `NEXTJS_REWRITE_PROGRESS.md`. Do not write
+`docs/decisions/*.md` files.
 
-Design notes are required for:
+Asking first is required for:
 
 - Telegram polling instead of webhook Route Handler
 - Socket.IO or custom WebSocket server
@@ -158,8 +160,8 @@ Design notes are required for:
 - Playwright browser lifecycle beyond per-job execution
 - process-global mutable state
 
-Each note should include the problem, standard Next.js option considered, why
-it is insufficient, alternatives, recommended design, operational impact, and
+When asking, present the problem, standard Next.js option considered, why it
+is insufficient, alternatives, recommended design, operational impact, and
 failure/rollback behavior.
 
 ## Next.js Rules
