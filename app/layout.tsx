@@ -1,7 +1,8 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 
-import { DashboardNav } from "@/components/DashboardNav";
+import { AppShell } from "@/components/layout/AppShell";
+import { ThemeScript } from "@/components/theme/theme-script";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -27,17 +28,16 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      // Dark-first default; ThemeScript reconciles with the persisted choice
+      // before hydration to prevent a flash.
+      className={`dark ${geistSans.variable} ${geistMono.variable} h-full`}
+      suppressHydrationWarning
     >
+      <head>
+        <ThemeScript />
+      </head>
       <body className="min-h-full">
-        <div className="flex min-h-screen">
-          <aside className="w-56 shrink-0 border-r border-black/10 dark:border-white/10">
-            <DashboardNav />
-          </aside>
-          <main className="flex-1 p-6">
-            <div className="mx-auto max-w-5xl space-y-6">{children}</div>
-          </main>
-        </div>
+        <AppShell>{children}</AppShell>
       </body>
     </html>
   );

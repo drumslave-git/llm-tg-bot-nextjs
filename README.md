@@ -52,7 +52,7 @@ Boundaries are intentional; keep feature-specific plumbing out of shared modules
 | Path | Responsibility |
 | --- | --- |
 | `app/` | App Router routes, layouts, and Route Handlers (`app/api/**/route.ts`). Handlers stay thin and delegate to `server/`. |
-| `components/` | Shared, presentational dashboard UI (no feature business logic). |
+| `components/` | Shared, presentational dashboard UI (no feature business logic). `components/ui/` is the design-system kit (import via `@/components/ui`); `components/layout/` is the responsive app shell (sidebar/drawer/topbar, nav config); `components/theme/` holds the theme toggle + pre-hydration script. |
 | `features/` | Product feature modules (server service, schemas, API, UI, tests) following the feature contract in the plan. |
 | `server/` | Server-only domain logic and shared infrastructure. Modules that touch secrets, DB, filesystem, Telegram, or the LLM provider import `server-only`. |
 | `db/` | Drizzle schema (`schema.ts`), generated SQL migrations (`migrations/`), pooled Drizzle handle (`getDb()`), and the migrator. |

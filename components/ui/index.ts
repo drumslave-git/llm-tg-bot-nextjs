@@ -1,0 +1,29 @@
+/**
+ * UI kit barrel. Import primitives from "@/components/ui" so feature code has a
+ * single, stable entry point for the shared design system.
+ */
+export { Avatar } from "./Avatar";
+export { Badge, type BadgeTone } from "./Badge";
+export { Button, type ButtonProps, type ButtonVariant, type ButtonSize } from "./Button";
+export {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "./Card";
+export { Checkbox } from "./Checkbox";
+export { EmptyState } from "./EmptyState";
+export { Field } from "./Field";
+export { Input, fieldBase } from "./Input";
+export { Label } from "./Label";
+export { Progress, type ProgressTone } from "./Progress";
+export { Select } from "./Select";
+export { Separator } from "./Separator";
+export { Skeleton, Spinner } from "./Skeleton";
+export { Slot } from "./Slot";
+export { StatCard } from "./StatCard";
+export { Switch } from "./Switch";
+export { Textarea } from "./Textarea";

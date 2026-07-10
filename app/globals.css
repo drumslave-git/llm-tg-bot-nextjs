@@ -1,26 +1,136 @@
 @import "tailwindcss";
 
+/*
+ * Class-based dark mode. The app is dark-first (`<html class="dark">`), but the
+ * light palette below keeps a future theme toggle a one-class flip. Components
+ * should consume the *semantic* tokens (bg-surface, text-muted, border-border,
+ * bg-primary, ...) instead of `dark:` variants, so theming stays DRY and lives
+ * in one place.
+ */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Light theme (default values on :root) */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #f6f6f8;
+  --surface: #ffffff;
+  --surface-2: #f1f1f4;
+  --surface-hover: #ececef;
+  --border: #e3e3e8;
+  --border-strong: #d3d3da;
+
+  --foreground: #18181b;
+  --muted: #5c5c66;
+  --faint: #8a8a94;
+
+  --primary: #6d4aff;
+  --primary-hover: #5c37f5;
+  --primary-foreground: #ffffff;
+  --primary-soft: #efeafd;
+
+  --success: #16a34a;
+  --warning: #d97706;
+  --danger: #dc2626;
+  --info: #2563eb;
+
+  --ring: #6d4aff;
+
+  --radius: 0.75rem;
 }
 
+/* Dark theme — tuned to the reference dashboards: near-black app canvas, subtly
+ * elevated surfaces, hairline borders, violet accent. */
+.dark {
+  --background: #08080c;
+  --surface: #111118;
+  --surface-2: #17171f;
+  --surface-hover: #1d1d27;
+  --border: #23232d;
+  --border-strong: #2f2f3b;
+
+  --foreground: #ededf0;
+  --muted: #9b9ba7;
+  --faint: #6a6a78;
+
+  --primary: #7c5cff;
+  --primary-hover: #8f74ff;
+  --primary-foreground: #ffffff;
+  --primary-soft: #1c1730;
+
+  --success: #34d399;
+  --warning: #fbbf24;
+  --danger: #f87171;
+  --info: #60a5fa;
+
+  --ring: #7c5cff;
+}
+
+/* Map the semantic variables into Tailwind's theme so utilities like
+ * `bg-surface`, `text-muted`, `border-border`, `ring-ring` are generated.
+ * `inline` keeps them referencing the CSS vars, so they react to `.dark`. */
 @theme inline {
   --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-hover: var(--surface-hover);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+
   --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary-soft: var(--primary-soft);
+
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+  --color-info: var(--info);
+
+  --color-ring: var(--ring);
+
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 0.25rem);
+  --radius-2xl: calc(var(--radius) + 0.5rem);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+* {
+  border-color: var(--border);
+}
+
+html {
+  color-scheme: light dark;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Quiet, dense scrollbars that match the surfaces. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--faint);
+  background-clip: content-box;
 }

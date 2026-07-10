@@ -13,13 +13,38 @@ Status values:
 ## Current Summary
 
 Status: in-progress
-Owner: agent/2026-07-09
-Last updated: 2026-07-09
-Proof: `npm run lint` ✓, `npm run typecheck` ✓, `npm run test` ✓ (21 unit), `npm run test:integration` ✓ (7, real Postgres via Testcontainers), `npm run build` ✓, `npm run db:migrate` ✓ (drizzle-kit applies migrations to a fresh DB)
-Next: Phase 3 settings (DB-backed) using Drizzle + `server/http.ts`, then define acceptance criteria for priority 1 (bot messaging text receive/reply)
+Owner: agent/2026-07-10
+Last updated: 2026-07-10
+Proof: `npm run lint` ✓, `npm run typecheck` ✓, `npm run test` ✓ (21 unit), `npm run test:integration` ✓ (7, real Postgres via Testcontainers), `npm run build` ✓, `npm run db:migrate` ✓ (drizzle-kit applies migrations to a fresh DB). UI kit verified live in-browser (tokens, theme toggle, responsive sidebar/drawer).
+Next: Phase 3 settings (DB-backed) using Drizzle + `server/http.ts` + the new UI kit form components, then define acceptance criteria for priority 1 (bot messaging text receive/reply)
 
 ### Session log
 
+- 2026-07-10: Built the shared **UI kit** (dark-first, light supported) as the
+  design foundation before feature migration. Token system in `app/globals.css`
+  (semantic CSS vars → Tailwind v4 `@theme inline`, class-based `.dark`, custom
+  scrollbars) so components consume semantic tokens (`bg-surface`, `text-muted`,
+  `bg-primary`, …) instead of `dark:` duplication. Primitives in
+  `components/ui/` (barrel `index.ts`): `Button` (variants/sizes + `asChild` via
+  a minimal `Slot`), `Card` (+ Header/Title/Description/Content/Footer/Action),
+  `Badge`, `Avatar`, `Progress`, `Separator`, form set (`Input`, `Textarea`,
+  `Select`, `Label`, `Field`, `Switch`, `Checkbox` — CSS-peer, no client JS),
+  `StatCard`, `EmptyState`, `Skeleton`/`Spinner`. `lib/cn.ts` (clsx +
+  tailwind-merge). Responsive app frame in `components/layout/`: `AppShell`
+  (fixed desktop rail + mobile off-canvas drawer w/ Escape + backdrop close),
+  config-driven `Sidebar` (grouped nav, active state, `soon` markers, status
+  card), `Topbar` (search + theme toggle + actions). Theme: `components/theme/`
+  `ThemeToggle` (useSyncExternalStore over the DOM class) + pre-hydration
+  `ThemeScript`. Refactored `app/layout.tsx`, `app/page.tsx` (live kit
+  reference), `PageHeader`, `StatusCard` onto the kit; removed superseded
+  `DashboardNav`. Deps added intentionally: `clsx`, `tailwind-merge`,
+  `lucide-react`. Fixed two bugs found during in-browser verification: (1)
+  `Button asChild` wrapped children in a fragment, breaking `Slot`'s single-child
+  requirement; (2) the mobile drawer stayed pinned at its from-value under
+  `prefers-reduced-motion` — added `motion-reduce:transition-none` (a11y-correct
+  and resolves it). Verified live: tokens resolve (dark `#08080c` / light
+  `#f6f6f8`, primary `#7c5cff`), theme toggle flips `.dark`, sidebar hides on
+  mobile, drawer opens/closes. Checks: lint ✓, typecheck ✓, test ✓ (21), build ✓.
 - 2026-07-09: Completed Phase 1 foundation. Established folder boundaries
   (`app/`, `components/`, `features/`, `server/`, `db/`, `lib/`, `test/`), added
   `typecheck`/`test` scripts + Node engine, and built the first shared
@@ -74,7 +99,7 @@ Next: Phase 3 settings (DB-backed) using Drizzle + `server/http.ts`, then define
 | Phase 3: Configuration and Settings | todo | none | Define env/settings schemas |
 | Phase 4: Telegram Bot Interface | todo | none | Decide webhook-first bot intake design |
 | Phase 5: LLM Conversation Core | todo | none | Design provider and conversation service |
-| Phase 6: Dashboard Shell | todo | none | Build shared dashboard primitives |
+| Phase 6: Dashboard Shell | in-progress | UI kit + responsive AppShell (sidebar/drawer/topbar) built and refactored overview onto it; lint/typecheck/test/build ✓, verified live in-browser | Add feature routes/pages + shared table/debug components as features land |
 | Phase 7: Realtime and Status Updates | todo | none | Choose polling/SSE per live status need |
 | Phase 8: Background Work Design | todo | none | Choose operating model per job |
 | Phase 9: Feature Recreation | todo | none | Start features in priority order |
@@ -124,11 +149,12 @@ Foundation work supports features but is not a substitute for feature completion
 | Shared error shape | done | `lib/api-error.ts` (`ApiError`, code→status map, envelope) + tests | — |
 | Shared trace schema | done | `lib/trace.ts` types + `db/schema.ts` tables + `server/trace` repository/recorder, tested | Wire recorder into features as they land |
 | Shared log/trace export | in-progress | `traceBundleSchema` + `getTrace`/`listTraces` queries | Implement export Route Handler + download button (needs debug UI) |
-| Shared dashboard layout | done | `app/layout.tsx` shell + `components/DashboardNav.tsx` | Add active-route highlight + real feature links |
-| Shared form components | todo | none | Define field/error pattern |
+| Shared dashboard layout | done | `components/layout/AppShell` (responsive rail + mobile drawer), `Sidebar` (config-driven, active state), `Topbar`; theme toggle + tokens | Add breadcrumbs + per-route topbar title as routes grow |
+| UI kit tokens/primitives | done | `app/globals.css` semantic tokens (Tailwind v4 `@theme`, `.dark`); `components/ui/*` (Button/Card/Badge/Avatar/Progress/Separator/StatCard/EmptyState/Skeleton) + `lib/cn.ts`; verified live | Extend with Table/Tabs/Dialog/Toast when features need them |
+| Shared form components | done | `components/ui` `Input`, `Textarea`, `Select`, `Label`, `Field` (label+hint+error+aria wiring), `Switch`, `Checkbox` | Add form-state/validation helper when settings form lands |
 | Shared table/filter components | todo | none | Define pagination/filter API |
 | Shared debug components | todo | none | Define trace list/detail/download UI |
-| Shared status components | in-progress | `components/StatusCard.tsx`, `components/PageHeader.tsx` | Add badges + loading/empty/error states |
+| Shared status components | done | `components/ui/Badge` (tones+dot), `EmptyState`, `Skeleton`/`Spinner`, refactored `StatusCard`/`PageHeader` onto tokens | Add explicit error panel when debug UI lands |
 | Test harness | done | Vitest unit config (21) + Testcontainers integration config (7); `server-only` alias stub | Add Route Handler + dashboard smoke tests per feature |
 
 ## Decision Notes
