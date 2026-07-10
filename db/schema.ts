@@ -1,4 +1,13 @@
-import { index, integer, jsonb, pgTable, text, timestamp } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import {
+  check,
+  index,
+  integer,
+  jsonb,
+  pgTable,
+  text,
+  timestamp,
+} from "drizzle-orm/pg-core";
 
 import type { LlmUsage, Trace } from "@/lib/trace";
 
@@ -56,6 +65,30 @@ export const traceEvents = pgTable(
   },
   (t) => [index("trace_events_trace_seq_idx").on(t.traceId, t.seq)],
 );
+
+/**
+ * Application settings. A single, typed row (`id = 'singleton'`) holding the
+ * operator-configurable, DB-backed configuration (entered via the dashboard,
+ * not env vars). New settings are added as typed columns (with a default) plus a
+ * migration — the repository always reads/writes the one row.
+ */
+export const settings = pgTable(
+  "settings",
+  {
+    id: text("id").primaryKey().default("singleton"),
+    /** Base URL of the OpenAI-compatible LLM endpoint (e.g. `.../v1`). */
+    llmBaseUrl: text("llm_base_url"),
+    /** Optional API key for the LLM endpoint. Secret — never returned in plaintext. */
+    llmApiKey: text("llm_api_key"),
+    /** Selected chat model id (from the endpoint's `/v1/models`). */
+    model: text("model"),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [check("settings_singleton", sql`${t.id} = 'singleton'`)],
+);
+
+export type SettingsRow = typeof settings.$inferSelect;
+export type SettingsInsert = typeof settings.$inferInsert;
 
 export type TraceRow = typeof traces.$inferSelect;
 export type TraceInsert = typeof traces.$inferInsert;

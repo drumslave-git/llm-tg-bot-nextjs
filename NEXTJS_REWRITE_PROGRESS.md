@@ -15,11 +15,50 @@ Status values:
 Status: in-progress
 Owner: agent/2026-07-10
 Last updated: 2026-07-10
-Proof: `npm run lint` ✓, `npm run typecheck` ✓, `npm run test` ✓ (21 unit), `npm run test:integration` ✓ (7, real Postgres via Testcontainers), `npm run build` ✓, `npm run db:migrate` ✓ (drizzle-kit applies migrations to a fresh DB). UI kit verified live in-browser (tokens, theme toggle, responsive sidebar/drawer).
-Next: Phase 3 settings (DB-backed) using Drizzle + `server/http.ts` + the new UI kit form components, then define acceptance criteria for priority 1 (bot messaging text receive/reply)
+Proof: `npm run lint` ✓, `npm run typecheck` ✓, `npm run test` ✓ (29 unit), `npm run test:integration` ✓ (12, real Postgres via Testcontainers), `npm run build` ✓, `npm run db:migrate` ✓. **DB-backed LLM-connection settings** verified live end-to-end against a real endpoint: Test connection lists the endpoint's `/v1/models` (13 models), model select populates, save persists (`GET /api/settings`), API key masked. Error path is a real probe: unreachable host → 503, auth-required host → 400 with the provider's message.
+Next: Rework the Overview page — its env-presence cards (LLM_BASE_URL/BOT_TOKEN/TAVILY) are now obsolete since config moved to the DB. Then define acceptance criteria for priority 1 (bot messaging text receive/reply).
 
 ### Session log
 
+- 2026-07-10: **Phase 3 — DB-backed LLM-connection settings** (first `features/`
+  module). Major direction change from the user: **configuration moves out of env
+  vars into DB-backed Settings entered via the dashboard** (bootstrap-only
+  `DATABASE_URL` stays in env). See memory `config-in-db-not-env`. Grounded the
+  design in the MVP reference (`../ollama-tg-bot`) after a first attempt shipped
+  invented fields — corrected per user feedback (memories
+  `no-placeholders-ask-instead`, `verify-real-state-not-env-presence`): dropped a
+  fabricated "context message limit" and the free-text model input; the model is
+  now a **select populated from the endpoint's `/v1/models`**, and config status
+  is a **real probe**, never env presence.
+  - Storage (user decision): **typed columns, single row** (`settings`,
+    `id='singleton'` check constraint). v1 columns: `llm_base_url`,
+    `llm_api_key` (secret), `model`. Migration `0001_equal_guardian.sql`
+    (regenerated; the earlier invented migration was reverted and the dev DB
+    reset).
+  - Shared provider client `server/llm/client.ts` (server-only, `openai` dep):
+    `toOpenAiBaseUrl` normalization + `listModels` (doubles as the health probe;
+    clean `ApiError` mapping for timeout/connection/4xx). Connection is passed
+    in (from DB settings), not read from env.
+  - Feature `features/settings/server/`: `schema.ts` (zod; API key write-only —
+    client shape exposes only `apiKeyConfigured`), `repository.ts` (typed Drizzle
+    upsert; record includes the raw key, never returned), `service.ts`
+    (`getSettings` masks the key; `updateSettings` + `testConnection` each record
+    a trace; the key value is redacted from trace data). Routes:
+    `app/api/settings` (`GET`/`PATCH`) + `app/api/settings/test-connection`
+    (`POST`). Page `app/settings/page.tsx` actually queries the DB and shows the
+    real error on failure (no env-presence gate). Client
+    `features/settings/ui/SettingsForm.tsx`: URL + optional masked key → Test
+    connection → model select from the endpoint → Save.
+  - Tests: unit `features/settings/server/schema.test.ts` +
+    `server/llm/client.test.ts`; integration
+    `settings.integration.test.ts` (defaults, partial-merge, **key masking +
+    trace redaction**, single-row invariant).
+  - Checks: lint ✓, typecheck ✓, unit 29 ✓, integration 12 ✓, build ✓,
+    `db:migrate` ✓. Verified live against a real endpoint: 13 models listed,
+    model saved + persisted, key masked; unreachable host → 503, auth-required
+    host → 400 with the provider message. Owner deferred to the Telegram phase.
+    No Debug page yet — settings is a foundation area; traces surface once the
+    shared Debug UI lands.
 - 2026-07-10: Built the shared **UI kit** (dark-first, light supported) as the
   design foundation before feature migration. Token system in `app/globals.css`
   (semantic CSS vars → Tailwind v4 `@theme inline`, class-based `.dark`, custom
@@ -95,8 +134,8 @@ Next: Phase 3 settings (DB-backed) using Drizzle + `server/http.ts` + the new UI
 | --- | --- | --- | --- |
 | Phase 0: Product and Behavior Inventory | todo | none | Define v1 must-have/nice/drop list |
 | Phase 1: Next.js Foundation | done | lint/typecheck/test/build all pass; folders + scripts + shared infra in place | Documented in README "Repository Layout" |
-| Phase 2: Data Model and Persistence | in-progress | Drizzle schema + migrations + trace repository/recorder; unit 21 + integration 7 (Testcontainers); `db:migrate` verified | Add feature tables (chats/messages/settings) with their features |
-| Phase 3: Configuration and Settings | todo | none | Define env/settings schemas |
+| Phase 2: Data Model and Persistence | in-progress | Drizzle schema + migrations + trace repository/recorder + `settings` table; unit 27 + integration 11 (Testcontainers); `db:migrate` verified | Add feature tables (chats/messages) with their features |
+| Phase 3: Configuration and Settings | in-progress | Config moved env→DB (user direction). DB-backed LLM-connection settings (`features/settings/*`, typed columns: base URL/API key/model), `openai` provider client (`server/llm/client.ts`), `GET`/`PATCH` `app/api/settings` + `POST /test-connection` (real `/v1/models` probe); key masked + trace-redacted; verified live | Rework Overview (env cards obsolete); add model params/prompts with their features; surface traces in shared Debug UI |
 | Phase 4: Telegram Bot Interface | todo | none | Decide webhook-first bot intake design |
 | Phase 5: LLM Conversation Core | todo | none | Design provider and conversation service |
 | Phase 6: Dashboard Shell | in-progress | UI kit + responsive AppShell (sidebar/drawer/topbar) built and refactored overview onto it; lint/typecheck/test/build ✓, verified live in-browser | Add feature routes/pages + shared table/debug components as features land |
@@ -135,10 +174,10 @@ Foundation work supports features but is not a substitute for feature completion
 
 | Area | Status | Proof | Next |
 | --- | --- | --- | --- |
-| Settings and health | in-progress | `server/env.ts` (zod + `_FILE` secrets, tested), `/api/health` route | Add DB-backed settings schema + Route Handlers (Phase 3) |
-| LLM provider core | todo | none | Design provider client and error handling |
+| Settings and health | in-progress | DB-backed LLM-connection settings (`features/settings/*`) with `GET`/`PATCH` + `test-connection` real probe, key masking + trace redaction, unit + integration tests. Config source is the DB, not env (`config-in-db-not-env`) | Extend settings columns per feature; rework Overview off env presence onto real DB/LLM probes |
+| LLM provider core | in-progress | `server/llm/client.ts` (`openai`): `listModels`/health probe, base-URL normalization, `ApiError` mapping; connection sourced from DB settings; unit-tested + verified live against a real endpoint | Add chat completion + context assembly with priority-1 bot messaging |
 | Telegram intake foundation | todo | none | Decide webhook-first route shape |
-| Dashboard overview | in-progress | `app/page.tsx` overview with config status cards, layout shell + nav | Add live/DB status once persistence lands |
+| Dashboard overview | in-progress | `app/page.tsx` overview with config status cards, layout shell + nav | **Rework needed:** its env-presence cards (LLM_BASE_URL/BOT_TOKEN/TAVILY) are obsolete now config lives in the DB — replace with real DB/LLM/Telegram probes |
 | Debug traces and LLM usage | in-progress | `lib/trace.ts` types + `server/trace` recorder/repository on Drizzle, tested | Add Debug UI + trace-context in Route Handler wrapper |
 
 ## Shared Infrastructure Progress
@@ -151,7 +190,7 @@ Foundation work supports features but is not a substitute for feature completion
 | Shared log/trace export | in-progress | `traceBundleSchema` + `getTrace`/`listTraces` queries | Implement export Route Handler + download button (needs debug UI) |
 | Shared dashboard layout | done | `components/layout/AppShell` (responsive rail + mobile drawer), `Sidebar` (config-driven, active state), `Topbar`; theme toggle + tokens | Add breadcrumbs + per-route topbar title as routes grow |
 | UI kit tokens/primitives | done | `app/globals.css` semantic tokens (Tailwind v4 `@theme`, `.dark`); `components/ui/*` (Button/Card/Badge/Avatar/Progress/Separator/StatCard/EmptyState/Skeleton) + `lib/cn.ts`; verified live | Extend with Table/Tabs/Dialog/Toast when features need them |
-| Shared form components | done | `components/ui` `Input`, `Textarea`, `Select`, `Label`, `Field` (label+hint+error+aria wiring), `Switch`, `Checkbox` | Add form-state/validation helper when settings form lands |
+| Shared form components | done | `components/ui` `Input`, `Textarea`, `Select`, `Label`, `Field` (label+hint+error+aria wiring), `Switch`, `Checkbox`; first consumed by `features/settings/ui/SettingsForm.tsx` | Extract a form-state/submit helper if a 2nd feature form duplicates the fetch/status pattern |
 | Shared table/filter components | todo | none | Define pagination/filter API |
 | Shared debug components | todo | none | Define trace list/detail/download UI |
 | Shared status components | done | `components/ui/Badge` (tones+dot), `EmptyState`, `Skeleton`/`Spinner`, refactored `StatusCard`/`PageHeader` onto tokens | Add explicit error panel when debug UI lands |
@@ -165,6 +204,10 @@ writing `docs/decisions/*.md`. This table is the lightweight record.
 | Topic | Status | Decided by | Decision |
 | --- | --- | --- | --- |
 | ORM / persistence | done | user | Drizzle ORM + drizzle-kit migrations |
+| Settings storage model | done | user | Typed columns, single settings row (`id = 'singleton'`); new settings = new column + migration |
+| Configuration source | done | user | Runtime config lives in DB-backed Settings via the dashboard, not env vars (bootstrap-only `DATABASE_URL` stays in env). Status must be a real probe, not env presence |
+| LLM API key storage | done | user | Optional API key stored in the DB, masked in UI/API (`apiKeyConfigured` only), redacted from traces |
+| Owner field timing | done | user | Deferred to the Telegram intake phase (priority 1) — needs the bot to resolve @username→id |
 | Migration workflow | done | user | `generate` committed SQL files; applied via `drizzle-kit migrate` (`npm run db:migrate`), run by the Docker entrypoint before `next start`. No in-app auto-migration (instrumentation approach rejected as non-standard). |
 | DB test strategy | done | user | Real Postgres via Testcontainers (integration suite) |
 | MVP data import | done | agent default | Out of scope for v1 (fresh DB) — reconfirm with user if import is needed before cutover |
@@ -204,11 +247,24 @@ No blockers recorded.
 
 ### Next best task
 
-- Phase 3 settings (DB-backed): add a `settings` table to `db/schema.ts` (then
-  `npm run db:generate`), a zod-validated settings service + repository,
-  `app/api/settings` Route Handlers using `defineRoute`, and a settings
-  dashboard page. Record settings writes via the trace recorder.
-- Then define acceptance criteria for feature priority 1 (bot text receive/reply).
+- **Config is now DB-backed, not env** (user direction — memory
+  `config-in-db-not-env`). Follow `features/settings/*` + `server/llm/client.ts`
+  as the reference shape. Never gate status on env presence — probe the real
+  thing (memory `verify-real-state-not-env-presence`). Never invent
+  fields/placeholders — ground in `../ollama-tg-bot` and ask (memory
+  `no-placeholders-ask-instead`).
+- **Rework the Overview page** (`app/page.tsx`): its cards read `envPresence()`
+  for LLM_BASE_URL/BOT_TOKEN/TAVILY, which is now both obsolete (config is in the
+  DB) and exactly the env-presence anti-pattern the user rejected. Replace with
+  real probes: DB (`SELECT 1`), LLM (`listModels` against saved settings),
+  Telegram (once intake lands).
+- Then define acceptance criteria for **priority 1 — bot messaging: text
+  receive/reply** (settings + LLM client now exist; still needs Telegram intake,
+  chat-completion in the provider client, shared traces). Blocker to resolve
+  first: **Telegram webhook vs polling** (still `todo` — ask the user).
+- **Shared Debug UI** (trace list/detail + JSON viewer + log download) remains
+  high-leverage: settings already records `update`/`test-connection` traces with
+  nothing to view them yet.
 
 ### Testing DB work
 

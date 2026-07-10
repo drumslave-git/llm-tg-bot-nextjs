@@ -37,7 +37,7 @@ export const NAV_GROUPS: NavGroup[] = [
   {
     label: "Configure",
     items: [
-      { href: "/settings", label: "Settings", icon: Settings, soon: true },
+      { href: "/settings", label: "Settings", icon: Settings },
       {
         href: "/prompts",
         label: "Prompts",
