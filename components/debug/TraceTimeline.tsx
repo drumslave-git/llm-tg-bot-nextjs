@@ -36,16 +36,34 @@ const LEVEL_TEXT: Record<TraceLevel, string> = {
   error: "text-danger",
 };
 
-/** Small usage summary chip line for LLM events. */
+/** Small usage summary chips for LLM events — neutral, matching the type badge. */
 function UsageLine({ usage }: { usage: NonNullable<TraceEvent["usage"]> }) {
-  const parts: string[] = [];
-  if (usage.model) parts.push(usage.model);
-  if (usage.promptTokens !== undefined) parts.push(`prompt ${usage.promptTokens}`);
-  if (usage.completionTokens !== undefined) parts.push(`completion ${usage.completionTokens}`);
-  if (usage.totalTokens !== undefined) parts.push(`total ${usage.totalTokens}`);
-  if (usage.latencyMs !== undefined) parts.push(`${Math.round(usage.latencyMs)}ms`);
-  if (parts.length === 0) return null;
-  return <p className="mt-1 font-mono text-xs text-info">{parts.join(" · ")}</p>;
+  const stats: Array<[label: string, value: string]> = [];
+  if (usage.promptTokens !== undefined) stats.push(["prompt", String(usage.promptTokens)]);
+  if (usage.completionTokens !== undefined) stats.push(["completion", String(usage.completionTokens)]);
+  if (usage.totalTokens !== undefined) stats.push(["total", String(usage.totalTokens)]);
+  if (usage.latencyMs !== undefined) stats.push(["latency", `${Math.round(usage.latencyMs)}ms`]);
+  if (!usage.model && stats.length === 0) return null;
+  return (
+    <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+      {usage.model ? (
+        <span
+          className="max-w-full truncate rounded bg-surface-2 px-1.5 py-0.5 font-mono text-xs text-muted"
+          title={usage.model}
+        >
+          {usage.model}
+        </span>
+      ) : null}
+      {stats.map(([label, value]) => (
+        <span
+          key={label}
+          className="rounded bg-surface-2 px-1.5 py-0.5 font-mono text-xs text-faint"
+        >
+          {label} <span className="text-muted tabular-nums">{value}</span>
+        </span>
+      ))}
+    </div>
+  );
 }
 
 /**
