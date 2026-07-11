@@ -10,6 +10,16 @@ export {
 export {
   getTrace,
   listTraces,
+  listFeatures,
+  getEventsForTraces,
   type ListTracesInput,
   type ListTracesResult,
 } from "./repository";
+export {
+  getTraceList,
+  getTraceDetail,
+  buildTraceBundle,
+  buildTraceListBundle,
+  type TraceQuery,
+  type TraceListView,
+} from "./service";

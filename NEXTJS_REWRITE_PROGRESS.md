@@ -15,11 +15,76 @@ Status values:
 Status: in-progress
 Owner: agent/2026-07-11
 Last updated: 2026-07-11
-Proof: `npm run lint` ✓, `npm run typecheck` ✓, `npm run test` ✓ (45 unit), `npm run test:integration` ✓ (15, real Postgres via Testcontainers), `npm run build` ✓ (0 warnings), `npm run db:migrate` ✓. Priority-1 **bot messaging (text receive/reply)** vertical slice is built and verified live: in-process long-polling bot (grammy) started from `instrumentation.ts`, controllable from the Overview; DB-backed bot token; deterministic addressing; LLM `chatCompletion`; traced replies. Verified live against the running dev server: autostart with no token logs a graceful "not started", Overview shows Telegram "Error — No Telegram bot token configured" with a Start control, `POST /api/telegram/bot` → 200, Settings renders the masked bot-token field; DB/LLM/model still real-probed (13 models, `gemma4:12B`).
-Next: Feature 1 remains **in-progress** — still needs the shared Debug UI (trace list/detail + JSON download) to meet the feature contract, and an end-to-end run against a real bot token (operator-supplied). Then priority 2 (system/personality prompts).
+Proof: `npm run lint` ✓, `npm run typecheck` ✓, `npm run test` ✓ (56 unit), `npm run test:integration` ✓ (22, real Postgres via Testcontainers), `npm run build` ✓ (0 warnings). The **shared Debug UI** is now built and verified live — the last feature-contract gap for both `settings` and priority-1 `bot-messaging`. A global `/debug` page (filter by feature/status, pagination, "Download all") plus a shared `/debug/[id]` detail view (metadata panel, error panel, ordered event timeline with LLM usage, per-trace JSON download) and a feature-scoped `/settings/debug`. Backed by `server/trace/service.ts` (list/detail/bundle) over the existing recorder/repository, thin `app/api/traces/**` handlers, and reusable `components/debug/*`. Verified live against the running dev server on real recorded traces: list renders 11 traces; a bot reply detail shows LLM usage (`prompt 38 · completion 184 · total 222 · 5741ms`); an error trace shows the error panel + timeline; `/settings/debug` shows only settings traces; single + filtered bundle downloads return the `llm-tg-bot/trace-bundle@1` envelope with attachment headers; no console errors.
+Realtime: the dashboard now updates **live over SSE** (user decision — not polling/WebSockets). Shared layer: in-process `server/realtime/hub.ts` pub/sub, `GET /api/events` SSE stream, `useLiveRefresh`/`LiveIndicator` client; the trace recorder publishes on create/settle. Verified live: with the page untouched, a newly recorded `test-connection` trace appeared at the top of `/debug` on its own; the `/api/events` stream stays open (200); no console errors. Debug rows are now fully clickable (stretched link) — clicking any cell opens the trace.
+Next: Feature 1 remains **in-progress** — Debug UI + trace download are now met; still needs **maintenance mode + owner checks** and an end-to-end run against a real bot token (operator-supplied). Then priority 2 (system/personality prompts).
 
 ### Session log
 
+- 2026-07-11 (follow-up 3): **Realtime updates via SSE + Debug UX fixes**
+  (user-reported: Debug list didn't live-update; trace rows weren't obviously
+  clickable). User decided the project realtime transport: **SSE, not polling
+  and not WebSockets** (see Decision Notes — one-way needs, standard Next, no
+  custom server).
+  - **Shared realtime layer:** `lib/realtime.ts` (event contract; topics
+    `traces`/`bot`/`status`), `server/realtime/hub.ts` (in-process pub/sub on a
+    `globalThis` singleton, like the bot manager — never throws), `GET
+    /api/events` SSE Route Handler (`ReadableStream`, `: ping` heartbeat every
+    25s, cleans up on `request.signal` abort; `text/event-stream` +
+    `X-Accel-Buffering: no`). Client: `components/realtime/useLiveRefresh` (one
+    `EventSource`, debounced `router.refresh()` on matching topic, auto-reconnect)
+    + `LiveIndicator` pill (Live/Connecting/Paused, click to pause). The trace
+    recorder now `publishEvent("traces")` on create and on each settle, so every
+    Debug view refreshes itself. Replaced the initial polling `AutoRefresh`
+    (deleted) with this.
+  - **Debug UX:** `TraceList` rows are now fully clickable via a stretched link
+    (`after:absolute after:inset-0` over a `relative` row) + hover state + a
+    trailing chevron — clicking any cell opens the trace.
+  - **Checks:** lint ✓, typecheck ✓, unit 56 ✓, integration 22 ✓ (recorder is
+    exercised there — re-run to confirm the publish side-effect is harmless),
+    build ✓ (0 warnings, `/api/events` route present). Verified live: untouched
+    `/debug` self-updated when a new trace was recorded via `POST
+    /api/settings/test-connection`; clicking a non-link cell (Duration) navigated
+    to the detail; SSE stream stays open (200); no console errors.
+- 2026-07-11 (follow-up 2): **Shared Debug UI — trace list/detail + JSON log
+  download** (the highest-leverage remaining foundation task; unblocks the
+  feature-contract Debug-page/download requirement for `settings` and
+  `bot-messaging`).
+  - **Server:** `server/trace/repository.ts` gained `listFeatures` (distinct
+    feature names for the filter) and `getEventsForTraces` (events for many
+    traces in one grouped `inArray` query — no N+1 for bundles). New
+    `server/trace/service.ts` is the single Debug boundary: `getTraceList`
+    (paged headers + total + feature list), `getTraceDetail` (`not_found`
+    ApiError when missing), `buildTraceBundle` (single) and
+    `buildTraceListBundle` (filtered, ≤500, events attached) → the shared
+    `traceBundleSchema` envelope. `server/trace/schema.ts` holds
+    `traceQuerySchema` (coerced `feature/status/limit/offset`), shared by the
+    routes and the Server Component pages. `server/http.ts` gained
+    `jsonDownload` (pretty JSON + `Content-Disposition: attachment`), shared by
+    every feature's export.
+  - **API (thin, `defineRoute`):** `GET /api/traces` (list),
+    `GET /api/traces/[id]` (detail), `GET /api/traces/[id]/bundle` (single
+    download), `GET /api/traces/bundle` (filtered download).
+  - **Shared components** `components/debug/*` (barrel): `TraceStatusBadge`
+    (status→tone), `JsonBlock` (server, pretty payload viewer), `TraceList`
+    (dense table), `TraceTimeline` (ordered events + LLM usage line + JSON),
+    `TraceDetail` (metadata/error/related-ids panels + timeline + download),
+    `DownloadButton` (plain `<a download>`, no client JS), `DebugFilters`
+    (the only Client Component — pushes feature/status to the URL),
+    `TraceExplorer` (composes filters + list + download-all + pagination). Also
+    added shared `lib/format.ts` (`formatTimestamp`/`formatTime`/`formatDuration`
+    — UTC-stable, no hydration drift).
+  - **Pages:** global `/debug` (list) + shared `/debug/[id]` (detail, `notFound`
+    on unknown id) + feature-scoped `/settings/debug` (reuses `TraceExplorer`
+    with `showFeatureFilter={false}`, single shared detail route via
+    `detailBasePath`). Settings page header gained a "Debug" link; nav `/debug`
+    un-`soon`ed.
+  - **Tests:** unit `lib/format.test.ts` (+6) and `server/trace/schema.test.ts`
+    (+5) → 56 unit; integration `server/trace/service.integration.test.ts` (+7:
+    list paging/feature-list, feature+status filter, detail found/not-found,
+    single + filtered bundle) → 22 integration.
+  - Checks: lint ✓, typecheck ✓, unit 56 ✓, integration 22 ✓, build ✓ (0
+    warnings, routes present). Verified live in-browser (see Current Summary).
 - 2026-07-11 (follow-up): **Bot-messaging UX polish + typing indicator.**
   - **Typing indicator**: added a `startTyping` collaborator to
     `BotMessagingDeps` — the service starts it the moment a message is addressed
@@ -258,10 +323,10 @@ Next: Feature 1 remains **in-progress** — still needs the shared Debug UI (tra
 | Phase 1: Next.js Foundation | done | lint/typecheck/test/build all pass; folders + scripts + shared infra in place | Documented in README "Repository Layout" |
 | Phase 2: Data Model and Persistence | in-progress | Drizzle schema + migrations + trace repository/recorder + `settings` table; unit 27 + integration 11 (Testcontainers); `db:migrate` verified | Add feature tables (chats/messages) with their features |
 | Phase 3: Configuration and Settings | in-progress | Config moved env→DB (user direction). DB-backed LLM-connection settings (`features/settings/*`, typed columns: base URL/API key/model), `openai` provider client (`server/llm/client.ts`), `GET`/`PATCH` `app/api/settings` + `POST /test-connection` (real `/v1/models` probe); key masked + trace-redacted; verified live. Overview/shell/health reworked onto real probes. Plan Phase 3 realigned to this direction | Add model params/prompts with their features; surface traces in shared Debug UI |
-| Phase 4: Telegram Bot Interface | in-progress | In-process long-polling bot (grammy) via `instrumentation.ts` + `server/telegram/bot-manager.ts` singleton; DB-backed token; deterministic addressing; Start/Stop API + Overview control; verified live (graceful no-token autostart, control 200). lint/typecheck/test/build ✓ | Add maintenance mode + owner checks; shared Debug UI for message traces |
+| Phase 4: Telegram Bot Interface | in-progress | In-process long-polling bot (grammy) via `instrumentation.ts` + `server/telegram/bot-manager.ts` singleton; DB-backed token; deterministic addressing; Start/Stop API + Overview control; message traces now visible in the shared Debug UI (`/debug`, LLM usage shown); verified live. lint/typecheck/test/build ✓ | Add maintenance mode + owner checks; live run with a real token |
 | Phase 5: LLM Conversation Core | todo | none | Design provider and conversation service |
-| Phase 6: Dashboard Shell | in-progress | UI kit + responsive AppShell (sidebar/drawer/topbar) built and refactored overview onto it; lint/typecheck/test/build ✓, verified live in-browser | Add feature routes/pages + shared table/debug components as features land |
-| Phase 7: Realtime and Status Updates | todo | none | Choose polling/SSE per live status need |
+| Phase 6: Dashboard Shell | in-progress | UI kit + responsive AppShell (sidebar/drawer/topbar); Overview, Settings, and now the shared Debug pages (`/debug`, `/debug/[id]`, `/settings/debug`) built on shared primitives + `components/debug/*`; lint/typecheck/test/build ✓, verified live | Add shared table/filter primitive (Debug uses a bespoke table for now); feature routes as features land |
+| Phase 7: Realtime and Status Updates | in-progress | Decision recorded (user): **SSE**, not polling/WebSockets. Shared realtime layer built: in-process `server/realtime/hub.ts` (globalThis pub/sub), `GET /api/events` SSE Route Handler (heartbeat + abort cleanup), client `useLiveRefresh` hook + `LiveIndicator`; trace recorder publishes on create/settle → Debug list live-updates. lint/typecheck/test/build pending re-run | Wire bot/LLM health + job state onto the hub as those surfaces need live updates |
 | Phase 8: Background Work Design | todo | none | Choose operating model per job |
 | Phase 9: Feature Recreation | todo | none | Start features in priority order |
 | Phase 10: Testing Strategy | todo | none | Configure unit/route/dashboard tests |
@@ -276,7 +341,7 @@ Features not listed here are not v1 by default. Add any additional feature to th
 
 | Priority | Feature | Status | Acceptance Criteria | Debug Page | Trace/Log Download | Tests | Dependencies | Next |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 | Bot messaging: text receive/reply | in-progress | defined (see 2026-07-11 log) | no | no | yes (addressing, service, chatCompletion, token masking) | settings, health, Telegram intake, LLM provider, shared traces | Build shared Debug UI + trace download; live run with a real token; add maintenance/owner |
+| 1 | Bot messaging: text receive/reply | in-progress | defined (see 2026-07-11 log) | yes (shared `/debug` + `/debug/[id]`, filter by feature) | yes (single + filtered `/api/traces/**/bundle`) | yes (addressing, service, chatCompletion, token masking, trace service/schema) | settings, health, Telegram intake, LLM provider, shared traces | Add maintenance mode + owner checks; live run with a real token |
 | 2 | System and personality prompts | todo | missing | no | no | no | settings, LLM provider | Define prompt schema and composition |
 | 3 | History feature | todo | missing | no | no | no | bot messaging, shared traces, DB schema | Design messages/history schema |
 | 4 | MCP tools basic support | todo | missing | no | no | no | LLM core, shared traces | Design tool registry and tool-call loop |
@@ -300,7 +365,7 @@ Foundation work supports features but is not a substitute for feature completion
 | LLM provider core | in-progress | `server/llm/client.ts` (`openai`): `listModels`/health probe + `chatCompletion` (reply text + normalized usage + latency, empty-response→503), base-URL normalization, `ApiError` mapping; connection sourced from DB settings; unit-tested (incl. mocked completion) + verified live | Add context assembly (history/prompts) with priorities 2–3; tool-call loop at priority 4 |
 | Telegram intake foundation | in-progress | In-process long-polling `server/telegram/bot-manager.ts` (grammy) — singleton lifecycle, DB-backed token, autostart via `instrumentation.ts` + Start/Stop API; deterministic `features/bot-messaging/server/addressing.ts` (unit-tested); verified live | Add maintenance mode, owner checks, and per-message Debug traces UI |
 | Dashboard overview | in-progress | `app/page.tsx` on real probes (`server/status.ts`: `SELECT 1` + live `/v1/models`); sidebar bot-status on cheap DB readiness; verified live | Add real metrics + Telegram status once those features land |
-| Debug traces and LLM usage | in-progress | `lib/trace.ts` types + `server/trace` recorder/repository on Drizzle, tested | Add Debug UI + trace-context in Route Handler wrapper |
+| Debug traces and LLM usage | done | `lib/trace.ts` types + `server/trace` recorder/repository/service on Drizzle; shared Debug UI (`/debug`, `/debug/[id]`, `/settings/debug`) renders steps, LLM request/response + token usage, errors, related ids; JSON bundle download; unit + integration tested; verified live | Add trace-context to the Route Handler wrapper so API calls auto-record; surface a trace link from Overview status cards |
 
 ## Shared Infrastructure Progress
 
@@ -309,14 +374,15 @@ Foundation work supports features but is not a substitute for feature completion
 | Shared Route Handler wrapper | done | `server/http.ts` (`defineRoute`, `ok`, `parseJson`, `parseQuery`, `toApiError`) + tests | Add trace-context integration when recorder lands |
 | Shared error shape | done | `lib/api-error.ts` (`ApiError`, code→status map, envelope) + tests | — |
 | Shared trace schema | done | `lib/trace.ts` types + `db/schema.ts` tables + `server/trace` repository/recorder, tested | Wire recorder into features as they land |
-| Shared log/trace export | in-progress | `traceBundleSchema` + `getTrace`/`listTraces` queries | Implement export Route Handler + download button (needs debug UI) |
+| Shared log/trace export | done | `jsonDownload` (`server/http.ts`) + `buildTraceBundle`/`buildTraceListBundle` (`server/trace/service.ts`) + `app/api/traces/[id]/bundle` & `app/api/traces/bundle` routes + `DownloadButton`; single + filtered bundle downloads verified live (attachment headers, `trace-bundle@1` envelope) | — |
 | Shared dashboard layout | done | `components/layout/AppShell` (responsive rail + mobile drawer), `Sidebar` (config-driven, active state), `Topbar`; theme toggle + tokens | Add breadcrumbs + per-route topbar title as routes grow |
 | UI kit tokens/primitives | done | `app/globals.css` semantic tokens (Tailwind v4 `@theme`, `.dark`); `components/ui/*` (Button/Card/Badge/Avatar/Progress/Separator/StatCard/EmptyState/Skeleton) + `lib/cn.ts`; verified live | Extend with Table/Tabs/Dialog/Toast when features need them |
 | Shared form components | done | `components/ui` `Input`, `Textarea`, `Select`, `Label`, `Field` (label+hint+error+aria wiring), `Switch`, `Checkbox`; first consumed by `features/settings/ui/SettingsForm.tsx` | Extract a form-state/submit helper if a 2nd feature form duplicates the fetch/status pattern |
 | Shared table/filter components | todo | none | Define pagination/filter API |
-| Shared debug components | todo | none | Define trace list/detail/download UI |
+| Shared debug components | done | `components/debug/*` (barrel): `TraceExplorer`, `TraceList` (clickable rows), `TraceDetail`, `TraceTimeline`, `JsonBlock`, `TraceStatusBadge`, `DownloadButton`, `DebugFilters`; consumed by `/debug`, `/debug/[id]`, `/settings/debug`; verified live | Add per-feature Debug pages as thin `TraceExplorer` wrappers (e.g. a bot-messaging section when it gets a dashboard route) |
+| Shared realtime (SSE) | in-progress | `lib/realtime.ts` (event contract) + `server/realtime/hub.ts` (in-process pub/sub singleton) + `GET /api/events` SSE stream + `components/realtime/useLiveRefresh` hook + `LiveIndicator` pill; trace recorder publishes `traces` events → Debug list refreshes live. Decision: SSE not polling/WS (user) | Publish `bot`/`status` topics from the bot manager + status probes; consume on Overview |
 | Shared status components | done | `components/ui/Badge` (tones+dot), `EmptyState`, `Skeleton`/`Spinner`, refactored `StatusCard`/`PageHeader` onto tokens | Add explicit error panel when debug UI lands |
-| Test harness | done | Vitest unit config (45) + Testcontainers integration config (15); `server-only` alias stub; `vi.hoisted`+`vi.mock` pattern for isolating services from persistence (see `bot-messaging/service.test.ts`) | Add Route Handler + dashboard smoke tests per feature |
+| Test harness | done | Vitest unit config (56) + Testcontainers integration config (22); `server-only` alias stub; `vi.hoisted`+`vi.mock` pattern for isolating services from persistence (see `bot-messaging/service.test.ts`) | Add Route Handler + dashboard smoke tests per feature |
 
 ## Decision Notes
 
@@ -335,7 +401,7 @@ writing `docs/decisions/*.md`. This table is the lightweight record.
 | MVP data import | done | agent default | Out of scope for v1 (fresh DB) — reconfirm with user if import is needed before cutover |
 | Telegram webhook vs polling | done | user | **Long polling, in-process** (started from `instrumentation.ts`), not a webhook and not a separate worker. Rationale: self-hosted single container behind NAT (no inbound HTTPS needed); I/O-bound handlers already run concurrently on the event loop, so a worker/thread buys nothing now. Isolated behind a bot-manager singleton so moving to a dedicated worker later (multi-replica / CPU-bound) is a contained change. |
 | Telegram poller lifecycle | done | user | **Autostart on boot** (fails gracefully and surfaces on the dashboard when no token) **+ dashboard Start/Stop** controls. Token lives in DB settings; a token change requires restart (poller binds token at start). |
-| Realtime polling vs SSE vs WebSocket | todo | — | undecided |
+| Realtime polling vs SSE vs WebSocket | done | user | **SSE via standard Route Handlers** (a single `GET /api/events` stream + client hook), not polling and not WebSockets. Rationale: all current live needs (bot/LLM health, jobs, debug traces) are one-way server→client; SSE is Next-standard, runs under `next start` and the standalone Docker image with no custom server, whereas WebSockets would require a custom Node server / separate service + sticky sessions. In-process hub (`server/realtime/hub.ts`, `globalThis` singleton) fans out to subscribers; matches the single-container model. WebSockets revisited only if a feature needs client→server streaming (e.g. browser-agent control at priority 13). |
 | Background job operating model | todo | — | undecided |
 
 ## Blockers
@@ -352,10 +418,11 @@ No blockers recorded.
 ### Current state (2026-07-11)
 
 - Phase 1 done; Phases 2/3/4/6/11 in-progress and verified: `npm run lint`,
-  `npm run typecheck`, `npm run test` (45 unit), `npm run test:integration`
-  (15, Testcontainers), `npm run build` (0 warnings), and `npm run db:migrate`
-  all pass. Priority-1 bot messaging (text receive/reply) vertical slice is
-  built and verified live in-browser.
+  `npm run typecheck`, `npm run test` (56 unit), `npm run test:integration`
+  (22, Testcontainers), `npm run build` (0 warnings) all pass. Priority-1 bot
+  messaging (text receive/reply) vertical slice is built and verified live
+  in-browser; the shared Debug UI (list/detail/download) is now built and
+  verified live too.
 - **Telegram intake is decided and built**: in-process long polling via
   `instrumentation.ts` → `server/telegram/register-node.ts` →
   `server/telegram/bot-manager.ts` (a `globalThis` singleton owning the grammy
@@ -392,16 +459,23 @@ No blockers recorded.
 - Overview, shell, and `/api/health` are **done** on real probes
   (`server/status.ts`: `getSystemStatus`/`getConfigReadiness`/`getHealth`).
   `envPresence()` is deleted — do not reintroduce presence-style status.
-- **Finish priority 1** — the vertical slice works but the feature is not `done`
-  until: (a) the **shared Debug UI** (trace list/detail + JSON viewer + log
-  download) exists — `settings` *and* `bot-messaging` already record traces with
-  no viewer; (b) an **end-to-end run with a real bot token** (operator-supplied
-  — do not create Telegram credentials); (c) **maintenance mode + owner checks**
-  are added. Then move to priority 2 (system/personality prompts), which will
-  replace the minimal default system prompt in
-  `features/bot-messaging/server/service.ts`.
-- **Shared Debug UI is now the highest-leverage next task** — it unblocks the
-  Debug-page/trace-download requirement for both `settings` and `bot-messaging`.
+- **Finish priority 1** — the vertical slice works and the **shared Debug UI +
+  trace download are now done** (`/debug`, `/debug/[id]`, `/settings/debug`;
+  `app/api/traces/**`; `components/debug/*`). Remaining for feature-1 `done`:
+  (a) an **end-to-end run with a real bot token** (operator-supplied — do not
+  create Telegram credentials); (b) **maintenance mode + owner checks**. Then
+  move to priority 2 (system/personality prompts), which will replace the
+  minimal default system prompt in `features/bot-messaging/server/service.ts`.
+- **The Debug UI is the shared surface for every future feature.** New features
+  get their Debug page for near-free: render `<TraceExplorer>` (from
+  `components/debug`) with a `feature`-scoped `getTraceList` and
+  `showFeatureFilter={false}` (see `app/settings/debug/page.tsx`). Row detail
+  links reuse the single `/debug/[id]` route. Don't build a bespoke debug UI.
+- **Next best task: maintenance mode + owner checks** for bot-messaging (owner
+  field was deferred to this phase — needs @username→id resolution via the bot).
+  Add owner + maintenance as `settings` columns (+ migration), enforce in
+  `features/bot-messaging/server/service.ts` addressing/policy, and trace the
+  decision. Then priority 2.
 - Deferred within bot messaging: markdown/HTML reply rendering (v1 is plain
   text), the MVP LLM "analyzer" addressing fallback, media/vision intake
   (priority 7), and `@grammyjs/runner` for concurrent update handling (built-in

@@ -1,6 +1,6 @@
 import "server-only";
 
-import { and, desc, eq, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, inArray, sql, type SQL } from "drizzle-orm";
 
 import type { DrizzleDb } from "@/db/drizzle";
 import { traceEvents, traces, type TraceEventRow, type TraceRow } from "@/db/schema";
@@ -171,4 +171,39 @@ export async function listTraces(
     traces: rows.map((row) => mapTraceRow(row, [])),
     total: count,
   };
+}
+
+/** Distinct feature names that have recorded traces, alphabetically. Powers the Debug filter. */
+export async function listFeatures(db: DrizzleDb): Promise<string[]> {
+  const rows = await db
+    .selectDistinct({ feature: traces.feature })
+    .from(traces)
+    .orderBy(traces.feature);
+  return rows.map((row) => row.feature);
+}
+
+/**
+ * Ordered events for many traces in one query, grouped by trace id. Used to
+ * assemble a download bundle without an N+1 per-trace fetch.
+ */
+export async function getEventsForTraces(
+  db: DrizzleDb,
+  ids: string[],
+): Promise<Map<string, TraceEvent[]>> {
+  const grouped = new Map<string, TraceEvent[]>();
+  if (ids.length === 0) return grouped;
+
+  const rows = await db
+    .select()
+    .from(traceEvents)
+    .where(inArray(traceEvents.traceId, ids))
+    .orderBy(traceEvents.traceId, traceEvents.seq);
+
+  for (const row of rows) {
+    const event = mapEventRow(row);
+    const list = grouped.get(event.traceId);
+    if (list) list.push(event);
+    else grouped.set(event.traceId, [event]);
+  }
+  return grouped;
 }

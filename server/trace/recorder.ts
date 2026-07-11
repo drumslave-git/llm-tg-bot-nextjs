@@ -13,6 +13,7 @@ import type {
   TraceLevel,
   TraceTrigger,
 } from "@/lib/trace";
+import { publishEvent } from "@/server/realtime/hub";
 import { finishTrace, insertEvent, insertTrace } from "./repository";
 
 /**
@@ -83,9 +84,14 @@ export async function startTrace(
     startedAt,
     inputSummary: input.inputSummary,
   });
+  // Notify live dashboards: a new (running) trace exists.
+  publishEvent("traces", { feature: input.feature });
 
   let seq = 0;
   let settled = false;
+
+  /** Notify live dashboards that this trace changed (settled). */
+  const notify = () => publishEvent("traces", { feature: input.feature });
 
   async function appendEvent(input: EventInput): Promise<TraceEvent> {
     const event: TraceEvent = {
@@ -124,6 +130,7 @@ export async function startTrace(
         outputSummary: finish?.outputSummary,
         relatedIds: finish?.relatedIds,
       });
+      notify();
     },
     async skip(reason, finish) {
       ensureOpen();
@@ -135,6 +142,7 @@ export async function startTrace(
         outputSummary: finish?.outputSummary ?? reason,
         relatedIds: finish?.relatedIds,
       });
+      notify();
     },
     async fail(error, finish) {
       ensureOpen();
@@ -148,6 +156,7 @@ export async function startTrace(
         error: traceError,
         relatedIds: finish?.relatedIds,
       });
+      notify();
     },
   };
 }

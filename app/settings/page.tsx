@@ -1,7 +1,9 @@
-import { Database } from "lucide-react";
+import { Bug, Database } from "lucide-react";
+import Link from "next/link";
 
 import { PageHeader } from "@/components/PageHeader";
 import {
+  Button,
   Card,
   CardContent,
   CardDescription,
@@ -39,6 +41,14 @@ export default async function SettingsPage() {
       <PageHeader
         title="Settings"
         description="Connect an OpenAI-compatible LLM endpoint and choose the model."
+        actions={
+          <Button asChild variant="outline" size="sm">
+            <Link href="/settings/debug">
+              <Bug className="h-4 w-4" aria-hidden />
+              Debug
+            </Link>
+          </Button>
+        }
       />
 
       <Card>

@@ -33,6 +33,22 @@ export function errorResponse(error: ApiError): Response {
   });
 }
 
+/**
+ * Pretty-printed JSON file download (`Content-Disposition: attachment`). Shared
+ * by every feature's Debug page for log/trace bundle export, so the download
+ * shape stays consistent. Not wrapped in the `data` envelope — the body is the
+ * file itself.
+ */
+export function jsonDownload(data: unknown, filename: string): Response {
+  return new Response(JSON.stringify(data, null, 2), {
+    status: 200,
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "content-disposition": `attachment; filename="${filename}"`,
+    },
+  });
+}
+
 /** Map any thrown value to an {@link ApiError} without leaking internals. */
 export function toApiError(err: unknown): ApiError {
   if (isApiError(err)) return err;
