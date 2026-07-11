@@ -31,11 +31,14 @@ function incoming(partial: Partial<IncomingMessage>): IncomingMessage {
   };
 }
 
+const stopTyping = vi.fn();
+
 function deps(over: Partial<BotMessagingDeps> = {}): BotMessagingDeps {
   return {
     bot: BOT,
     generateReply: vi.fn().mockResolvedValue({ content: "hi back", model: "m", latencyMs: 5 }),
     sendReply: vi.fn().mockResolvedValue(undefined),
+    startTyping: vi.fn().mockReturnValue(stopTyping),
     ...over,
   };
 }
@@ -51,6 +54,7 @@ describe("handleIncomingMessage", () => {
     expect(out).toEqual({ status: "ignored", reason: "from_bot" });
     expect(startTrace).not.toHaveBeenCalled();
     expect(d.generateReply).not.toHaveBeenCalled();
+    expect(d.startTyping).not.toHaveBeenCalled();
   });
 
   it("ignores empty messages", async () => {
@@ -70,6 +74,7 @@ describe("handleIncomingMessage", () => {
     expect(out).toEqual({ status: "ignored", reason: "not_addressed" });
     expect(startTrace).not.toHaveBeenCalled();
     expect(d.generateReply).not.toHaveBeenCalled();
+    expect(d.startTyping).not.toHaveBeenCalled();
   });
 
   it("generates and delivers a reply for an addressed message, and traces it", async () => {
@@ -84,6 +89,9 @@ describe("handleIncomingMessage", () => {
     expect(messages[1]).toEqual({ role: "user", content: "hello there" });
     expect(d.sendReply).toHaveBeenCalledWith("hi back");
     expect(recorder.succeed).toHaveBeenCalledOnce();
+    // Typing shown while generating, then stopped once the turn settles.
+    expect(d.startTyping).toHaveBeenCalledOnce();
+    expect(stopTyping).toHaveBeenCalledOnce();
   });
 
   it("fails the trace and sends a fallback reply when generation throws", async () => {
@@ -93,5 +101,7 @@ describe("handleIncomingMessage", () => {
     expect(recorder.fail).toHaveBeenCalledOnce();
     expect(d.sendReply).toHaveBeenCalledOnce();
     expect((d.sendReply as ReturnType<typeof vi.fn>).mock.calls[0][0]).toMatch(/couldn't generate/i);
+    // Typing is always stopped, even on the error path.
+    expect(stopTyping).toHaveBeenCalledOnce();
   });
 });

@@ -65,10 +65,22 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/** Telegram expires a chat action after ~5s; refresh just under that. */
+const TYPING_REFRESH_MS = 4_500;
+
 /** Build the per-message collaborators the bot-messaging service needs. */
 function buildDeps(ctx: Context, bot: { id: number; username: string }): BotMessagingDeps {
   return {
     bot,
+    startTyping() {
+      // Preserve the forum-topic thread so typing shows in the right place.
+      const threadId = ctx.message?.message_thread_id;
+      const other = threadId != null ? { message_thread_id: threadId } : undefined;
+      const tick = () => void ctx.replyWithChatAction("typing", other).catch(() => undefined);
+      tick();
+      const interval = setInterval(tick, TYPING_REFRESH_MS);
+      return () => clearInterval(interval);
+    },
     async generateReply(messages: ChatMessage[]) {
       const runtime = await getLlmRuntime();
       if (!runtime) {

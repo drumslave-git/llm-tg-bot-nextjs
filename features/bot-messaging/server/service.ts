@@ -54,6 +54,13 @@ export interface BotMessagingDeps {
   generateReply: (messages: ChatMessage[]) => Promise<GeneratedReply>;
   /** Deliver a reply back to the originating chat. */
   sendReply: (text: string) => Promise<void>;
+  /**
+   * Begin showing the "typing…" chat action, returning a function that stops it.
+   * Called as soon as a message is addressed and stopped once the turn settles,
+   * so the user sees activity during reply generation. The runtime owns
+   * refreshing the action (Telegram expires it after a few seconds).
+   */
+  startTyping: () => () => void;
   db?: DrizzleDb;
 }
 
@@ -87,60 +94,66 @@ export async function handleIncomingMessage(
   const decision = checkAddressed(incoming.message, incoming.chatType, deps.bot);
   if (!decision.addressed) return ignored("not_addressed");
 
-  const trace = await startTrace(
-    {
-      feature: FEATURE,
-      action: "reply",
-      trigger: {
-        kind: "telegram",
-        actor: incoming.fromId != null ? String(incoming.fromId) : String(incoming.chatId),
-        correlationId: `${incoming.chatId}:${incoming.messageId}`,
-      },
-      inputSummary: text.slice(0, 200),
-    },
-    db,
-  );
-
+  // Addressed: show "typing…" immediately and keep it up until the turn settles.
+  const stopTyping = deps.startTyping();
   try {
-    await trace.event({
-      type: "input",
-      message: `addressed via ${decision.source}`,
-      data: { chatType: incoming.chatType, source: decision.source },
-    });
-
-    const messages: ChatMessage[] = [
-      { role: "system", content: DEFAULT_SYSTEM_PROMPT },
-      { role: "user", content: text },
-    ];
-    await trace.event({ type: "llm_request", message: "chat completion requested" });
-
-    const reply = await deps.generateReply(messages);
-    await trace.event({
-      type: "llm_response",
-      message: "chat completion received",
-      usage: {
-        model: reply.model,
-        promptTokens: reply.usage?.promptTokens,
-        completionTokens: reply.usage?.completionTokens,
-        totalTokens: reply.usage?.totalTokens,
-        latencyMs: reply.latencyMs,
+    const trace = await startTrace(
+      {
+        feature: FEATURE,
+        action: "reply",
+        trigger: {
+          kind: "telegram",
+          actor: incoming.fromId != null ? String(incoming.fromId) : String(incoming.chatId),
+          correlationId: `${incoming.chatId}:${incoming.messageId}`,
+        },
+        inputSummary: text.slice(0, 200),
       },
-    });
+      db,
+    );
 
-    const outgoing = formatReply(reply.content);
-    await deps.sendReply(outgoing);
-    await trace.event({ type: "output", message: `replied (${outgoing.length} chars)` });
-    await trace.succeed({ outputSummary: outgoing.slice(0, 200) });
-    return { status: "replied", text: outgoing };
-  } catch (err) {
-    await trace.fail(err);
-    // Best-effort: let the user know something went wrong; never mask the
-    // original failure if this send also fails.
     try {
-      await deps.sendReply(ERROR_REPLY);
-    } catch {
-      // swallow — the trace already records the real error
+      await trace.event({
+        type: "input",
+        message: `addressed via ${decision.source}`,
+        data: { chatType: incoming.chatType, source: decision.source },
+      });
+
+      const messages: ChatMessage[] = [
+        { role: "system", content: DEFAULT_SYSTEM_PROMPT },
+        { role: "user", content: text },
+      ];
+      await trace.event({ type: "llm_request", message: "chat completion requested" });
+
+      const reply = await deps.generateReply(messages);
+      await trace.event({
+        type: "llm_response",
+        message: "chat completion received",
+        usage: {
+          model: reply.model,
+          promptTokens: reply.usage?.promptTokens,
+          completionTokens: reply.usage?.completionTokens,
+          totalTokens: reply.usage?.totalTokens,
+          latencyMs: reply.latencyMs,
+        },
+      });
+
+      const outgoing = formatReply(reply.content);
+      await deps.sendReply(outgoing);
+      await trace.event({ type: "output", message: `replied (${outgoing.length} chars)` });
+      await trace.succeed({ outputSummary: outgoing.slice(0, 200) });
+      return { status: "replied", text: outgoing };
+    } catch (err) {
+      await trace.fail(err);
+      // Best-effort: let the user know something went wrong; never mask the
+      // original failure if this send also fails.
+      try {
+        await deps.sendReply(ERROR_REPLY);
+      } catch {
+        // swallow — the trace already records the real error
+      }
+      return { status: "error", message: err instanceof Error ? err.message : String(err) };
     }
-    return { status: "error", message: err instanceof Error ? err.message : String(err) };
+  } finally {
+    stopTyping();
   }
 }

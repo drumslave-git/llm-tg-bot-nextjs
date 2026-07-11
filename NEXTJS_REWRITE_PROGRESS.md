@@ -20,6 +20,26 @@ Next: Feature 1 remains **in-progress** — still needs the shared Debug UI (tra
 
 ### Session log
 
+- 2026-07-11 (follow-up): **Bot-messaging UX polish + typing indicator.**
+  - **Typing indicator**: added a `startTyping` collaborator to
+    `BotMessagingDeps` — the service starts it the moment a message is addressed
+    and stops it in a `finally` (covers success and error paths). The bot-manager
+    implements it via `ctx.replyWithChatAction("typing")`, refreshed every 4.5s
+    (Telegram expires the action after ~5s) and forum-thread-aware. Only visible
+    in a Telegram client (not the dashboard); service tests assert it starts on an
+    addressed message, stops when settled, and is never started for ignored ones.
+  - **Settings UX fixes** (reported by user): (1) model dropdown was empty until
+    "Test connection" — the page now preloads the endpoint's models server-side
+    (`listAvailableModels`, best-effort 5s, never throws) and passes them to the
+    form; (2) after Save the masked "configured" placeholder was stale until a
+    re-nav — added `router.refresh()` after a successful save.
+  - **Overview bot card fix**: the bot-manager treated "no token" as an `error`
+    state, so a stale error persisted after saving a token. Changed no-token to a
+    plain `stopped` state; the Overview now derives the card from DB token
+    presence (Running / Stopped-ready / Not-configured), and `BotControl` disables
+    Start (with a hint) until a token is saved. Verified live: models populate on
+    open; a saved token autostarts the bot (shown Running `@…`).
+  - Checks: lint ✓, typecheck ✓, unit 45 ✓, build ✓ (0 warnings).
 - 2026-07-11: **Priority-1 feature — bot messaging: text receive/reply (vertical
   slice).** Decided the two open Phase-4 architecture questions with the user:
   Telegram intake is **long polling, in-process** (started from
