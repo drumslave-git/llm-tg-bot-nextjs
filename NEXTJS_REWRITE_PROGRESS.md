@@ -13,13 +13,66 @@ Status values:
 ## Current Summary
 
 Status: in-progress
-Owner: agent/2026-07-10
-Last updated: 2026-07-10
-Proof: `npm run lint` ✓, `npm run typecheck` ✓, `npm run test` ✓ (28 unit), `npm run test:integration` ✓ (14, real Postgres via Testcontainers), `npm run build` ✓, `npm run db:migrate` ✓. Config is fully DB-backed and all status is real-probe (env presence removed everywhere, incl. `/api/health`). Verified live: settings test-connection lists a real endpoint's 13 models + persists; Overview shows probed DB/LLM/model status; `/api/health` → 200 gated on a real `SELECT 1`.
-Next: Define acceptance criteria for priority 1 (bot messaging text receive/reply); resolve the Telegram webhook-vs-polling decision. Build the shared Debug UI (settings already records traces with no viewer yet).
+Owner: agent/2026-07-11
+Last updated: 2026-07-11
+Proof: `npm run lint` ✓, `npm run typecheck` ✓, `npm run test` ✓ (45 unit), `npm run test:integration` ✓ (15, real Postgres via Testcontainers), `npm run build` ✓ (0 warnings), `npm run db:migrate` ✓. Priority-1 **bot messaging (text receive/reply)** vertical slice is built and verified live: in-process long-polling bot (grammy) started from `instrumentation.ts`, controllable from the Overview; DB-backed bot token; deterministic addressing; LLM `chatCompletion`; traced replies. Verified live against the running dev server: autostart with no token logs a graceful "not started", Overview shows Telegram "Error — No Telegram bot token configured" with a Start control, `POST /api/telegram/bot` → 200, Settings renders the masked bot-token field; DB/LLM/model still real-probed (13 models, `gemma4:12B`).
+Next: Feature 1 remains **in-progress** — still needs the shared Debug UI (trace list/detail + JSON download) to meet the feature contract, and an end-to-end run against a real bot token (operator-supplied). Then priority 2 (system/personality prompts).
 
 ### Session log
 
+- 2026-07-11: **Priority-1 feature — bot messaging: text receive/reply (vertical
+  slice).** Decided the two open Phase-4 architecture questions with the user:
+  Telegram intake is **long polling, in-process** (started from
+  `instrumentation.ts`), **not** a separate worker (single self-hosted container,
+  I/O-bound work — the event loop already gives concurrency; a worker/thread buys
+  nothing here and is a contained change later if multi-replica/CPU-bound needs
+  arise). Poller lifecycle: **autostart on boot** (fails gracefully with no
+  token) **+ dashboard Start/Stop** controls, behind a `globalThis` bot-manager
+  singleton (Telegram allows exactly one `getUpdates` consumer per token).
+  - **Acceptance criteria (v1):** (1) operator sets LLM connection+model and a
+    Telegram bot token in DB Settings; (2) poller runs in-process, autostarts,
+    and is Start/Stop-controllable from the Overview with live status; (3) bot
+    receives text via long polling; (4) addressing — private always; group only
+    on @mention / reply-to-bot / `/cmd@bot`; un-addressed group chatter ignored;
+    (5) ignores other bots, empty messages, (media deferred); (6) generates a
+    reply via LLM `chatCompletion` using the configured model + a minimal default
+    system prompt; (7) delivers the reply (plain text, quoted, 4096-char capped);
+    (8) every handled message is traced (input→llm_request→llm_response w/ usage
+    →output, or fail); (9) provider/config errors are caught, traced, and a
+    fallback reply is sent. All met **except** the shared Debug page + trace
+    download (feature-contract items, deferred below) and a live run with a real
+    token.
+  - **Files:** settings gained a secret `telegram_bot_token` column (migration
+    `0002_lethal_logan.sql`) — schema/repository/service (masked as
+    `telegramBotTokenConfigured`, redacted from traces) + `SettingsForm` field +
+    server-only `getTelegramBotToken`/`getLlmRuntime` accessors. `server/llm/client.ts`
+    gained `chatCompletion` (reply text + normalized usage + latency, shared
+    `ApiError` mapping, empty-response → 503). New feature `features/bot-messaging/`:
+    `server/addressing.ts` (pure, deterministic), `server/reply.ts` (plain-text
+    format + truncate), `server/service.ts` (`handleIncomingMessage` — policy,
+    trace, injected collaborators), `ui/BotControl.tsx`. Runtime:
+    `server/telegram/bot-manager.ts` (singleton lifecycle: start/stop/status,
+    reads token+LLM config from DB, wires grammy→service, `bot.catch`),
+    `server/telegram/register-node.ts` (Node-only autostart + SIGTERM/SIGINT
+    graceful stop), `instrumentation.ts` (dynamically imports register-node only
+    on the Node runtime — keeps Node `process` APIs out of Edge analysis, so 0
+    build warnings). API `app/api/telegram/bot` (`GET` status, `POST start|stop`).
+    Overview rebuilt to show real bot status + control. Deps added: `grammy`,
+    `@grammyjs/types`.
+  - **Tests:** `addressing.test.ts` (10 — private/mention/reply/command/negatives),
+    `service.test.ts` (5 — ignore paths, reply+trace, error→fallback; trace
+    recorder mocked), `client.test.ts` (+2 — usage mapping, empty-response error),
+    settings integration (+1 — bot-token masking + server-only retrieval).
+  - **Deferred (feature-1 not `done` until):** shared Debug UI (trace
+    list/detail/JSON viewer + download); markdown/HTML reply rendering (v1 is
+    plain text); the MVP's LLM "analyzer" addressing fallback for
+    other-language/name references in groups (costs an LLM call per group msg);
+    media/vision intake (priority 7); grammy runner for concurrent update
+    handling (built-in polling is sequential — fine for v1). Owner + maintenance
+    mode also still pending (owner deferred to this phase originally — resolve
+    with prompts/owner work).
+  - Checks: lint ✓, typecheck ✓, unit 45 ✓, integration 15 ✓, build ✓ (0
+    warnings), db:migrate ✓. Verified live in-browser (see Current Summary).
 - 2026-07-10: **Re-validated `NEXTJS_REWRITE_PLAN.md` against the repo and the
   decision log; aligned it.** Drift fixed: (1) Phase 3 rewritten from the
   env-var config design onto the decided DB-backed Settings direction
@@ -185,7 +238,7 @@ Next: Define acceptance criteria for priority 1 (bot messaging text receive/repl
 | Phase 1: Next.js Foundation | done | lint/typecheck/test/build all pass; folders + scripts + shared infra in place | Documented in README "Repository Layout" |
 | Phase 2: Data Model and Persistence | in-progress | Drizzle schema + migrations + trace repository/recorder + `settings` table; unit 27 + integration 11 (Testcontainers); `db:migrate` verified | Add feature tables (chats/messages) with their features |
 | Phase 3: Configuration and Settings | in-progress | Config moved env→DB (user direction). DB-backed LLM-connection settings (`features/settings/*`, typed columns: base URL/API key/model), `openai` provider client (`server/llm/client.ts`), `GET`/`PATCH` `app/api/settings` + `POST /test-connection` (real `/v1/models` probe); key masked + trace-redacted; verified live. Overview/shell/health reworked onto real probes. Plan Phase 3 realigned to this direction | Add model params/prompts with their features; surface traces in shared Debug UI |
-| Phase 4: Telegram Bot Interface | todo | none | Decide webhook-first bot intake design |
+| Phase 4: Telegram Bot Interface | in-progress | In-process long-polling bot (grammy) via `instrumentation.ts` + `server/telegram/bot-manager.ts` singleton; DB-backed token; deterministic addressing; Start/Stop API + Overview control; verified live (graceful no-token autostart, control 200). lint/typecheck/test/build ✓ | Add maintenance mode + owner checks; shared Debug UI for message traces |
 | Phase 5: LLM Conversation Core | todo | none | Design provider and conversation service |
 | Phase 6: Dashboard Shell | in-progress | UI kit + responsive AppShell (sidebar/drawer/topbar) built and refactored overview onto it; lint/typecheck/test/build ✓, verified live in-browser | Add feature routes/pages + shared table/debug components as features land |
 | Phase 7: Realtime and Status Updates | todo | none | Choose polling/SSE per live status need |
@@ -203,7 +256,7 @@ Features not listed here are not v1 by default. Add any additional feature to th
 
 | Priority | Feature | Status | Acceptance Criteria | Debug Page | Trace/Log Download | Tests | Dependencies | Next |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 | Bot messaging: text receive/reply | todo | missing | no | no | no | settings, health, Telegram intake, LLM provider, shared traces | Decide webhook-first intake design |
+| 1 | Bot messaging: text receive/reply | in-progress | defined (see 2026-07-11 log) | no | no | yes (addressing, service, chatCompletion, token masking) | settings, health, Telegram intake, LLM provider, shared traces | Build shared Debug UI + trace download; live run with a real token; add maintenance/owner |
 | 2 | System and personality prompts | todo | missing | no | no | no | settings, LLM provider | Define prompt schema and composition |
 | 3 | History feature | todo | missing | no | no | no | bot messaging, shared traces, DB schema | Design messages/history schema |
 | 4 | MCP tools basic support | todo | missing | no | no | no | LLM core, shared traces | Design tool registry and tool-call loop |
@@ -224,8 +277,8 @@ Foundation work supports features but is not a substitute for feature completion
 | Area | Status | Proof | Next |
 | --- | --- | --- | --- |
 | Settings and health | in-progress | DB-backed LLM-connection settings (`features/settings/*`) with `GET`/`PATCH` + `test-connection` real probe, key masking + trace redaction, unit + integration tests. Config source is the DB, not env (`config-in-db-not-env`); Overview + `/api/health` probe real state | Extend settings columns per feature |
-| LLM provider core | in-progress | `server/llm/client.ts` (`openai`): `listModels`/health probe, base-URL normalization, `ApiError` mapping; connection sourced from DB settings; unit-tested + verified live against a real endpoint | Add chat completion + context assembly with priority-1 bot messaging |
-| Telegram intake foundation | todo | none | Decide webhook-first route shape |
+| LLM provider core | in-progress | `server/llm/client.ts` (`openai`): `listModels`/health probe + `chatCompletion` (reply text + normalized usage + latency, empty-response→503), base-URL normalization, `ApiError` mapping; connection sourced from DB settings; unit-tested (incl. mocked completion) + verified live | Add context assembly (history/prompts) with priorities 2–3; tool-call loop at priority 4 |
+| Telegram intake foundation | in-progress | In-process long-polling `server/telegram/bot-manager.ts` (grammy) — singleton lifecycle, DB-backed token, autostart via `instrumentation.ts` + Start/Stop API; deterministic `features/bot-messaging/server/addressing.ts` (unit-tested); verified live | Add maintenance mode, owner checks, and per-message Debug traces UI |
 | Dashboard overview | in-progress | `app/page.tsx` on real probes (`server/status.ts`: `SELECT 1` + live `/v1/models`); sidebar bot-status on cheap DB readiness; verified live | Add real metrics + Telegram status once those features land |
 | Debug traces and LLM usage | in-progress | `lib/trace.ts` types + `server/trace` recorder/repository on Drizzle, tested | Add Debug UI + trace-context in Route Handler wrapper |
 
@@ -243,7 +296,7 @@ Foundation work supports features but is not a substitute for feature completion
 | Shared table/filter components | todo | none | Define pagination/filter API |
 | Shared debug components | todo | none | Define trace list/detail/download UI |
 | Shared status components | done | `components/ui/Badge` (tones+dot), `EmptyState`, `Skeleton`/`Spinner`, refactored `StatusCard`/`PageHeader` onto tokens | Add explicit error panel when debug UI lands |
-| Test harness | done | Vitest unit config (21) + Testcontainers integration config (7); `server-only` alias stub | Add Route Handler + dashboard smoke tests per feature |
+| Test harness | done | Vitest unit config (45) + Testcontainers integration config (15); `server-only` alias stub; `vi.hoisted`+`vi.mock` pattern for isolating services from persistence (see `bot-messaging/service.test.ts`) | Add Route Handler + dashboard smoke tests per feature |
 
 ## Decision Notes
 
@@ -260,7 +313,8 @@ writing `docs/decisions/*.md`. This table is the lightweight record.
 | Migration workflow | done | user | `generate` committed SQL files; applied via `drizzle-kit migrate` (`npm run db:migrate`), run by the Docker entrypoint before `next start`. No in-app auto-migration (instrumentation approach rejected as non-standard). |
 | DB test strategy | done | user | Real Postgres via Testcontainers (integration suite) |
 | MVP data import | done | agent default | Out of scope for v1 (fresh DB) — reconfirm with user if import is needed before cutover |
-| Telegram webhook vs polling | todo | — | undecided |
+| Telegram webhook vs polling | done | user | **Long polling, in-process** (started from `instrumentation.ts`), not a webhook and not a separate worker. Rationale: self-hosted single container behind NAT (no inbound HTTPS needed); I/O-bound handlers already run concurrently on the event loop, so a worker/thread buys nothing now. Isolated behind a bot-manager singleton so moving to a dedicated worker later (multi-replica / CPU-bound) is a contained change. |
+| Telegram poller lifecycle | done | user | **Autostart on boot** (fails gracefully and surfaces on the dashboard when no token) **+ dashboard Start/Stop** controls. Token lives in DB settings; a token change requires restart (poller binds token at start). |
 | Realtime polling vs SSE vs WebSocket | todo | — | undecided |
 | Background job operating model | todo | — | undecided |
 
@@ -275,12 +329,21 @@ No blockers recorded.
 - Do not copy MVP modules by default.
 - Keep shared patterns ahead of feature-specific code.
 
-### Current state (2026-07-10)
+### Current state (2026-07-11)
 
-- Phase 1 done; Phases 2/3/6/11 in-progress and verified: `npm run lint`,
-  `npm run typecheck`, `npm run test` (28 unit), `npm run test:integration`
-  (14, Testcontainers), `npm run build`, and `npm run db:migrate` all pass.
-  Health route verified live as a real readiness probe.
+- Phase 1 done; Phases 2/3/4/6/11 in-progress and verified: `npm run lint`,
+  `npm run typecheck`, `npm run test` (45 unit), `npm run test:integration`
+  (15, Testcontainers), `npm run build` (0 warnings), and `npm run db:migrate`
+  all pass. Priority-1 bot messaging (text receive/reply) vertical slice is
+  built and verified live in-browser.
+- **Telegram intake is decided and built**: in-process long polling via
+  `instrumentation.ts` → `server/telegram/register-node.ts` →
+  `server/telegram/bot-manager.ts` (a `globalThis` singleton owning the grammy
+  `Bot` lifecycle). Token is DB-backed (masked `telegram_bot_token` column).
+  Autostart is best-effort/non-blocking; Start/Stop via `POST /api/telegram/bot`
+  and the Overview `BotControl`. Message policy is in
+  `features/bot-messaging/server/service.ts` (addressing → LLM → reply → trace),
+  with injected collaborators for testability.
 - The plan (`NEXTJS_REWRITE_PLAN.md`) was re-validated 2026-07-10 and now
   matches the decided directions: DB-backed config, real-probe status,
   ask-the-user decisions (no `docs/decisions/`), and the `features/settings`
@@ -309,13 +372,20 @@ No blockers recorded.
 - Overview, shell, and `/api/health` are **done** on real probes
   (`server/status.ts`: `getSystemStatus`/`getConfigReadiness`/`getHealth`).
   `envPresence()` is deleted — do not reintroduce presence-style status.
-- Define acceptance criteria for **priority 1 — bot messaging: text
-  receive/reply** (settings + LLM client now exist; still needs Telegram intake,
-  chat-completion in the provider client, shared traces). Blocker to resolve
-  first: **Telegram webhook vs polling** (still `todo` — ask the user).
-- **Shared Debug UI** (trace list/detail + JSON viewer + log download) remains
-  high-leverage: settings already records `update`/`test-connection` traces with
-  nothing to view them yet.
+- **Finish priority 1** — the vertical slice works but the feature is not `done`
+  until: (a) the **shared Debug UI** (trace list/detail + JSON viewer + log
+  download) exists — `settings` *and* `bot-messaging` already record traces with
+  no viewer; (b) an **end-to-end run with a real bot token** (operator-supplied
+  — do not create Telegram credentials); (c) **maintenance mode + owner checks**
+  are added. Then move to priority 2 (system/personality prompts), which will
+  replace the minimal default system prompt in
+  `features/bot-messaging/server/service.ts`.
+- **Shared Debug UI is now the highest-leverage next task** — it unblocks the
+  Debug-page/trace-download requirement for both `settings` and `bot-messaging`.
+- Deferred within bot messaging: markdown/HTML reply rendering (v1 is plain
+  text), the MVP LLM "analyzer" addressing fallback, media/vision intake
+  (priority 7), and `@grammyjs/runner` for concurrent update handling (built-in
+  polling is sequential — acceptable for v1).
 
 ### Testing DB work
 

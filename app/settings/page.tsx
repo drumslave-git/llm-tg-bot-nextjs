@@ -9,7 +9,7 @@ import {
   CardTitle,
   EmptyState,
 } from "@/components/ui";
-import { getSettings } from "@/features/settings/server/service";
+import { getSettings, listAvailableModels } from "@/features/settings/server/service";
 import type { Settings } from "@/features/settings/server/schema";
 import { SettingsForm } from "@/features/settings/ui/SettingsForm";
 
@@ -24,9 +24,12 @@ export const dynamic = "force-dynamic";
  */
 export default async function SettingsPage() {
   let settings: Settings | null = null;
+  let initialModels: string[] = [];
   let dbError: string | null = null;
   try {
     settings = await getSettings();
+    // Preload the endpoint's models so the dropdown is populated on open.
+    initialModels = await listAvailableModels();
   } catch (err) {
     dbError = err instanceof Error ? err.message : "Could not read settings from the database";
   }
@@ -49,7 +52,7 @@ export default async function SettingsPage() {
         </CardHeader>
         <CardContent>
           {settings ? (
-            <SettingsForm initial={settings} />
+            <SettingsForm initial={settings} initialModels={initialModels} />
           ) : (
             <EmptyState
               icon={Database}

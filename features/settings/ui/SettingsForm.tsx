@@ -1,6 +1,7 @@
 "use client";
 
 import { Check, Plug, Save } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { useCallback, useState } from "react";
 
 import { Badge, Button, Field, Input, Select } from "@/components/ui";
@@ -35,14 +36,27 @@ async function readError(res: Response): Promise<string> {
   }
 }
 
-export function SettingsForm({ initial }: { initial: Settings }) {
+export function SettingsForm({
+  initial,
+  initialModels = [],
+}: {
+  initial: Settings;
+  /** Models preloaded server-side for the saved endpoint, so the dropdown is
+   *  populated on open without a manual "Test connection". */
+  initialModels?: string[];
+}) {
+  const router = useRouter();
   const [llmBaseUrl, setLlmBaseUrl] = useState(initial.llmBaseUrl ?? "");
   const [apiKey, setApiKey] = useState("");
   const [apiKeyDirty, setApiKeyDirty] = useState(false);
+  const [botToken, setBotToken] = useState("");
+  const [botTokenDirty, setBotTokenDirty] = useState(false);
   const [model, setModel] = useState(initial.model ?? "");
-  // Seed with the saved model so it stays selectable before a re-test; a
-  // successful "Test connection" replaces this with the endpoint's full list.
-  const [models, setModels] = useState<string[]>(initial.model ? [initial.model] : []);
+  // Seed with the server-preloaded list (falling back to just the saved model);
+  // a successful "Test connection" replaces this with a fresh list.
+  const [models, setModels] = useState<string[]>(
+    initialModels.length > 0 ? initialModels : initial.model ? [initial.model] : [],
+  );
   const [conn, setConn] = useState<Conn>({ kind: "idle" });
   const [save, setSave] = useState<Save>({ kind: "idle" });
 
@@ -80,6 +94,7 @@ export function SettingsForm({ initial }: { initial: Settings }) {
       model: model === "" ? null : model,
     };
     if (apiKeyDirty) patch.apiKey = apiKey.trim() === "" ? null : apiKey.trim();
+    if (botTokenDirty) patch.telegramBotToken = botToken.trim() === "" ? null : botToken.trim();
 
     try {
       const res = await fetch("/api/settings", {
@@ -93,7 +108,11 @@ export function SettingsForm({ initial }: { initial: Settings }) {
       }
       setApiKeyDirty(false);
       setApiKey("");
+      setBotTokenDirty(false);
+      setBotToken("");
       setSave({ kind: "saved" });
+      // Re-read server state so masked "configured" placeholders reflect the save.
+      router.refresh();
     } catch {
       setSave({ kind: "error", message: "Network error — could not reach the server" });
     }
@@ -187,6 +206,31 @@ export function SettingsForm({ initial }: { initial: Settings }) {
               </option>
             ))}
           </Select>
+        )}
+      </Field>
+
+      <Field
+        id="telegramBotToken"
+        label="Telegram bot token"
+        hint="From @BotFather. Stored securely; never shown again. Save, then start the bot from the Overview."
+      >
+        {({ id, describedBy }) => (
+          <Input
+            id={id}
+            aria-describedby={describedBy}
+            type="password"
+            autoComplete="off"
+            value={botToken}
+            onChange={(e) => {
+              setBotToken(e.target.value);
+              setBotTokenDirty(true);
+            }}
+            placeholder={
+              initial.telegramBotTokenConfigured && !botTokenDirty
+                ? "•••••••• (configured)"
+                : "123456:ABC-DEF…"
+            }
+          />
         )}
       </Field>
 

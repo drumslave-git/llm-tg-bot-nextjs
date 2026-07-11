@@ -3,7 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { listTraces } from "@/server/trace/repository";
 import { startTestDb, type TestDb } from "@/test/db";
 import { getSettingsRecord } from "./repository";
-import { getSettings, updateSettings } from "./service";
+import { getSettings, getTelegramBotToken, updateSettings } from "./service";
 
 let ctx: TestDb;
 
@@ -27,6 +27,7 @@ describe("getSettings", () => {
       llmBaseUrl: null,
       model: null,
       apiKeyConfigured: false,
+      telegramBotTokenConfigured: false,
       updatedAt: null,
     });
   });
@@ -59,6 +60,18 @@ describe("updateSettings", () => {
     const cleared = await updateSettings({ apiKey: "" }, trigger, ctx.db);
     expect(cleared.apiKeyConfigured).toBe(false);
     expect((await getSettingsRecord(ctx.db))?.llmApiKey).toBeNull();
+  });
+
+  it("stores the Telegram bot token as a masked, server-only secret", async () => {
+    const set = await updateSettings({ telegramBotToken: "123:ABC-secret" }, trigger, ctx.db);
+    expect(set.telegramBotTokenConfigured).toBe(true);
+    expect(JSON.stringify(set)).not.toContain("123:ABC-secret");
+    // The raw value is retrievable server-side (for the poller), never via the client shape.
+    expect(await getTelegramBotToken(ctx.db)).toBe("123:ABC-secret");
+
+    const cleared = await updateSettings({ telegramBotToken: "" }, trigger, ctx.db);
+    expect(cleared.telegramBotTokenConfigured).toBe(false);
+    expect(await getTelegramBotToken(ctx.db)).toBeNull();
   });
 
   it("redacts the API key from recorded trace data", async () => {

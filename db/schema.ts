@@ -82,6 +82,8 @@ export const settings = pgTable(
     llmApiKey: text("llm_api_key"),
     /** Selected chat model id (from the endpoint's `/v1/models`). */
     model: text("model"),
+    /** Telegram Bot API token (from @BotFather). Secret — never returned in plaintext. */
+    telegramBotToken: text("telegram_bot_token"),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [check("settings_singleton", sql`${t.id} = 'singleton'`)],

@@ -4,6 +4,9 @@ import type { DrizzleDb } from "@/db/drizzle";
 import { getDb } from "@/db/drizzle";
 import type { TraceTrigger } from "@/lib/trace";
 import { listModels } from "@/server/llm/client";
+
+/** Short timeout so opening the Settings page stays responsive against a dead endpoint. */
+const MODELS_PRELOAD_TIMEOUT_MS = 5_000;
 import { startTrace } from "@/server/trace";
 import {
   getSettingsRecord,
@@ -29,6 +32,7 @@ function toClientSettings(record: SettingsRecord | null): Settings {
     llmBaseUrl: record?.llmBaseUrl ?? null,
     model: record?.model ?? null,
     apiKeyConfigured: Boolean(record?.llmApiKey),
+    telegramBotTokenConfigured: Boolean(record?.telegramBotToken),
     updatedAt: record?.updatedAt ?? null,
   };
 }
@@ -38,19 +42,64 @@ export async function getSettings(db: DrizzleDb = getDb()): Promise<Settings> {
   return toClientSettings(await getSettingsRecord(db));
 }
 
+/**
+ * Best-effort model list for the saved endpoint, so the Settings page can
+ * populate the model dropdown on load without a manual "Test connection".
+ * Returns an empty list (never throws) when unconfigured or unreachable — the
+ * form still lets the operator test the connection explicitly.
+ */
+export async function listAvailableModels(db: DrizzleDb = getDb()): Promise<string[]> {
+  const record = await getSettingsRecord(db);
+  if (!record?.llmBaseUrl) return [];
+  try {
+    return await listModels(
+      { baseUrl: record.llmBaseUrl, apiKey: record.llmApiKey },
+      MODELS_PRELOAD_TIMEOUT_MS,
+    );
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Server-only: the raw Telegram bot token, or null when unset. Used by the bot
+ * manager to start the poller — never exposed through an API or to clients.
+ */
+export async function getTelegramBotToken(db: DrizzleDb = getDb()): Promise<string | null> {
+  return (await getSettingsRecord(db))?.telegramBotToken ?? null;
+}
+
+/**
+ * Server-only: the saved LLM connection + model, or null when not fully
+ * configured. Used by the conversation core to generate replies.
+ */
+export async function getLlmRuntime(
+  db: DrizzleDb = getDb(),
+): Promise<{ baseUrl: string; apiKey: string | null; model: string } | null> {
+  const record = await getSettingsRecord(db);
+  if (!record?.llmBaseUrl || !record.model) return null;
+  return { baseUrl: record.llmBaseUrl, apiKey: record.llmApiKey, model: record.model };
+}
+
 /** Translate a validated update into a column patch (empty key string clears it). */
 function toPatch(input: UpdateSettings): SettingsPatch {
   const patch: SettingsPatch = {};
   if (input.llmBaseUrl !== undefined) patch.llmBaseUrl = input.llmBaseUrl;
   if (input.model !== undefined) patch.model = input.model;
   if (input.apiKey !== undefined) patch.llmApiKey = input.apiKey === "" ? null : input.apiKey;
+  if (input.telegramBotToken !== undefined) {
+    patch.telegramBotToken = input.telegramBotToken === "" ? null : input.telegramBotToken;
+  }
   return patch;
 }
 
-/** Redact the secret before it reaches trace storage. */
+/** Redact secrets before they reach trace storage. */
 function redact(input: UpdateSettings): Record<string, unknown> {
-  const { apiKey, ...rest } = input;
-  return apiKey === undefined ? rest : { ...rest, apiKey: "«redacted»" };
+  const { apiKey, telegramBotToken, ...rest } = input;
+  const out: Record<string, unknown> = { ...rest };
+  if (apiKey !== undefined) out.apiKey = "«redacted»";
+  if (telegramBotToken !== undefined) out.telegramBotToken = "«redacted»";
+  return out;
 }
 
 /** Apply a validated partial update, recording the change as a trace. */

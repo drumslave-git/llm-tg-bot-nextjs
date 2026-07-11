@@ -21,6 +21,28 @@ export interface LlmConnection {
 }
 
 const LIST_MODELS_TIMEOUT_MS = 15_000;
+const CHAT_COMPLETION_TIMEOUT_MS = 120_000;
+
+/** A single chat turn sent to the model. */
+export interface ChatMessage {
+  role: "system" | "user" | "assistant";
+  content: string;
+}
+
+/** Normalized token usage for a completion, when the provider reports it. */
+export interface ChatUsage {
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
+}
+
+/** Result of a chat completion: the assistant text plus metadata for tracing. */
+export interface ChatCompletionResult {
+  content: string;
+  model: string;
+  usage?: ChatUsage;
+  latencyMs: number;
+}
 
 /** Normalize any base URL to its OpenAI-compatible `/v1` form. */
 export function toOpenAiBaseUrl(base: string): string {
@@ -79,6 +101,44 @@ export async function listModels(
       if (id) seen.add(id);
     }
     return [...seen].sort((a, b) => a.localeCompare(b));
+  } catch (err) {
+    throw toLlmError(err, conn.baseUrl);
+  }
+}
+
+/**
+ * Generate a chat completion from an OpenAI-compatible endpoint. Returns the
+ * assistant's reply text plus model/usage/latency for trace recording. Throws a
+ * clean {@link ApiError} on provider/network failure, and `service_unavailable`
+ * if the endpoint returns no assistant content.
+ */
+export async function chatCompletion(
+  conn: LlmConnection,
+  input: { model: string; messages: ChatMessage[]; timeoutMs?: number },
+): Promise<ChatCompletionResult> {
+  const start = Date.now();
+  try {
+    const completion = await client(conn).chat.completions.create(
+      { model: input.model, messages: input.messages },
+      { timeout: input.timeoutMs ?? CHAT_COMPLETION_TIMEOUT_MS },
+    );
+    const latencyMs = Date.now() - start;
+    const content = completion.choices[0]?.message?.content?.trim() ?? "";
+    if (!content) {
+      throw ApiError.serviceUnavailable("LLM returned an empty response");
+    }
+    return {
+      content,
+      model: completion.model || input.model,
+      usage: completion.usage
+        ? {
+            promptTokens: completion.usage.prompt_tokens,
+            completionTokens: completion.usage.completion_tokens,
+            totalTokens: completion.usage.total_tokens,
+          }
+        : undefined,
+      latencyMs,
+    };
   } catch (err) {
     throw toLlmError(err, conn.baseUrl);
   }

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { toOpenAiBaseUrl } from "./client";
 
@@ -14,5 +14,52 @@ describe("toOpenAiBaseUrl", () => {
 
   it("rejects a blank URL", () => {
     expect(() => toOpenAiBaseUrl("   ")).toThrow();
+  });
+});
+
+// Mock the OpenAI SDK so chatCompletion can be tested without a live endpoint.
+const createMock = vi.fn();
+vi.mock("openai", () => {
+  class OpenAI {
+    chat = { completions: { create: createMock } };
+    models = { list: vi.fn() };
+  }
+  class APIError extends Error {}
+  class APIConnectionError extends Error {}
+  class APIConnectionTimeoutError extends Error {}
+  return { default: OpenAI, APIError, APIConnectionError, APIConnectionTimeoutError };
+});
+
+describe("chatCompletion", () => {
+  afterEach(() => createMock.mockReset());
+
+  const conn = { baseUrl: "http://localhost:11434", apiKey: null };
+
+  it("returns trimmed content, model, and normalized usage", async () => {
+    const { chatCompletion } = await import("./client");
+    createMock.mockResolvedValue({
+      model: "gemma:12b",
+      choices: [{ message: { content: "  hello there  " } }],
+      usage: { prompt_tokens: 10, completion_tokens: 4, total_tokens: 14 },
+    });
+
+    const result = await chatCompletion(conn, {
+      model: "gemma:12b",
+      messages: [{ role: "user", content: "hi" }],
+    });
+
+    expect(result.content).toBe("hello there");
+    expect(result.model).toBe("gemma:12b");
+    expect(result.usage).toEqual({ promptTokens: 10, completionTokens: 4, totalTokens: 14 });
+    expect(result.latencyMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it("throws service_unavailable when the model returns empty content", async () => {
+    const { chatCompletion } = await import("./client");
+    createMock.mockResolvedValue({ model: "m", choices: [{ message: { content: "   " } }] });
+
+    await expect(
+      chatCompletion(conn, { model: "m", messages: [{ role: "user", content: "hi" }] }),
+    ).rejects.toMatchObject({ code: "service_unavailable" });
   });
 });

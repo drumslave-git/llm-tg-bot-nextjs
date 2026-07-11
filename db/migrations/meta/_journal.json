@@ -15,6 +15,13 @@
       "when": 1783683996654,
       "tag": "0001_equal_guardian",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1783767511654,
+      "tag": "0002_lethal_logan",
+      "breakpoints": true
     }
   ]
 }

@@ -1,0 +1,1 @@
+ALTER TABLE "settings" ADD COLUMN "telegram_bot_token" text;

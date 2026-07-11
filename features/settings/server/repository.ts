@@ -16,11 +16,12 @@ import { settings, type SettingsRow } from "@/db/schema";
 /** Fixed primary key of the one settings row (enforced by a DB check constraint). */
 export const SETTINGS_ID = "singleton";
 
-/** Internal settings record, including the secret API key. */
+/** Internal settings record, including the secret API key and bot token. */
 export interface SettingsRecord {
   llmBaseUrl: string | null;
   llmApiKey: string | null;
   model: string | null;
+  telegramBotToken: string | null;
   updatedAt: string | null;
 }
 
@@ -29,6 +30,7 @@ export interface SettingsPatch {
   llmBaseUrl?: string | null;
   llmApiKey?: string | null;
   model?: string | null;
+  telegramBotToken?: string | null;
 }
 
 function mapRow(row: SettingsRow): SettingsRecord {
@@ -36,6 +38,7 @@ function mapRow(row: SettingsRow): SettingsRecord {
     llmBaseUrl: row.llmBaseUrl,
     llmApiKey: row.llmApiKey,
     model: row.model,
+    telegramBotToken: row.telegramBotToken,
     updatedAt: row.updatedAt.toISOString(),
   };
 }

@@ -12,6 +12,7 @@ import { z } from "zod";
 const baseUrl = z.string().trim().url().max(500);
 const model = z.string().trim().min(1).max(200);
 const apiKey = z.string().trim().max(500);
+const botToken = z.string().trim().max(200);
 
 /** Settings as returned to clients — no secret values. */
 export const settingsSchema = z.object({
@@ -21,6 +22,8 @@ export const settingsSchema = z.object({
   model: model.nullable(),
   /** Whether an API key is stored (the value itself is never exposed). */
   apiKeyConfigured: z.boolean(),
+  /** Whether a Telegram bot token is stored (the value itself is never exposed). */
+  telegramBotTokenConfigured: z.boolean(),
   /** Last write time, or null if never configured. */
   updatedAt: z.string().datetime().nullable(),
 });
@@ -37,6 +40,7 @@ export const updateSettingsSchema = z
     llmBaseUrl: baseUrl.nullable(),
     model: model.nullable(),
     apiKey: apiKey.nullable(),
+    telegramBotToken: botToken.nullable(),
   })
   .partial()
   .refine((v) => Object.keys(v).length > 0, {
