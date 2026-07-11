@@ -13,6 +13,8 @@ import {
 } from "@/components/ui";
 import { getSettings, listAvailableModels } from "@/features/settings/server/service";
 import type { Settings } from "@/features/settings/server/schema";
+import { listUsers } from "@/features/known-users/server/service";
+import type { KnownUser } from "@/features/known-users/server/schema";
 import { SettingsForm } from "@/features/settings/ui/SettingsForm";
 
 // Settings are read from the database at request time.
@@ -27,11 +29,14 @@ export const dynamic = "force-dynamic";
 export default async function SettingsPage() {
   let settings: Settings | null = null;
   let initialModels: string[] = [];
+  let knownUsers: KnownUser[] = [];
   let dbError: string | null = null;
   try {
     settings = await getSettings();
     // Preload the endpoint's models so the dropdown is populated on open.
     initialModels = await listAvailableModels();
+    // Known users populate the owner dropdown.
+    knownUsers = await listUsers();
   } catch (err) {
     dbError = err instanceof Error ? err.message : "Could not read settings from the database";
   }
@@ -40,7 +45,7 @@ export default async function SettingsPage() {
     <>
       <PageHeader
         title="Settings"
-        description="Connect an OpenAI-compatible LLM endpoint and choose the model."
+        description="Connect an LLM endpoint, set the Telegram token, and control owner access."
         actions={
           <Button asChild variant="outline" size="sm">
             <Link href="/settings/debug">
@@ -54,7 +59,7 @@ export default async function SettingsPage() {
       <Card>
         <CardHeader>
           <div>
-            <CardTitle>LLM connection</CardTitle>
+            <CardTitle>Bot configuration</CardTitle>
             <CardDescription>
               Stored in the database and used for every reply. Changes are recorded as a trace.
             </CardDescription>
@@ -62,7 +67,7 @@ export default async function SettingsPage() {
         </CardHeader>
         <CardContent>
           {settings ? (
-            <SettingsForm initial={settings} initialModels={initialModels} />
+            <SettingsForm initial={settings} initialModels={initialModels} knownUsers={knownUsers} />
           ) : (
             <EmptyState
               icon={Database}

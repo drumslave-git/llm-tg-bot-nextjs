@@ -26,4 +26,12 @@ export { Skeleton, Spinner } from "./Skeleton";
 export { Slot } from "./Slot";
 export { StatCard } from "./StatCard";
 export { Switch } from "./Switch";
+export {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeaderCell,
+  TableRow,
+} from "./Table";
 export { Textarea } from "./Textarea";

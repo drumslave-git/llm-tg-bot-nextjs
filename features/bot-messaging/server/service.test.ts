@@ -33,9 +33,12 @@ function incoming(partial: Partial<IncomingMessage>): IncomingMessage {
 
 const stopTyping = vi.fn();
 
+const OPEN_POLICY = { ownerUserId: null, maintenanceModeEnabled: false } as const;
+
 function deps(over: Partial<BotMessagingDeps> = {}): BotMessagingDeps {
   return {
     bot: BOT,
+    policy: OPEN_POLICY,
     generateReply: vi.fn().mockResolvedValue({ content: "hi back", model: "m", latencyMs: 5 }),
     sendReply: vi.fn().mockResolvedValue(undefined),
     startTyping: vi.fn().mockReturnValue(stopTyping),
@@ -128,6 +131,53 @@ describe("handleIncomingMessage", () => {
     expect(byMessage("response").data).toEqual(responseBody);
     // Delivered message carries the full content.
     expect(byMessage("send message").data.content).toBe(reply);
+  });
+
+  it("blocks a non-owner in maintenance mode: sends a static notice, traces (skipped), no LLM", async () => {
+    const d = deps({ policy: { ownerUserId: "1", maintenanceModeEnabled: true } });
+    const out = await handleIncomingMessage(incoming({ text: "hello", fromId: 100 }), d);
+    expect(out).toEqual({ status: "ignored", reason: "maintenance_mode", source: "private" });
+    // Addressed-but-blocked is still traced for operator visibility, then skipped.
+    expect(startTrace).toHaveBeenCalledOnce();
+    expect(recorder.skip).toHaveBeenCalledOnce();
+    expect(recorder.succeed).not.toHaveBeenCalled();
+    // No LLM call, but a static maintenance notice is sent to the user.
+    expect(d.generateReply).not.toHaveBeenCalled();
+    expect(d.sendReply).toHaveBeenCalledOnce();
+    expect((d.sendReply as ReturnType<typeof vi.fn>).mock.calls[0][0]).toMatch(/maintenance mode/i);
+    expect(d.startTyping).not.toHaveBeenCalled();
+    const blocked = recorder.event.mock.calls
+      .map((c) => c[0])
+      .find((e) => e.message === "maintenance mode — blocked");
+    expect(blocked.data).toEqual({ reason: "not_owner" });
+  });
+
+  it("lets the owner through in maintenance mode (matched by id)", async () => {
+    const d = deps({ policy: { ownerUserId: "7", maintenanceModeEnabled: true } });
+    const out = await handleIncomingMessage(incoming({ text: "hi", fromId: 7 }), d);
+    expect(out).toEqual({ status: "replied", text: "hi back" });
+    expect(d.generateReply).toHaveBeenCalledOnce();
+    expect(recorder.succeed).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the owner fully functional in a group during maintenance (reply-to-bot)", async () => {
+    // Reply-to-bot addressing (not a direct mention) still gets a normal reply —
+    // maintenance mode imposes no extra restriction on the owner.
+    const m = {
+      message_id: 7,
+      date: 0,
+      chat: { id: 5, type: "group" },
+      text: "thanks",
+      reply_to_message: { message_id: 1, from: { id: BOT.id, is_bot: true } },
+    } as unknown as Message;
+    const d = deps({ policy: { ownerUserId: "7", maintenanceModeEnabled: true } });
+    const out = await handleIncomingMessage(
+      incoming({ message: m, chatType: "group", text: "thanks", fromId: 7 }),
+      d,
+    );
+    expect(out).toEqual({ status: "replied", text: "hi back" });
+    expect(d.generateReply).toHaveBeenCalledOnce();
+    expect(recorder.succeed).toHaveBeenCalledOnce();
   });
 
   it("fails the trace and sends a fallback reply when generation throws", async () => {

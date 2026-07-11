@@ -2,6 +2,8 @@ import "server-only";
 
 import type { DrizzleDb } from "@/db/drizzle";
 import { getDb } from "@/db/drizzle";
+import { getKnownUser } from "@/features/known-users/server/repository";
+import { ApiError } from "@/lib/api-error";
 import type { TraceTrigger } from "@/lib/trace";
 import { listModels } from "@/server/llm/client";
 
@@ -33,6 +35,9 @@ function toClientSettings(record: SettingsRecord | null): Settings {
     model: record?.model ?? null,
     apiKeyConfigured: Boolean(record?.llmApiKey),
     telegramBotTokenConfigured: Boolean(record?.telegramBotToken),
+    ownerUsername: record?.ownerUsername ?? null,
+    ownerUserId: record?.ownerUserId ?? null,
+    maintenanceModeEnabled: record?.maintenanceModeEnabled ?? false,
     updatedAt: record?.updatedAt ?? null,
   };
 }
@@ -81,6 +86,27 @@ export async function getLlmRuntime(
   return { baseUrl: record.llmBaseUrl, apiKey: record.llmApiKey, model: record.model };
 }
 
+/** The owner + maintenance state the bot needs to police an incoming message. */
+export interface BotPolicy {
+  /** Owner's numeric user id (chosen from known users), or null when unset. */
+  ownerUserId: string | null;
+  /** Whether maintenance mode is on. */
+  maintenanceModeEnabled: boolean;
+}
+
+/**
+ * Server-only: read the owner/maintenance policy. The owner is chosen by id from
+ * the known-users list, so this is a pure read — no resolution needed. Cheap
+ * enough to run per message.
+ */
+export async function getBotPolicy(db: DrizzleDb = getDb()): Promise<BotPolicy> {
+  const record = await getSettingsRecord(db);
+  return {
+    ownerUserId: record?.ownerUserId ?? null,
+    maintenanceModeEnabled: record?.maintenanceModeEnabled ?? false,
+  };
+}
+
 /** Translate a validated update into a column patch (empty key string clears it). */
 function toPatch(input: UpdateSettings): SettingsPatch {
   const patch: SettingsPatch = {};
@@ -90,7 +116,25 @@ function toPatch(input: UpdateSettings): SettingsPatch {
   if (input.telegramBotToken !== undefined) {
     patch.telegramBotToken = input.telegramBotToken === "" ? null : input.telegramBotToken;
   }
+  if (input.maintenanceModeEnabled !== undefined) {
+    patch.maintenanceModeEnabled = input.maintenanceModeEnabled;
+  }
   return patch;
+}
+
+/**
+ * Resolve the owner selection into a column patch. The owner is picked by id from
+ * known users; we validate it exists and denormalize the @username for display.
+ * A null id clears the owner.
+ */
+async function ownerPatch(
+  db: DrizzleDb,
+  ownerUserId: string | null,
+): Promise<Pick<SettingsPatch, "ownerUserId" | "ownerUsername">> {
+  if (!ownerUserId) return { ownerUserId: null, ownerUsername: null };
+  const user = await getKnownUser(db, ownerUserId);
+  if (!user) throw ApiError.badRequest("Selected owner is not a known user");
+  return { ownerUserId: user.userId, ownerUsername: user.username };
 }
 
 /** Redact secrets before they reach trace storage. */
@@ -115,7 +159,11 @@ export async function updateSettings(
   );
   try {
     await trace.event({ type: "input", message: "settings update", data: redact(input) });
-    const record = await upsertSettings(db, toPatch(input));
+    const patch = toPatch(input);
+    if (input.ownerUserId !== undefined) {
+      Object.assign(patch, await ownerPatch(db, input.ownerUserId));
+    }
+    const record = await upsertSettings(db, patch);
     await trace.event({ type: "db", message: "settings row upserted" });
     await trace.succeed({
       outputSummary: `Updated ${fields.join(", ")}`,

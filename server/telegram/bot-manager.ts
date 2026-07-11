@@ -2,12 +2,18 @@ import "server-only";
 
 import { Bot, type Context } from "grammy";
 
-import { getLlmRuntime, getTelegramBotToken } from "@/features/settings/server/service";
+import {
+  getBotPolicy,
+  getLlmRuntime,
+  getTelegramBotToken,
+} from "@/features/settings/server/service";
+import type { BotPolicy } from "@/features/settings/server/service";
 import {
   handleIncomingMessage,
   type BotMessagingDeps,
   type IncomingMessage,
 } from "@/features/bot-messaging/server/service";
+import { rememberUser } from "@/features/known-users/server/service";
 import { ApiError } from "@/lib/api-error";
 import { chatCompletion, type ChatMessage } from "@/server/llm/client";
 
@@ -69,9 +75,14 @@ function errorMessage(err: unknown): string {
 const TYPING_REFRESH_MS = 4_500;
 
 /** Build the per-message collaborators the bot-messaging service needs. */
-function buildDeps(ctx: Context, bot: { id: number; username: string }): BotMessagingDeps {
+function buildDeps(
+  ctx: Context,
+  bot: { id: number; username: string },
+  policy: BotPolicy,
+): BotMessagingDeps {
   return {
     bot,
+    policy,
     startTyping() {
       // Preserve the forum-topic thread so typing shows in the right place.
       const threadId = ctx.message?.message_thread_id;
@@ -104,6 +115,18 @@ async function onMessage(ctx: Context): Promise<void> {
   const message = ctx.message;
   if (!message || !ctx.chat) return;
 
+  // Remember every human sender (all messages, addressed or not) so the operator
+  // can see who talks to the bot and pick the owner from a concrete list.
+  const from = ctx.from;
+  if (from && !from.is_bot) {
+    await rememberUser({
+      userId: String(from.id),
+      username: from.username?.toLowerCase() ?? null,
+      firstName: from.first_name ?? null,
+      lastName: from.last_name ?? null,
+    });
+  }
+
   const incoming: IncomingMessage = {
     message,
     chatId: ctx.chat.id,
@@ -114,7 +137,12 @@ async function onMessage(ctx: Context): Promise<void> {
     text: message.text ?? message.caption ?? "",
   };
 
-  await handleIncomingMessage(incoming, buildDeps(ctx, { id: ctx.me.id, username: ctx.me.username }));
+  const policy = await getBotPolicy();
+
+  await handleIncomingMessage(
+    incoming,
+    buildDeps(ctx, { id: ctx.me.id, username: ctx.me.username }, policy),
+  );
 }
 
 /**

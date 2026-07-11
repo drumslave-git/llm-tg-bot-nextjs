@@ -35,7 +35,7 @@ export async function startTestDb(): Promise<TestDb> {
   return {
     db,
     async truncate() {
-      await pool.query('TRUNCATE TABLE "trace_events", "traces", "settings" CASCADE');
+      await pool.query('TRUNCATE TABLE "trace_events", "traces", "settings", "known_users" CASCADE');
     },
     async stop() {
       await pool.end();

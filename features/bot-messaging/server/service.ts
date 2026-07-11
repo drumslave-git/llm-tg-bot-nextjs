@@ -7,6 +7,7 @@ import { getDb } from "@/db/drizzle";
 import type { ChatMessage, ChatUsage } from "@/server/llm/client";
 import { startTrace } from "@/server/trace";
 import { checkAddressed, type AddressSource, type BotIdentity } from "./addressing";
+import { checkMaintenance, isOwner, type BotPolicy } from "./policy";
 import { formatReply } from "./reply";
 
 /**
@@ -26,6 +27,10 @@ const DEFAULT_SYSTEM_PROMPT =
   "Keep replies concise and plain-text.";
 
 const ERROR_REPLY = "Sorry — I couldn't generate a reply just now. Please try again.";
+
+const MAINTENANCE_REPLY =
+  "🛠️ The bot is in maintenance mode and is only responding to its owner right now. " +
+  "Please try again later.";
 
 /** Result of a reply generation, as returned by the injected generator. */
 export interface GeneratedReply {
@@ -63,6 +68,8 @@ export interface BotMessagingDeps {
    * refreshing the action (Telegram expires it after a few seconds).
    */
   startTyping: () => () => void;
+  /** Owner + maintenance-mode state, resolved from settings by the runtime. */
+  policy: BotPolicy;
   db?: DrizzleDb;
 }
 
@@ -72,7 +79,7 @@ export type HandleOutcome =
   | { status: "error"; message: string };
 
 /** Reason codes for an ignored message (kept stable for logs/metrics). */
-type IgnoreReason = "from_bot" | "no_content" | "not_addressed";
+type IgnoreReason = "from_bot" | "no_content" | "not_addressed" | "maintenance_mode";
 
 function ignored(reason: IgnoreReason, source?: AddressSource): HandleOutcome {
   return { status: "ignored", reason, source };
@@ -95,6 +102,52 @@ export async function handleIncomingMessage(
 
   const decision = checkAddressed(incoming.message, incoming.chatType, deps.bot);
   if (!decision.addressed) return ignored("not_addressed");
+
+  // Maintenance gate: the bot stays fully functional for the owner; everyone
+  // else is turned away with a static notice (not silence) and generates no LLM
+  // reply. The block is still traced so the operator sees who was turned away.
+  const owner = isOwner({ fromId: incoming.fromId }, deps.policy);
+  const maintenance = checkMaintenance({ policy: deps.policy, owner });
+  if (maintenance.blocked) {
+    const trace = await startTrace(
+      {
+        feature: FEATURE,
+        action: "reply",
+        trigger: {
+          kind: "telegram",
+          actor: incoming.fromId != null ? String(incoming.fromId) : String(incoming.chatId),
+          correlationId: `${incoming.chatId}:${incoming.messageId}`,
+        },
+        inputSummary: text,
+      },
+      db,
+    );
+    await trace.event({
+      type: "step",
+      level: "success",
+      message: "addressing check",
+      data: { addressed: true, reason: decision.source },
+    });
+    await trace.event({
+      type: "step",
+      level: "warn",
+      message: "maintenance mode — blocked",
+      data: { reason: maintenance.reason },
+    });
+    // Best-effort: let the user know it's maintenance, not a failure.
+    try {
+      await deps.sendReply(MAINTENANCE_REPLY);
+      await trace.event({
+        type: "output",
+        message: "maintenance notice sent",
+        data: { content: MAINTENANCE_REPLY },
+      });
+    } catch {
+      // swallow — the trace still records the block
+    }
+    await trace.skip(undefined, { outputSummary: `maintenance mode — ${maintenance.reason}` });
+    return ignored("maintenance_mode", decision.source);
+  }
 
   // Addressed: show "typing…" immediately and keep it up until the turn settles.
   const stopTyping = deps.startTyping();

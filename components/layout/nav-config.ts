@@ -4,6 +4,7 @@ import {
   MessageSquare,
   Settings,
   SlidersHorizontal,
+  Users,
   type LucideIcon,
 } from "lucide-react";
 
@@ -31,6 +32,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { href: "/", label: "Overview", icon: LayoutDashboard },
       { href: "/history", label: "History", icon: MessageSquare, soon: true },
+      { href: "/users", label: "Users", icon: Users },
       { href: "/debug", label: "Debug", icon: Bug },
     ],
   },

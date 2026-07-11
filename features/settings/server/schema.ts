@@ -14,6 +14,9 @@ const model = z.string().trim().min(1).max(200);
 const apiKey = z.string().trim().max(500);
 const botToken = z.string().trim().max(200);
 
+/** Owner is chosen from known users; the id is Telegram's numeric user id. */
+const ownerUserId = z.string().trim().regex(/^\d+$/, "Invalid user id");
+
 /** Settings as returned to clients — no secret values. */
 export const settingsSchema = z.object({
   /** OpenAI-compatible endpoint base URL, or null when unconfigured. */
@@ -24,6 +27,12 @@ export const settingsSchema = z.object({
   apiKeyConfigured: z.boolean(),
   /** Whether a Telegram bot token is stored (the value itself is never exposed). */
   telegramBotTokenConfigured: z.boolean(),
+  /** Owner's numeric user id (chosen from known users), or null when unset. */
+  ownerUserId: z.string().nullable(),
+  /** Owner's @username, denormalized from the chosen known user (display only). */
+  ownerUsername: z.string().nullable(),
+  /** Whether maintenance mode is on. */
+  maintenanceModeEnabled: z.boolean(),
   /** Last write time, or null if never configured. */
   updatedAt: z.string().datetime().nullable(),
 });
@@ -41,6 +50,8 @@ export const updateSettingsSchema = z
     model: model.nullable(),
     apiKey: apiKey.nullable(),
     telegramBotToken: botToken.nullable(),
+    ownerUserId: ownerUserId.nullable(),
+    maintenanceModeEnabled: z.boolean(),
   })
   .partial()
   .refine((v) => Object.keys(v).length > 0, {

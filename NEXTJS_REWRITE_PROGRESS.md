@@ -15,12 +15,125 @@ Status values:
 Status: in-progress
 Owner: agent/2026-07-11
 Last updated: 2026-07-11
-Proof: `npm run lint` ✓, `npm run typecheck` ✓, `npm run test` ✓ (57 unit), `npm run test:integration` ✓ (22, real Postgres via Testcontainers), `npm run build` ✓ (0 warnings). The **shared Debug UI** is now built and verified live — the last feature-contract gap for both `settings` and priority-1 `bot-messaging`. A global `/debug` page (filter by feature/status, pagination, "Download all") plus a shared `/debug/[id]` detail view (metadata panel, error panel, ordered event timeline with LLM usage, per-trace JSON download) and a feature-scoped `/settings/debug`. Backed by `server/trace/service.ts` (list/detail/bundle) over the existing recorder/repository, thin `app/api/traces/**` handlers, and reusable `components/debug/*`. Verified live against the running dev server on real recorded traces: list renders 11 traces; a bot reply detail shows LLM usage (`prompt 38 · completion 184 · total 222 · 5741ms`); an error trace shows the error panel + timeline; `/settings/debug` shows only settings traces; single + filtered bundle downloads return the `llm-tg-bot/trace-bundle@1` envelope with attachment headers; no console errors.
+Proof: `npm run lint` ✓, `npm run typecheck` ✓, `npm run test` ✓ (72 unit), `npm run test:integration` ✓ (31, real Postgres via Testcontainers), `npm run build` ✓ (0 warnings). **Known users + owner-by-dropdown**: a `known_users` table (migration `0004`) capturing everyone who messages the bot, a `/users` page with inline alias editing, and the owner is now chosen from a **dropdown of known users** (id stored directly — the earlier lazy @username→id resolution is removed). **Maintenance mode + owner checks** built and verified live (a pure `bot-messaging/policy.ts`; blocked-but-addressed messages traced as skipped). The **shared Debug UI** is now built and verified live — the last feature-contract gap for both `settings` and priority-1 `bot-messaging`. A global `/debug` page (filter by feature/status, pagination, "Download all") plus a shared `/debug/[id]` detail view (metadata panel, error panel, ordered event timeline with LLM usage, per-trace JSON download) and a feature-scoped `/settings/debug`. Backed by `server/trace/service.ts` (list/detail/bundle) over the existing recorder/repository, thin `app/api/traces/**` handlers, and reusable `components/debug/*`. Verified live against the running dev server on real recorded traces: list renders 11 traces; a bot reply detail shows LLM usage (`prompt 38 · completion 184 · total 222 · 5741ms`); an error trace shows the error panel + timeline; `/settings/debug` shows only settings traces; single + filtered bundle downloads return the `llm-tg-bot/trace-bundle@1` envelope with attachment headers; no console errors.
 Realtime: the dashboard now updates **live over SSE** (user decision — not polling/WebSockets). Shared layer: in-process `server/realtime/hub.ts` pub/sub, `GET /api/events` SSE stream, `useLiveRefresh`/`LiveIndicator` client; the trace recorder publishes on create/settle. Verified live: with the page untouched, a newly recorded `test-connection` trace appeared at the top of `/debug` on its own; the `/api/events` stream stays open (200); no console errors. Debug rows are now fully clickable (stretched link) — clicking any cell opens the trace.
-Next: Feature 1 remains **in-progress** — Debug UI + trace download are now met; still needs **maintenance mode + owner checks** and an end-to-end run against a real bot token (operator-supplied). Then priority 2 (system/personality prompts).
+Next: Feature 1 remains **in-progress** — Debug UI + trace download and now **maintenance mode + owner checks** are met; the only remaining item is an end-to-end run against a real bot token (operator-supplied). Then priority 2 (system/personality prompts).
 
 ### Session log
 
+- 2026-07-11 (follow-up 10): **Maintenance mode simplified to owner-vs-everyone**
+  (user clarification — supersedes the group-@mention rule from follow-ups 6/9).
+  In maintenance mode the bot is **fully functional for the owner** (normal
+  addressing only — no extra "must @mention in a group" restriction) and closed
+  to everyone else, who always get the static `MAINTENANCE_REPLY`. Dropped the
+  `group_requires_mention` reason and the `isGroup`/`source` args from
+  `checkMaintenance` (now just `{ policy, owner }`). Updated the maintenance-mode
+  hint in `SettingsForm`. Tests: `policy.test.ts` (removed the group-mention
+  case), `service.test.ts` (owner is now fully functional in a group during
+  maintenance; block-event data is `{ reason: "not_owner" }`). lint ✓,
+  typecheck ✓, unit 71 ✓, build ✓ (0 warnings). Telegram-path behavior — covered
+  by unit tests, not browser-verifiable.
+- 2026-07-11 (follow-up 9): **Maintenance-mode notice for non-owners** (user
+  request). A non-owner who addresses the bot during maintenance now gets a
+  static reply (`MAINTENANCE_REPLY`) explaining maintenance mode instead of
+  silent ignore — sent best-effort and recorded as a `maintenance notice sent`
+  output event; the trace still settles `skipped` and no LLM runs. The owner,
+  blocked only for missing a group @mention, stays silent (they know the rule).
+  `bot-messaging/service.test.ts` updated: non-owner asserts the notice is sent
+  (no LLM), owner-in-group asserts no reply. lint ✓, typecheck ✓, unit 72 ✓,
+  build ✓. Not browser-verifiable (Telegram message path); covered by unit tests.
+- 2026-07-11 (follow-up 8): **Shared `Table` primitive** (user feedback — the
+  known-users work added a second bespoke table instead of extracting shared
+  chrome first). Added `components/ui/Table` (`Table`/`TableHead`/`TableBody`/
+  `TableRow`/`TableHeaderCell`/`TableCell`): scroll container, borders, header
+  typography, `header`/`interactive` row variants, align/valign — look only, each
+  feature keeps its own row behavior. Refactored **both** consumers onto it:
+  `components/debug/TraceList` (interactive rows + stretched link preserved) and
+  `features/known-users/ui/KnownUsersTable` (inline alias editors preserved). No
+  visual change. Checks: lint ✓, typecheck ✓, unit 72 ✓, build ✓ (0 warnings);
+  verified live — `/debug` (23 rows, stretched link intact) and `/users` render
+  identically through the shared primitive.
+- 2026-07-11 (follow-up 7): **Known users feature + owner-by-dropdown** (user
+  request). Adds a first-class list of everyone who has messaged the bot and
+  turns owner selection from a free-text @username guess into a concrete pick.
+  - **`known_users` table** (migration `0004_heavy_metal_master.sql`): `user_id`
+    (PK), `username`, `first_name`, `last_name`, `aliases text[]`, `first_seen_at`,
+    `updated_at`. Upserted on **every** incoming human message (bot-manager
+    `onMessage`, before addressing, best-effort) so the profile refreshes but
+    operator-curated `aliases` are never overwritten by the passive upsert.
+  - **Aliases = manual nicknames** (user decision): operator-curated alternate
+    names, edited inline on the Users page. `updateAliasesSchema` trims, drops
+    blanks, and collapses case-insensitive duplicates; bounds 20 × 60 chars.
+  - **Feature module** `features/known-users/*`: `repository.ts`
+    (`listKnownUsers`/`getKnownUser`/`upsertKnownUser`/`setKnownUserAliases`),
+    `schema.ts` (zod), `service.ts` (`listUsers`/`rememberUser`/`updateAliases` —
+    alias edits **traced** as `known-users`/`update-aliases`), pure
+    `format.ts` (`formatKnownUserLabel`, client-safe), `ui/KnownUsersTable.tsx`
+    (inline alias editor). Routes `GET /api/users`, `PATCH /api/users/[id]`.
+    Pages `/users` (table) + `/users/debug` (shared `TraceExplorer`). Nav gained
+    a Users item.
+  - **Owner is now a dropdown of known users** (replaces free-text @username +
+    lazy resolution): settings `updateSettings` takes `ownerUserId`, validates it
+    is a known user, and denormalizes `owner_username` for display. `getBotPolicy`
+    is now a pure read (`{ ownerUserId, maintenanceModeEnabled }`); `resolveBotPolicy`
+    and the lazy-persist path are gone. `policy.isOwner` matches by numeric id
+    only. `SettingsForm` owner field is a `<Select>` of known users.
+  - **Tests:** known-users `schema.test.ts` (+5: trim/blank/dedupe/bounds),
+    `known-users.integration.test.ts` (+5: remember refresh-without-clobbering-aliases,
+    list order, alias update trace, unknown-user error); settings integration
+    rewritten for owner-by-id (`getBotPolicy`, owner denormalization, unknown-id
+    rejection, clear); bot-messaging `policy.test.ts` + `service.test.ts` updated
+    to id-based ownership. Unit 72, integration 31.
+  - **Verified live** on the dev server: `/users` renders (empty state, then a
+    table of two seeded users); editing Alice's aliases to `Boss, Ali, Boss`
+    persisted as `["Boss","Ali"]` (trim + dedupe); the Settings owner dropdown
+    listed `Alice Anderson (@alice)` / `Bob (@bob)`; selecting Alice + maintenance
+    on saved `ownerUserId:"1001"`, `ownerUsername:"alice"` (server-denormalized),
+    `maintenanceModeEnabled:true`; no console errors. Reverted settings + deleted
+    the seeded users afterward — dev DB restored.
+  - Checks: lint ✓, typecheck ✓, unit 72 ✓, integration 31 ✓, build ✓ (0
+    warnings), db:migrate ✓.
+- 2026-07-11 (follow-up 6): **Maintenance mode + owner checks** (priority-1
+  feature-contract items; owner was deferred to this phase because it needs
+  @username→id resolution via the bot).
+  - **Settings columns** (migration `0003_numerous_may_parker.sql`):
+    `owner_username` (normalized: lowercase, no `@`), `owner_user_id` (resolved
+    numeric id), `maintenance_mode_enabled` (bool, default false). Schema/
+    repository/zod-schema/service extended; client `Settings` now exposes
+    `ownerUsername`/`ownerUserId`/`maintenanceModeEnabled` (owner is not a secret).
+  - **Owner id resolution** is lazy (Telegram has no username→id lookup):
+    `resolveBotPolicy({ fromId, username })` in the settings service reads the row
+    and, the first time the configured owner @username messages the bot, persists
+    their numeric id (mirrors the MVP's `tryResolveOwnerFromUser`). Changing the
+    owner username clears the resolved id so it re-resolves; username-based owner
+    matching (case-insensitive) works in the meantime, so there's no gap.
+  - **Policy** is a new pure module `features/bot-messaging/server/policy.ts`
+    (`isOwner`, `checkMaintenance`) — unit-testable, no DB/network. Recreated MVP
+    behavior: maintenance on → only the owner gets replies, and in groups the
+    owner must @mention the bot directly (a reply-to-bot or command does not
+    pass). The bot-messaging service enforces it right after the addressing check;
+    a **blocked-but-addressed** message is still traced (addressing check →
+    `maintenance mode — blocked` warn event → trace settled **skipped**) so the
+    operator sees who was turned away and why. `IncomingMessage` gained
+    `fromUsername`; `BotMessagingDeps` gained `policy`; the bot-manager resolves
+    the policy per message and injects it.
+  - **UI:** `SettingsForm` gained an owner @username field (with a resolved /
+    not-yet-resolved badge) and a maintenance-mode `Switch`; owner is only re-sent
+    when changed (avoids needless id-reset churn). Settings page header/card copy
+    broadened beyond "LLM connection".
+  - **Tests:** `policy.test.ts` (+7: owner id/username matching, maintenance
+    on/off, group-mention rule); bot-messaging `service.test.ts` (+3: non-owner
+    blocked→skipped trace + no reply, owner allowed by username, owner blocked in
+    a group without @mention); settings integration (+4: default shape, username
+    normalization + maintenance toggle, owner-change clears resolved id,
+    `resolveBotPolicy` lazy-resolve/persist + no-overwrite). Unit 67, integration 26.
+  - **Verified live** on the running dev server: saved `@TestOwner` + maintenance
+    on → `GET /api/settings` returned `ownerUsername:"testowner"` (normalized),
+    `ownerUserId:null`, `maintenanceModeEnabled:true`; the form showed the
+    "Not yet resolved — ask @testowner to message the bot" badge. Reverted the
+    test values afterward (owner cleared, maintenance off) — dev DB restored.
+  - Checks: lint ✓, typecheck ✓, unit 67 ✓, integration 26 ✓, build ✓ (0
+    warnings), db:migrate ✓.
 - 2026-07-11 (follow-up 5): **Debug fidelity fixes** (user, emphatic).
   - **Full raw bodies:** `chatCompletion` now returns `requestBody` +
     `responseBody` (the raw provider completion). `bot-messaging` records the
@@ -376,7 +489,7 @@ Next: Feature 1 remains **in-progress** — Debug UI + trace download are now me
 | Phase 1: Next.js Foundation | done | lint/typecheck/test/build all pass; folders + scripts + shared infra in place | Documented in README "Repository Layout" |
 | Phase 2: Data Model and Persistence | in-progress | Drizzle schema + migrations + trace repository/recorder + `settings` table; unit 27 + integration 11 (Testcontainers); `db:migrate` verified | Add feature tables (chats/messages) with their features |
 | Phase 3: Configuration and Settings | in-progress | Config moved env→DB (user direction). DB-backed LLM-connection settings (`features/settings/*`, typed columns: base URL/API key/model), `openai` provider client (`server/llm/client.ts`), `GET`/`PATCH` `app/api/settings` + `POST /test-connection` (real `/v1/models` probe); key masked + trace-redacted; verified live. Overview/shell/health reworked onto real probes. Plan Phase 3 realigned to this direction | Add model params/prompts with their features; surface traces in shared Debug UI |
-| Phase 4: Telegram Bot Interface | in-progress | In-process long-polling bot (grammy) via `instrumentation.ts` + `server/telegram/bot-manager.ts` singleton; DB-backed token; deterministic addressing; Start/Stop API + Overview control; message traces now visible in the shared Debug UI (`/debug`, LLM usage shown); verified live. lint/typecheck/test/build ✓ | Add maintenance mode + owner checks; live run with a real token |
+| Phase 4: Telegram Bot Interface | in-progress | In-process long-polling bot (grammy) via `instrumentation.ts` + `server/telegram/bot-manager.ts` singleton; DB-backed token; deterministic addressing; **maintenance mode + owner checks** (owner chosen from the `known_users` dropdown, pure `bot-messaging/policy.ts` id-match, blocked messages traced as skipped); known-user capture on every message; Start/Stop API + Overview control; message traces in the shared Debug UI; verified live. lint/typecheck/test/build ✓ | Live run with a real token (operator-supplied) |
 | Phase 5: LLM Conversation Core | todo | none | Design provider and conversation service |
 | Phase 6: Dashboard Shell | in-progress | UI kit + responsive AppShell (sidebar/drawer/topbar); Overview, Settings, and now the shared Debug pages (`/debug`, `/debug/[id]`, `/settings/debug`) built on shared primitives + `components/debug/*`; lint/typecheck/test/build ✓, verified live | Add shared table/filter primitive (Debug uses a bespoke table for now); feature routes as features land |
 | Phase 7: Realtime and Status Updates | in-progress | Decision recorded (user): **SSE**, not polling/WebSockets. Shared realtime layer built: in-process `server/realtime/hub.ts` (globalThis pub/sub), `GET /api/events` SSE Route Handler (heartbeat + abort cleanup), client `useLiveRefresh` hook + `LiveIndicator`; trace recorder publishes on create/settle → Debug list live-updates. lint/typecheck/test/build pending re-run | Wire bot/LLM health + job state onto the hub as those surfaces need live updates |
@@ -394,7 +507,7 @@ Features not listed here are not v1 by default. Add any additional feature to th
 
 | Priority | Feature | Status | Acceptance Criteria | Debug Page | Trace/Log Download | Tests | Dependencies | Next |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 | Bot messaging: text receive/reply | in-progress | defined (see 2026-07-11 log) | yes (shared `/debug` + `/debug/[id]`, filter by feature) | yes (single + filtered `/api/traces/**/bundle`) | yes (addressing, service, chatCompletion, token masking, trace service/schema) | settings, health, Telegram intake, LLM provider, shared traces | Add maintenance mode + owner checks; live run with a real token |
+| 1 | Bot messaging: text receive/reply | in-progress | defined (see 2026-07-11 log) | yes (shared `/debug` + `/debug/[id]`, filter by feature) | yes (single + filtered `/api/traces/**/bundle`) | yes (addressing, **maintenance/owner policy**, service, chatCompletion, token masking, trace service/schema) | settings, health, Telegram intake, LLM provider, shared traces | Live run with a real token (operator-supplied) — then priority 2 |
 | 2 | System and personality prompts | todo | missing | no | no | no | settings, LLM provider | Define prompt schema and composition |
 | 3 | History feature | todo | missing | no | no | no | bot messaging, shared traces, DB schema | Design messages/history schema |
 | 4 | MCP tools basic support | todo | missing | no | no | no | LLM core, shared traces | Design tool registry and tool-call loop |
@@ -414,9 +527,10 @@ Foundation work supports features but is not a substitute for feature completion
 
 | Area | Status | Proof | Next |
 | --- | --- | --- | --- |
-| Settings and health | in-progress | DB-backed LLM-connection settings (`features/settings/*`) with `GET`/`PATCH` + `test-connection` real probe, key masking + trace redaction, unit + integration tests. Config source is the DB, not env (`config-in-db-not-env`); Overview + `/api/health` probe real state | Extend settings columns per feature |
+| Settings and health | in-progress | DB-backed settings (`features/settings/*`): LLM connection (base URL/key/model), Telegram token, and **owner (id chosen from known users, denormalized username) + maintenance mode**; `GET`/`PATCH` + `test-connection` real probe; secrets masked + trace-redacted; pure `getBotPolicy` read; unit + integration tests. Config source is the DB, not env (`config-in-db-not-env`); Overview + `/api/health` probe real state | Extend settings columns per feature (prompts next) |
 | LLM provider core | in-progress | `server/llm/client.ts` (`openai`): `listModels`/health probe + `chatCompletion` (reply text + normalized usage + latency, empty-response→503), base-URL normalization, `ApiError` mapping; connection sourced from DB settings; unit-tested (incl. mocked completion) + verified live | Add context assembly (history/prompts) with priorities 2–3; tool-call loop at priority 4 |
-| Telegram intake foundation | in-progress | In-process long-polling `server/telegram/bot-manager.ts` (grammy) — singleton lifecycle, DB-backed token, autostart via `instrumentation.ts` + Start/Stop API; deterministic `features/bot-messaging/server/addressing.ts` (unit-tested); verified live | Add maintenance mode, owner checks, and per-message Debug traces UI |
+| Telegram intake foundation | in-progress | In-process long-polling `server/telegram/bot-manager.ts` (grammy) — singleton lifecycle, DB-backed token, autostart via `instrumentation.ts` + Start/Stop API; deterministic `features/bot-messaging/server/addressing.ts` + `policy.ts` (owner/maintenance, unit-tested); remembers every human sender to `known_users`; per-message Debug traces; verified live | Live run with a real token |
+| Known users | done | `features/known-users/*` + `known_users` table (migration `0004`): captured on every message (profile refresh, aliases preserved); `/users` page with inline alias editing (dedupe/trim), `/users/debug`; `GET /api/users` + `PATCH /api/users/[id]`; alias edits traced; owner is chosen from this list. Unit + integration tested; verified live | Use aliases for name-based addressing when the group analyzer lands |
 | Dashboard overview | in-progress | `app/page.tsx` on real probes (`server/status.ts`: `SELECT 1` + live `/v1/models`); sidebar bot-status on cheap DB readiness; verified live | Add real metrics + Telegram status once those features land |
 | Debug traces and LLM usage | done | `lib/trace.ts` types + `server/trace` recorder/repository/service on Drizzle; shared Debug UI (`/debug`, `/debug/[id]`, `/settings/debug`) renders steps, LLM request/response + token usage, errors, related ids; JSON bundle download; unit + integration tested; verified live | Add trace-context to the Route Handler wrapper so API calls auto-record; surface a trace link from Overview status cards |
 
@@ -431,7 +545,7 @@ Foundation work supports features but is not a substitute for feature completion
 | Shared dashboard layout | done | `components/layout/AppShell` (responsive rail + mobile drawer), `Sidebar` (config-driven, active state), `Topbar`; theme toggle + tokens | Add breadcrumbs + per-route topbar title as routes grow |
 | UI kit tokens/primitives | done | `app/globals.css` semantic tokens (Tailwind v4 `@theme`, `.dark`); `components/ui/*` (Button/Card/Badge/Avatar/Progress/Separator/StatCard/EmptyState/Skeleton) + `lib/cn.ts`; verified live | Extend with Table/Tabs/Dialog/Toast when features need them |
 | Shared form components | done | `components/ui` `Input`, `Textarea`, `Select`, `Label`, `Field` (label+hint+error+aria wiring), `Switch`, `Checkbox`; first consumed by `features/settings/ui/SettingsForm.tsx` | Extract a form-state/submit helper if a 2nd feature form duplicates the fetch/status pattern |
-| Shared table/filter components | todo | none | Define pagination/filter API |
+| Shared table/filter components | in-progress | Shared `components/ui/Table` primitives (`Table`/`TableHead`/`TableBody`/`TableRow`/`TableHeaderCell`/`TableCell` — scroll container, borders, header typography, `interactive`/`header` row variants, align/valign). Both `components/debug/TraceList` and `features/known-users/ui/KnownUsersTable` compose from it (no bespoke table markup). Verified live | Add filter/pagination primitives (Debug still uses `DebugFilters`); adopt in new feature tables |
 | Shared debug components | done | `components/debug/*` (barrel): `TraceExplorer` (uncapped list + filters + live + export), `TraceList` (clickable rows), `TraceDetail`, `TraceTimeline` (per-step timing), `JsonBlock` (collapsible, theme-aware `react-json-view-lite`), `TraceStatusBadge`, `DownloadButton`, `DebugFilters`; consumed by `/debug`, `/debug/[id]`, `/settings/debug`; verified live (JSON tree, timings, full bodies, theme switch) | Add per-feature Debug pages as thin `TraceExplorer` wrappers (e.g. a bot-messaging section when it gets a dashboard route) |
 | Shared realtime (SSE) | in-progress | `lib/realtime.ts` (event contract) + `server/realtime/hub.ts` (in-process pub/sub singleton) + `GET /api/events` SSE stream + `components/realtime/useLiveRefresh` hook + `LiveIndicator` pill; trace recorder publishes `traces` events → Debug list refreshes live. Decision: SSE not polling/WS (user) | Publish `bot`/`status` topics from the bot manager + status probes; consume on Overview |
 | Shared status components | done | `components/ui/Badge` (tones+dot), `EmptyState`, `Skeleton`/`Spinner`, refactored `StatusCard`/`PageHeader` onto tokens | Add explicit error panel when debug UI lands |
@@ -449,6 +563,8 @@ writing `docs/decisions/*.md`. This table is the lightweight record.
 | Configuration source | done | user | Runtime config lives in DB-backed Settings via the dashboard, not env vars (bootstrap-only `DATABASE_URL` stays in env). Status must be a real probe, not env presence |
 | LLM API key storage | done | user | Optional API key stored in the DB, masked in UI/API (`apiKeyConfigured` only), redacted from traces |
 | Owner field timing | done | user | Deferred to the Telegram intake phase (priority 1) — needs the bot to resolve @username→id |
+| Owner selection model | done | user | Owner is **chosen from a dropdown of known users** (users who have messaged the bot), storing the numeric id directly. Supersedes the earlier free-text @username + lazy-resolution approach — no username→id resolution needed since the id is known. |
+| Known-user aliases | done | user | Aliases are **operator-curated manual nicknames**, edited inline on the Users page (not auto-tracked username history). Intended for future name-based group addressing. |
 | Migration workflow | done | user | `generate` committed SQL files; applied via `drizzle-kit migrate` (`npm run db:migrate`), run by the Docker entrypoint before `next start`. No in-app auto-migration (instrumentation approach rejected as non-standard). |
 | DB test strategy | done | user | Real Postgres via Testcontainers (integration suite) |
 | MVP data import | done | agent default | Out of scope for v1 (fresh DB) — reconfirm with user if import is needed before cutover |
@@ -512,23 +628,31 @@ No blockers recorded.
 - Overview, shell, and `/api/health` are **done** on real probes
   (`server/status.ts`: `getSystemStatus`/`getConfigReadiness`/`getHealth`).
   `envPresence()` is deleted — do not reintroduce presence-style status.
-- **Finish priority 1** — the vertical slice works and the **shared Debug UI +
-  trace download are now done** (`/debug`, `/debug/[id]`, `/settings/debug`;
-  `app/api/traces/**`; `components/debug/*`). Remaining for feature-1 `done`:
-  (a) an **end-to-end run with a real bot token** (operator-supplied — do not
-  create Telegram credentials); (b) **maintenance mode + owner checks**. Then
-  move to priority 2 (system/personality prompts), which will replace the
-  minimal default system prompt in `features/bot-messaging/server/service.ts`.
+- **Finish priority 1** — the vertical slice works; the **shared Debug UI +
+  trace download** (`/debug`, `/debug/[id]`, `/settings/debug`;
+  `app/api/traces/**`; `components/debug/*`), **maintenance mode + owner
+  checks** (`features/bot-messaging/server/policy.ts`, id-based), and the
+  **known-users feature** (owner is chosen from `/users`) are now done. The
+  **only** remaining item for feature-1 `done` is an **end-to-end run with a real
+  bot token** (operator-supplied — do not create Telegram credentials). Then move
+  to priority 2 (system/personality prompts), which will replace the minimal
+  default system prompt in `features/bot-messaging/server/service.ts`.
+- **Owner is chosen by id from `known_users`** (dropdown). `getBotPolicy` is a
+  pure read; there is no lazy @username resolution — do not reintroduce it. New
+  users are captured in `bot-manager.onMessage` before addressing.
 - **The Debug UI is the shared surface for every future feature.** New features
   get their Debug page for near-free: render `<TraceExplorer>` (from
   `components/debug`) with a `feature`-scoped `getTraceList` and
   `showFeatureFilter={false}` (see `app/settings/debug/page.tsx`). Row detail
   links reuse the single `/debug/[id]` route. Don't build a bespoke debug UI.
-- **Next best task: maintenance mode + owner checks** for bot-messaging (owner
-  field was deferred to this phase — needs @username→id resolution via the bot).
-  Add owner + maintenance as `settings` columns (+ migration), enforce in
-  `features/bot-messaging/server/service.ts` addressing/policy, and trace the
-  decision. Then priority 2.
+- **Next best task: priority 2 — system and personality prompts.** Maintenance
+  mode + owner checks are done (`features/bot-messaging/server/policy.ts`;
+  settings columns `owner_username`/`owner_user_id`/`maintenance_mode_enabled`;
+  `resolveBotPolicy`). Prompts will replace the hard-coded `DEFAULT_SYSTEM_PROMPT`
+  in `features/bot-messaging/server/service.ts` — add prompt columns to
+  `settings` (or a prompts table), a composition step, and a Debug trace of the
+  composed prompt. The one remaining feature-1 gate is an operator-run live test
+  with a real bot token (do not create Telegram credentials).
 - Deferred within bot messaging: markdown/HTML reply rendering (v1 is plain
   text), the MVP LLM "analyzer" addressing fallback, media/vision intake
   (priority 7), and `@grammyjs/runner` for concurrent update handling (built-in

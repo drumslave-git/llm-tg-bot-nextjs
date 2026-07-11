@@ -4,7 +4,9 @@ import { Check, Plug, Save } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useState } from "react";
 
-import { Badge, Button, Field, Input, Select } from "@/components/ui";
+import { Badge, Button, Field, Input, Select, Switch } from "@/components/ui";
+import { formatKnownUserLabel } from "@/features/known-users/format";
+import type { KnownUser } from "@/features/known-users/server/schema";
 import type { ApiErrorBody } from "@/lib/api-error";
 import type { Settings } from "../server/schema";
 
@@ -39,11 +41,14 @@ async function readError(res: Response): Promise<string> {
 export function SettingsForm({
   initial,
   initialModels = [],
+  knownUsers = [],
 }: {
   initial: Settings;
   /** Models preloaded server-side for the saved endpoint, so the dropdown is
    *  populated on open without a manual "Test connection". */
   initialModels?: string[];
+  /** Users who have messaged the bot — the owner is chosen from this list. */
+  knownUsers?: KnownUser[];
 }) {
   const router = useRouter();
   const [llmBaseUrl, setLlmBaseUrl] = useState(initial.llmBaseUrl ?? "");
@@ -51,6 +56,8 @@ export function SettingsForm({
   const [apiKeyDirty, setApiKeyDirty] = useState(false);
   const [botToken, setBotToken] = useState("");
   const [botTokenDirty, setBotTokenDirty] = useState(false);
+  const [ownerUserId, setOwnerUserId] = useState(initial.ownerUserId ?? "");
+  const [maintenanceMode, setMaintenanceMode] = useState(initial.maintenanceModeEnabled);
   const [model, setModel] = useState(initial.model ?? "");
   // Seed with the server-preloaded list (falling back to just the saved model);
   // a successful "Test connection" replaces this with a fresh list.
@@ -95,6 +102,12 @@ export function SettingsForm({
     };
     if (apiKeyDirty) patch.apiKey = apiKey.trim() === "" ? null : apiKey.trim();
     if (botTokenDirty) patch.telegramBotToken = botToken.trim() === "" ? null : botToken.trim();
+    if (ownerUserId !== (initial.ownerUserId ?? "")) {
+      patch.ownerUserId = ownerUserId === "" ? null : ownerUserId;
+    }
+    if (maintenanceMode !== initial.maintenanceModeEnabled) {
+      patch.maintenanceModeEnabled = maintenanceMode;
+    }
 
     try {
       const res = await fetch("/api/settings", {
@@ -106,10 +119,13 @@ export function SettingsForm({
         setSave({ kind: "error", message: await readError(res) });
         return;
       }
+      const { data } = (await res.json()) as { data: Settings };
       setApiKeyDirty(false);
       setApiKey("");
       setBotTokenDirty(false);
       setBotToken("");
+      setOwnerUserId(data.ownerUserId ?? "");
+      setMaintenanceMode(data.maintenanceModeEnabled);
       setSave({ kind: "saved" });
       // Re-read server state so masked "configured" placeholders reflect the save.
       router.refresh();
@@ -231,6 +247,51 @@ export function SettingsForm({
                 : "123456:ABC-DEF…"
             }
           />
+        )}
+      </Field>
+
+      <Field
+        id="ownerUserId"
+        label="Owner"
+        hint={
+          knownUsers.length > 0
+            ? "The bot owner controls maintenance mode. Chosen from users who have messaged the bot."
+            : "No users yet — the owner is chosen from people who have messaged the bot. Start the bot and message it first."
+        }
+      >
+        {({ id, describedBy }) => (
+          <Select
+            id={id}
+            aria-describedby={describedBy}
+            value={ownerUserId}
+            disabled={knownUsers.length === 0}
+            onChange={(e) => setOwnerUserId(e.target.value)}
+          >
+            <option value="">No owner</option>
+            {knownUsers.map((u) => (
+              <option key={u.userId} value={u.userId}>
+                {formatKnownUserLabel(u)}
+              </option>
+            ))}
+          </Select>
+        )}
+      </Field>
+
+      <Field
+        id="maintenanceMode"
+        label="Maintenance mode"
+        hint="When on, the bot stays fully functional for the owner only; everyone else gets a static maintenance notice."
+      >
+        {({ id, describedBy }) => (
+          <div className="flex items-center gap-3">
+            <Switch
+              id={id}
+              aria-describedby={describedBy}
+              checked={maintenanceMode}
+              onChange={(e) => setMaintenanceMode(e.target.checked)}
+            />
+            <span className="text-sm text-muted">{maintenanceMode ? "On" : "Off"}</span>
+          </div>
         )}
       </Field>
 

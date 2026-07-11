@@ -1,9 +1,15 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
+import { upsertKnownUser } from "@/features/known-users/server/repository";
 import { listTraces } from "@/server/trace/repository";
 import { startTestDb, type TestDb } from "@/test/db";
 import { getSettingsRecord } from "./repository";
-import { getSettings, getTelegramBotToken, updateSettings } from "./service";
+import { getBotPolicy, getSettings, getTelegramBotToken, updateSettings } from "./service";
+
+/** Seed a known user so the owner can be chosen by id. */
+async function seedUser(ctx: TestDb, userId: string, username: string | null) {
+  await upsertKnownUser(ctx.db, { userId, username, firstName: null, lastName: null });
+}
 
 let ctx: TestDb;
 
@@ -28,6 +34,9 @@ describe("getSettings", () => {
       model: null,
       apiKeyConfigured: false,
       telegramBotTokenConfigured: false,
+      ownerUsername: null,
+      ownerUserId: null,
+      maintenanceModeEnabled: false,
       updatedAt: null,
     });
   });
@@ -92,5 +101,55 @@ describe("updateSettings", () => {
 
     const rows = await ctx.db.execute("SELECT COUNT(*)::int AS count FROM settings");
     expect(Number((rows.rows[0] as { count: number }).count)).toBe(1);
+  });
+
+  it("sets the owner from a known user (denormalizing the username) and toggles maintenance", async () => {
+    await seedUser(ctx, "555", "ownername");
+
+    const set = await updateSettings(
+      { ownerUserId: "555", maintenanceModeEnabled: true },
+      trigger,
+      ctx.db,
+    );
+    expect(set.ownerUserId).toBe("555");
+    expect(set.ownerUsername).toBe("ownername");
+    expect(set.maintenanceModeEnabled).toBe(true);
+
+    const off = await updateSettings({ maintenanceModeEnabled: false }, trigger, ctx.db);
+    // Untouched owner survives a maintenance-only update.
+    expect(off.ownerUserId).toBe("555");
+    expect(off.maintenanceModeEnabled).toBe(false);
+  });
+
+  it("rejects an owner id that is not a known user", async () => {
+    await expect(updateSettings({ ownerUserId: "404" }, trigger, ctx.db)).rejects.toThrow(
+      /not a known user/i,
+    );
+  });
+
+  it("clears the owner when passed null", async () => {
+    await seedUser(ctx, "555", "ownername");
+    await updateSettings({ ownerUserId: "555" }, trigger, ctx.db);
+
+    const cleared = await updateSettings({ ownerUserId: null }, trigger, ctx.db);
+    expect(cleared.ownerUserId).toBeNull();
+    expect(cleared.ownerUsername).toBeNull();
+  });
+});
+
+describe("getBotPolicy", () => {
+  it("reads the owner id and maintenance flag", async () => {
+    await seedUser(ctx, "999", "ownername");
+    await updateSettings({ ownerUserId: "999", maintenanceModeEnabled: true }, trigger, ctx.db);
+
+    const policy = await getBotPolicy(ctx.db);
+    expect(policy).toEqual({ ownerUserId: "999", maintenanceModeEnabled: true });
+  });
+
+  it("defaults to no owner and maintenance off when unconfigured", async () => {
+    expect(await getBotPolicy(ctx.db)).toEqual({
+      ownerUserId: null,
+      maintenanceModeEnabled: false,
+    });
   });
 });
