@@ -106,6 +106,9 @@ export async function startTrace(
       usage: input.usage,
     };
     await insertEvent(db, event);
+    // Notify live dashboards so an open trace's detail view streams entries in
+    // as they are recorded, not only when the trace settles.
+    notify();
     return event;
   }
 

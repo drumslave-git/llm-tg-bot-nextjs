@@ -23,8 +23,8 @@ export const traceStatusSchema = z.enum([
 ]);
 export type TraceStatus = z.infer<typeof traceStatusSchema>;
 
-/** Severity for an individual event line. */
-export const traceLevelSchema = z.enum(["debug", "info", "warn", "error"]);
+/** Severity/outcome for an individual event line. */
+export const traceLevelSchema = z.enum(["debug", "info", "success", "warn", "error"]);
 export type TraceLevel = z.infer<typeof traceLevelSchema>;
 
 /**

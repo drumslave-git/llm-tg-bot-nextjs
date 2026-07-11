@@ -52,8 +52,6 @@ describe("getTraceList", () => {
     // Newest first; headers carry no events.
     expect(all.traces[0].events).toEqual([]);
     expect(all.features).toEqual(["bot-messaging", "settings"]);
-    expect(all.limit).toBe(50);
-    expect(all.offset).toBe(0);
   });
 
   it("filters by feature and status", async () => {
@@ -70,11 +68,14 @@ describe("getTraceList", () => {
     expect(settings.features).toEqual(["bot-messaging", "settings"]);
   });
 
-  it("echoes the requested paging window", async () => {
-    await seed();
-    const page = await getTraceList({ limit: 10, offset: 5 }, ctx.db);
-    expect(page.limit).toBe(10);
-    expect(page.offset).toBe(5);
+  it("returns every trace uncapped (no default 50 limit)", async () => {
+    for (let i = 0; i < 55; i++) {
+      const trace = await startTrace({ ...baseInput, action: `reply-${i}` }, ctx.db);
+      await trace.succeed();
+    }
+    const all = await getTraceList({}, ctx.db);
+    expect(all.total).toBe(55);
+    expect(all.traces).toHaveLength(55);
   });
 });
 

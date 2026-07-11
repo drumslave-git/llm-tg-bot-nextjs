@@ -15,12 +15,65 @@ Status values:
 Status: in-progress
 Owner: agent/2026-07-11
 Last updated: 2026-07-11
-Proof: `npm run lint` ✓, `npm run typecheck` ✓, `npm run test` ✓ (56 unit), `npm run test:integration` ✓ (22, real Postgres via Testcontainers), `npm run build` ✓ (0 warnings). The **shared Debug UI** is now built and verified live — the last feature-contract gap for both `settings` and priority-1 `bot-messaging`. A global `/debug` page (filter by feature/status, pagination, "Download all") plus a shared `/debug/[id]` detail view (metadata panel, error panel, ordered event timeline with LLM usage, per-trace JSON download) and a feature-scoped `/settings/debug`. Backed by `server/trace/service.ts` (list/detail/bundle) over the existing recorder/repository, thin `app/api/traces/**` handlers, and reusable `components/debug/*`. Verified live against the running dev server on real recorded traces: list renders 11 traces; a bot reply detail shows LLM usage (`prompt 38 · completion 184 · total 222 · 5741ms`); an error trace shows the error panel + timeline; `/settings/debug` shows only settings traces; single + filtered bundle downloads return the `llm-tg-bot/trace-bundle@1` envelope with attachment headers; no console errors.
+Proof: `npm run lint` ✓, `npm run typecheck` ✓, `npm run test` ✓ (57 unit), `npm run test:integration` ✓ (22, real Postgres via Testcontainers), `npm run build` ✓ (0 warnings). The **shared Debug UI** is now built and verified live — the last feature-contract gap for both `settings` and priority-1 `bot-messaging`. A global `/debug` page (filter by feature/status, pagination, "Download all") plus a shared `/debug/[id]` detail view (metadata panel, error panel, ordered event timeline with LLM usage, per-trace JSON download) and a feature-scoped `/settings/debug`. Backed by `server/trace/service.ts` (list/detail/bundle) over the existing recorder/repository, thin `app/api/traces/**` handlers, and reusable `components/debug/*`. Verified live against the running dev server on real recorded traces: list renders 11 traces; a bot reply detail shows LLM usage (`prompt 38 · completion 184 · total 222 · 5741ms`); an error trace shows the error panel + timeline; `/settings/debug` shows only settings traces; single + filtered bundle downloads return the `llm-tg-bot/trace-bundle@1` envelope with attachment headers; no console errors.
 Realtime: the dashboard now updates **live over SSE** (user decision — not polling/WebSockets). Shared layer: in-process `server/realtime/hub.ts` pub/sub, `GET /api/events` SSE stream, `useLiveRefresh`/`LiveIndicator` client; the trace recorder publishes on create/settle. Verified live: with the page untouched, a newly recorded `test-connection` trace appeared at the top of `/debug` on its own; the `/api/events` stream stays open (200); no console errors. Debug rows are now fully clickable (stretched link) — clicking any cell opens the trace.
 Next: Feature 1 remains **in-progress** — Debug UI + trace download are now met; still needs **maintenance mode + owner checks** and an end-to-end run against a real bot token (operator-supplied). Then priority 2 (system/personality prompts).
 
 ### Session log
 
+- 2026-07-11 (follow-up 5): **Debug fidelity fixes** (user, emphatic).
+  - **Full raw bodies:** `chatCompletion` now returns `requestBody` +
+    `responseBody` (the raw provider completion). `bot-messaging` records the
+    **whole** request body (`{ messages }`) and the **entire raw response
+    object** (id/model/usage/choices/finish_reason/…) — previously only the
+    extracted `content` was stored. LLM client + service updated; `GeneratedReply`
+    gained `responseBody`.
+  - **Fixed, consistent event flow** (was ad-hoc): `addressing check` (new
+    `success` level → **green dot**) → `llm_request` + body → `llm_response` +
+    raw body + model/token stats → `send message` + full content. Added a
+    per-event status **dot** (level-coloured) to `TraceTimeline`; added `success`
+    to `traceLevelSchema`.
+  - **No JSON background:** `react-json-view-lite`'s `darkStyles.container`
+    injects an opaque solarized panel (`rgb(0,43,54)`) — overrode the `container`
+    style to drop it so the tree sits flat on the card. Verified live: zero
+    non-transparent backgrounds in the viewers.
+  - **Top block:** removed the (trimmed) **Output** field; **Input** now shows the
+    **full untrimmed** message (`inputSummary` no longer sliced).
+  - **Tests:** rewrote the bot-messaging body test to assert the fixed flow +
+    full untrimmed message + raw response body (57 unit still green). `client.test`
+    unaffected (partial asserts).
+  - **Verified live** by seeding a realistic trace via a throwaway dev route
+    (removed after; seeded row deleted): flow/labels/dots/timings correct, full
+    request messages + full raw response body render, green addressing dot
+    (`rgb(52,211,153)`), no viewer background, Input full + no Output.
+  - Checks: lint ✓, typecheck ✓, unit 57 ✓, integration 22 ✓, build ✓ (0 warnings).
+- 2026-07-11 (follow-up 4): **Debug robustness pass** (user requests).
+  - **Collapsible JSON viewer:** `JsonBlock` rewritten as a client component on
+    **`react-json-view-lite`** (v2.5.0). Note: the user asked for
+    `react-json-view`, but that package supports only React ≤17 and is
+    unmaintained — incompatible with this project's React 19; `react-json-view-lite`
+    is the stable React-19 equivalent (same collapsible-tree UX). Theme-aware via
+    a new shared `components/theme/useIsDark` hook (also DRY-refactored out of
+    `ThemeToggle`); primitives render as wrapped text so nothing truncates.
+    Verified live: tree is collapsible (clickable nodes, lib CSS loaded) and
+    text colour switches with the theme (`rgb(237,237,240)` dark →
+    `rgb(24,24,27)` light).
+  - **Per-step timing:** `TraceTimeline` now shows each step's elapsed time
+    (`+Δ` since the previous step, baseline = trace start), so a response shows
+    its request's latency (verified: LLM response `+5.7s`, matching usage
+    `5741ms`).
+  - **Full message/request/response bodies:** `bot-messaging` service now records
+    the **whole** incoming message text, the full LLM request body (messages),
+    the full response content, and the full delivered reply as event `data`
+    (summaries stay short for the list). New service test asserts a 500-char
+    message + 300-char reply are recorded untrimmed.
+  - **No trace cap:** `listTraces` returns **all** matching traces when no limit
+    is given (removed the default-50 and the 200 clamp that also silently capped
+    the 500-row bundle); Debug list drops pagination and shows a `N traces`
+    count. Integration test seeds 55 and asserts all 55 return. Verified live: 13
+    traces shown, count line present, no Prev/Next.
+  - **Checks:** lint ✓, typecheck ✓, unit 57 ✓, integration 22 ✓, build ✓ (0
+    warnings). Dep added: `react-json-view-lite`. No console errors.
 - 2026-07-11 (follow-up 3): **Realtime updates via SSE + Debug UX fixes**
   (user-reported: Debug list didn't live-update; trace rows weren't obviously
   clickable). User decided the project realtime transport: **SSE, not polling
@@ -379,10 +432,10 @@ Foundation work supports features but is not a substitute for feature completion
 | UI kit tokens/primitives | done | `app/globals.css` semantic tokens (Tailwind v4 `@theme`, `.dark`); `components/ui/*` (Button/Card/Badge/Avatar/Progress/Separator/StatCard/EmptyState/Skeleton) + `lib/cn.ts`; verified live | Extend with Table/Tabs/Dialog/Toast when features need them |
 | Shared form components | done | `components/ui` `Input`, `Textarea`, `Select`, `Label`, `Field` (label+hint+error+aria wiring), `Switch`, `Checkbox`; first consumed by `features/settings/ui/SettingsForm.tsx` | Extract a form-state/submit helper if a 2nd feature form duplicates the fetch/status pattern |
 | Shared table/filter components | todo | none | Define pagination/filter API |
-| Shared debug components | done | `components/debug/*` (barrel): `TraceExplorer`, `TraceList` (clickable rows), `TraceDetail`, `TraceTimeline`, `JsonBlock`, `TraceStatusBadge`, `DownloadButton`, `DebugFilters`; consumed by `/debug`, `/debug/[id]`, `/settings/debug`; verified live | Add per-feature Debug pages as thin `TraceExplorer` wrappers (e.g. a bot-messaging section when it gets a dashboard route) |
+| Shared debug components | done | `components/debug/*` (barrel): `TraceExplorer` (uncapped list + filters + live + export), `TraceList` (clickable rows), `TraceDetail`, `TraceTimeline` (per-step timing), `JsonBlock` (collapsible, theme-aware `react-json-view-lite`), `TraceStatusBadge`, `DownloadButton`, `DebugFilters`; consumed by `/debug`, `/debug/[id]`, `/settings/debug`; verified live (JSON tree, timings, full bodies, theme switch) | Add per-feature Debug pages as thin `TraceExplorer` wrappers (e.g. a bot-messaging section when it gets a dashboard route) |
 | Shared realtime (SSE) | in-progress | `lib/realtime.ts` (event contract) + `server/realtime/hub.ts` (in-process pub/sub singleton) + `GET /api/events` SSE stream + `components/realtime/useLiveRefresh` hook + `LiveIndicator` pill; trace recorder publishes `traces` events → Debug list refreshes live. Decision: SSE not polling/WS (user) | Publish `bot`/`status` topics from the bot manager + status probes; consume on Overview |
 | Shared status components | done | `components/ui/Badge` (tones+dot), `EmptyState`, `Skeleton`/`Spinner`, refactored `StatusCard`/`PageHeader` onto tokens | Add explicit error panel when debug UI lands |
-| Test harness | done | Vitest unit config (56) + Testcontainers integration config (22); `server-only` alias stub; `vi.hoisted`+`vi.mock` pattern for isolating services from persistence (see `bot-messaging/service.test.ts`) | Add Route Handler + dashboard smoke tests per feature |
+| Test harness | done | Vitest unit config (57) + Testcontainers integration config (22); `server-only` alias stub; `vi.hoisted`+`vi.mock` pattern for isolating services from persistence (see `bot-messaging/service.test.ts`) | Add Route Handler + dashboard smoke tests per feature |
 
 ## Decision Notes
 
@@ -418,7 +471,7 @@ No blockers recorded.
 ### Current state (2026-07-11)
 
 - Phase 1 done; Phases 2/3/4/6/11 in-progress and verified: `npm run lint`,
-  `npm run typecheck`, `npm run test` (56 unit), `npm run test:integration`
+  `npm run typecheck`, `npm run test` (57 unit), `npm run test:integration`
   (22, Testcontainers), `npm run build` (0 warnings) all pass. Priority-1 bot
   messaging (text receive/reply) vertical slice is built and verified live
   in-browser; the shared Debug UI (list/detail/download) is now built and

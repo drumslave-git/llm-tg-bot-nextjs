@@ -33,6 +33,8 @@ export interface GeneratedReply {
   model: string;
   usage?: ChatUsage;
   latencyMs: number;
+  /** Raw provider response body, recorded verbatim in the trace. */
+  responseBody?: unknown;
 }
 
 /** Normalized view of an incoming Telegram message (built by the runtime). */
@@ -106,28 +108,39 @@ export async function handleIncomingMessage(
           actor: incoming.fromId != null ? String(incoming.fromId) : String(incoming.chatId),
           correlationId: `${incoming.chatId}:${incoming.messageId}`,
         },
-        inputSummary: text.slice(0, 200),
+        // The whole incoming message, never trimmed.
+        inputSummary: text,
       },
       db,
     );
 
     try {
+      // 1. Addressing decision (a passed check → green).
       await trace.event({
-        type: "input",
-        message: `addressed via ${decision.source}`,
-        data: { chatType: incoming.chatType, source: decision.source },
+        type: "step",
+        level: "success",
+        message: "addressing check",
+        data: { addressed: true, reason: decision.source },
       });
 
       const messages: ChatMessage[] = [
         { role: "system", content: DEFAULT_SYSTEM_PROMPT },
         { role: "user", content: text },
       ];
-      await trace.event({ type: "llm_request", message: "chat completion requested" });
+      // 2. LLM request — full request body (recorded before the call so the
+      // response step's elapsed time reflects real provider latency).
+      await trace.event({
+        type: "llm_request",
+        message: "request",
+        data: { messages },
+      });
 
       const reply = await deps.generateReply(messages);
+      // 3. LLM response — full raw response body + model/token stats.
       await trace.event({
         type: "llm_response",
-        message: "chat completion received",
+        message: "response",
+        data: reply.responseBody ?? { content: reply.content },
         usage: {
           model: reply.model,
           promptTokens: reply.usage?.promptTokens,
@@ -139,8 +152,14 @@ export async function handleIncomingMessage(
 
       const outgoing = formatReply(reply.content);
       await deps.sendReply(outgoing);
-      await trace.event({ type: "output", message: `replied (${outgoing.length} chars)` });
-      await trace.succeed({ outputSummary: outgoing.slice(0, 200) });
+      // 4. Delivered message — full content.
+      await trace.event({
+        type: "output",
+        level: "success",
+        message: "send message",
+        data: { content: outgoing },
+      });
+      await trace.succeed({ outputSummary: outgoing });
       return { status: "replied", text: outgoing };
     } catch (err) {
       await trace.fail(err);

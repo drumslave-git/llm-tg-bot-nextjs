@@ -151,21 +151,19 @@ export async function listTraces(
   if (input.status) filters.push(eq(traces.status, input.status));
   const where = filters.length ? and(...filters) : undefined;
 
-  const limit = Math.min(Math.max(input.limit ?? 50, 1), 200);
-  const offset = Math.max(input.offset ?? 0, 0);
-
   const [{ count } = { count: 0 }] = await db
     .select({ count: sql<number>`count(*)::int` })
     .from(traces)
     .where(where);
 
-  const rows = await db
-    .select()
-    .from(traces)
-    .where(where)
-    .orderBy(desc(traces.startedAt))
-    .limit(limit)
-    .offset(offset);
+  // An undefined limit returns every matching trace (the Debug list is not
+  // paginated — MVP capped at 50; the operator wants the full history). Callers
+  // that must bound the result (e.g. bundle export) pass an explicit limit.
+  const base = db.select().from(traces).where(where).orderBy(desc(traces.startedAt)).$dynamic();
+  const rows =
+    input.limit !== undefined
+      ? await base.limit(Math.max(input.limit, 1)).offset(Math.max(input.offset ?? 0, 0))
+      : await base;
 
   return {
     traces: rows.map((row) => mapTraceRow(row, [])),

@@ -29,17 +29,19 @@ export interface TraceQuery {
 }
 
 export interface TraceListView {
-  /** Trace headers (no events), newest first. */
+  /** Trace headers (no events), newest first. Not capped by default. */
   traces: Trace[];
-  /** Total matching the filter, for pagination. */
+  /** Total matching the filter. */
   total: number;
   /** Distinct feature names for the filter dropdown. */
   features: string[];
-  limit: number;
-  offset: number;
 }
 
-/** Paginated trace headers plus the feature list that powers the Debug filter. */
+/**
+ * Trace headers (all matching the filter, newest first) plus the feature list
+ * that powers the Debug filter. The Debug list is intentionally uncapped — pass
+ * an explicit `limit` only for a bounded/programmatic read.
+ */
 export async function getTraceList(
   query: TraceQuery = {},
   db: DrizzleDb = getDb(),
@@ -48,13 +50,7 @@ export async function getTraceList(
     listTraces(db, query),
     listFeatures(db),
   ]);
-  return {
-    traces: page.traces,
-    total: page.total,
-    features,
-    limit: query.limit ?? 50,
-    offset: query.offset ?? 0,
-  };
+  return { traces: page.traces, total: page.total, features };
 }
 
 /** Full trace with ordered events, or a `not_found` ApiError. */

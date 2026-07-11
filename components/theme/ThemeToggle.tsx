@@ -1,32 +1,21 @@
 "use client";
 
 import { Moon, Sun } from "lucide-react";
-import { useSyncExternalStore } from "react";
 import { Button } from "@/components/ui/Button";
+import { useIsDark } from "./useIsDark";
 
 /**
  * Toggles the `.dark` class on <html> and persists the choice. Pairs with
  * ThemeScript, which applies the stored value before hydration. The current
- * theme is read from the DOM via useSyncExternalStore so the icon stays in sync
+ * theme is read from the DOM via {@link useIsDark} so the icon stays in sync
  * without effect-driven state.
  */
-function subscribe(onChange: () => void): () => void {
-  const observer = new MutationObserver(onChange);
-  observer.observe(document.documentElement, {
-    attributes: true,
-    attributeFilter: ["class"],
-  });
-  return () => observer.disconnect();
-}
-
-const isDark = () => document.documentElement.classList.contains("dark");
-
 export function ThemeToggle() {
   // Dark-first: the server and pre-hydration script both assume dark.
-  const dark = useSyncExternalStore(subscribe, isDark, () => true);
+  const dark = useIsDark();
 
   function toggle() {
-    const next = !isDark();
+    const next = !document.documentElement.classList.contains("dark");
     document.documentElement.classList.toggle("dark", next);
     localStorage.setItem("theme", next ? "dark" : "light");
   }

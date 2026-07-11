@@ -94,6 +94,42 @@ describe("handleIncomingMessage", () => {
     expect(stopTyping).toHaveBeenCalledOnce();
   });
 
+  it("records the full untrimmed message, request, and raw response bodies", async () => {
+    const longText = "x".repeat(500);
+    const reply = "y".repeat(300);
+    const responseBody = { id: "cmpl-1", choices: [{ message: { content: reply } }] };
+    const d = deps({
+      generateReply: vi
+        .fn()
+        .mockResolvedValue({ content: reply, model: "m", latencyMs: 5, responseBody }),
+    });
+    await handleIncomingMessage(incoming({ text: longText }), d);
+
+    // The trace input is the whole message, never trimmed.
+    const startInput = (startTrace as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(startInput.inputSummary).toBe(longText);
+
+    const events = recorder.event.mock.calls.map((c) => c[0]);
+    const byMessage = (message: string) => events.find((e) => e.message === message);
+
+    // Fixed flow: addressing check → request → response → send message.
+    expect(events.map((e) => e.message)).toEqual([
+      "addressing check",
+      "request",
+      "response",
+      "send message",
+    ]);
+    // Addressing check is a passed check (green).
+    expect(byMessage("addressing check").level).toBe("success");
+    expect(byMessage("addressing check").data).toEqual({ addressed: true, reason: "private" });
+    // Request body carries the full messages payload.
+    expect(byMessage("request").data.messages[1]).toEqual({ role: "user", content: longText });
+    // Response step records the raw provider body verbatim.
+    expect(byMessage("response").data).toEqual(responseBody);
+    // Delivered message carries the full content.
+    expect(byMessage("send message").data.content).toBe(reply);
+  });
+
   it("fails the trace and sends a fallback reply when generation throws", async () => {
     const d = deps({ generateReply: vi.fn().mockRejectedValue(new Error("provider down")) });
     const out = await handleIncomingMessage(incoming({ text: "hi" }), d);

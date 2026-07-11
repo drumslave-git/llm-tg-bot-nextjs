@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 
+import { LiveIndicator } from "@/components/realtime/LiveIndicator";
 import {
   Card,
   CardContent,
@@ -61,7 +62,10 @@ export function TraceDetail({ trace }: { trace: Trace }) {
               {trace.feature} · {trace.id}
             </p>
           </div>
-          <DownloadButton href={`/api/traces/${trace.id}/bundle`} />
+          <div className="flex items-center gap-2">
+            <LiveIndicator topic="traces" />
+            <DownloadButton href={`/api/traces/${trace.id}/bundle`} />
+          </div>
         </CardHeader>
         <CardContent>
           <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -76,7 +80,6 @@ export function TraceDetail({ trace }: { trace: Trace }) {
               {trace.finishedAt ? formatTimestamp(trace.finishedAt) : null}
             </Meta>
             <Meta label="Input">{trace.inputSummary ?? null}</Meta>
-            <Meta label="Output">{trace.outputSummary ?? null}</Meta>
             {trace.relatedIds ? <RelatedIds relatedIds={trace.relatedIds} /> : null}
           </dl>
         </CardContent>
@@ -99,7 +102,7 @@ export function TraceDetail({ trace }: { trace: Trace }) {
           <CardTitle>Timeline</CardTitle>
         </CardHeader>
         <CardContent>
-          <TraceTimeline events={trace.events} />
+          <TraceTimeline events={trace.events} startedAt={trace.startedAt} />
         </CardContent>
       </Card>
     </div>

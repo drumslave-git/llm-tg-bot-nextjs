@@ -42,6 +42,10 @@ export interface ChatCompletionResult {
   model: string;
   usage?: ChatUsage;
   latencyMs: number;
+  /** Exact request payload sent to the endpoint (for Debug bodies). */
+  requestBody: unknown;
+  /** Raw response object returned by the endpoint (for Debug bodies). */
+  responseBody: unknown;
 }
 
 /** Normalize any base URL to its OpenAI-compatible `/v1` form. */
@@ -116,12 +120,12 @@ export async function chatCompletion(
   conn: LlmConnection,
   input: { model: string; messages: ChatMessage[]; timeoutMs?: number },
 ): Promise<ChatCompletionResult> {
+  const requestBody = { model: input.model, messages: input.messages };
   const start = Date.now();
   try {
-    const completion = await client(conn).chat.completions.create(
-      { model: input.model, messages: input.messages },
-      { timeout: input.timeoutMs ?? CHAT_COMPLETION_TIMEOUT_MS },
-    );
+    const completion = await client(conn).chat.completions.create(requestBody, {
+      timeout: input.timeoutMs ?? CHAT_COMPLETION_TIMEOUT_MS,
+    });
     const latencyMs = Date.now() - start;
     const content = completion.choices[0]?.message?.content?.trim() ?? "";
     if (!content) {
@@ -138,6 +142,8 @@ export async function chatCompletion(
           }
         : undefined,
       latencyMs,
+      requestBody,
+      responseBody: completion,
     };
   } catch (err) {
     throw toLlmError(err, conn.baseUrl);
