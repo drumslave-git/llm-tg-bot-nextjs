@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  bigint,
   boolean,
   check,
   index,
@@ -8,6 +9,7 @@ import {
   pgTable,
   text,
   timestamp,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 
 import type { LlmUsage, Trace } from "@/lib/trace";
@@ -163,6 +165,58 @@ export const knownUsers = pgTable(
 
 export type KnownUserRow = typeof knownUsers.$inferSelect;
 export type KnownUserInsert = typeof knownUsers.$inferInsert;
+
+/**
+ * A 1:1 mirror of the Telegram conversation: every human message and every bot
+ * reply, keyed by chat. Rows are captured passively on each incoming message (so
+ * un-addressed group chatter is kept for context) and injected as prior turns
+ * into the LLM request for the current day.
+ *
+ * This is an append-only log, so its primary key is a monotonic identity `id`
+ * (extension-free, gives natural insertion order) rather than the app-UUID
+ * convention used by entity tables. Uniqueness is on `(chat_id, telegram_message_id)`
+ * so `edited_message` updates locate and rewrite the exact stored row.
+ *
+ * Note: Telegram's Bot API delivers `message` and `edited_message` but has no
+ * deletion update for ordinary chats — a bot cannot observe user-initiated
+ * deletions there. `deleted_at` exists so the mirror can represent deletions we
+ * *can* know about (the bot's own deletions, or Business-connection delete
+ * events); it is not populated by ordinary user deletions.
+ */
+export const chatMessages = pgTable(
+  "chat_messages",
+  {
+    /** Monotonic insertion order + PK. Append-only log — identity, not a UUID. */
+    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    /** Telegram chat/group id, as a string (supergroup ids exceed 2^31). */
+    chatId: text("chat_id").notNull(),
+    /** Telegram `message_id` within the chat (unique per chat). */
+    telegramMessageId: bigint("telegram_message_id", { mode: "number" }).notNull(),
+    /** `user` (a human) or `assistant` (the bot's reply). */
+    role: text("role").notNull(),
+    /** Sender's numeric Telegram user id for `user` rows; null for `assistant`. */
+    userId: text("user_id"),
+    /** Full message text (or media caption). */
+    content: text("content").notNull(),
+    /** Telegram `message_id` this message replied to, or null when not a reply. */
+    replyToMessageId: bigint("reply_to_message_id", { mode: "number" }),
+    /** When the message existed in Telegram (`message.date`) — the mirror's clock. */
+    sentAt: timestamp("sent_at", { withTimezone: true }).notNull(),
+    /** Set when a later `edited_message` update rewrote the content. */
+    editedAt: timestamp("edited_at", { withTimezone: true }),
+    /** Set when the message is known to be deleted (see table note). */
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    /** When we captured the row (may differ from `sent_at`). */
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("chat_messages_chat_msg_idx").on(t.chatId, t.telegramMessageId),
+    index("chat_messages_chat_sent_idx").on(t.chatId, t.sentAt),
+  ],
+);
+
+export type ChatMessageRow = typeof chatMessages.$inferSelect;
+export type ChatMessageInsert = typeof chatMessages.$inferInsert;
 
 export type TraceRow = typeof traces.$inferSelect;
 export type TraceInsert = typeof traces.$inferInsert;

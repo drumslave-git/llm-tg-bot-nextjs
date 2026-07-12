@@ -15,12 +15,86 @@ Status values:
 Status: in-progress
 Owner: agent/2026-07-12
 Last updated: 2026-07-12
-Proof: `npm run lint` ✓, `npm run typecheck` ✓, `npm run test` ✓ (81 unit), `npm run test:integration` ✓ (40, real Postgres via Testcontainers), `npm run build` ✓ (0 warnings). **Priority 2 — system & personality prompts (done):** the base system prompt is a fixed code constant (`BASE_SYSTEM_PROMPT` in `features/bot-messaging/server/prompt.ts`); the operator manages personas as a **full personalities CRUD feature** (user decision — corrected from an initial single-field approach). A `personalities` table (migration `0005`: id/name/prompt/timestamps) + `settings.active_personality_id` (FK, `on delete set null`). New `features/personalities/*` (repository/schema/service/ui) with a **`/personalities` page** (create/edit/delete + set-active) and **`/personalities/debug`**; routes `GET/POST /api/personalities`, `PATCH/DELETE /api/personalities/[id]`, `PUT /api/personalities/active`; every mutation traced. Composition (`buildSystemPrompt`/`hasPersonality`, pure) is unchanged: base alone, or base + `---\nAdditional instructions:\n<persona>`; the bot-messaging service records a **`system prompt composed`** step (`personalityApplied` + full composed prompt) between `addressing check` and `request`; the runtime injects the **active** personality's prompt via `getActivePersonalityPrompt()`. Verified live: created a persona on `/personalities`, set it active (Active badge + `activeId` via API), deleted it (list emptied and active auto-cleared via the FK), all four mutations traced `success` on `/personalities/debug`; no console errors. **Known users + owner-by-dropdown**: a `known_users` table (migration `0004`) capturing everyone who messages the bot, a `/users` page with inline alias editing, and the owner is now chosen from a **dropdown of known users** (id stored directly — the earlier lazy @username→id resolution is removed). **Maintenance mode + owner checks** built and verified live (a pure `bot-messaging/policy.ts`; blocked-but-addressed messages traced as skipped). The **shared Debug UI** is now built and verified live — the last feature-contract gap for both `settings` and priority-1 `bot-messaging`. A global `/debug` page (filter by feature/status, pagination, "Download all") plus a shared `/debug/[id]` detail view (metadata panel, error panel, ordered event timeline with LLM usage, per-trace JSON download) and a feature-scoped `/settings/debug`. Backed by `server/trace/service.ts` (list/detail/bundle) over the existing recorder/repository, thin `app/api/traces/**` handlers, and reusable `components/debug/*`. Verified live against the running dev server on real recorded traces: list renders 11 traces; a bot reply detail shows LLM usage (`prompt 38 · completion 184 · total 222 · 5741ms`); an error trace shows the error panel + timeline; `/settings/debug` shows only settings traces; single + filtered bundle downloads return the `llm-tg-bot/trace-bundle@1` envelope with attachment headers; no console errors.
+Proof: `npm run lint` ✓, `npm run typecheck` ✓, `npm run test` ✓ (89 unit), `npm run test:integration` ✓ (47, real Postgres via Testcontainers), `npm run build` ✓ (0 warnings). **Priority 2 — system & personality prompts (done):** the base system prompt is a fixed code constant (`BASE_SYSTEM_PROMPT` in `features/bot-messaging/server/prompt.ts`); the operator manages personas as a **full personalities CRUD feature** (user decision — corrected from an initial single-field approach). A `personalities` table (migration `0005`: id/name/prompt/timestamps) + `settings.active_personality_id` (FK, `on delete set null`). New `features/personalities/*` (repository/schema/service/ui) with a **`/personalities` page** (create/edit/delete + set-active) and **`/personalities/debug`**; routes `GET/POST /api/personalities`, `PATCH/DELETE /api/personalities/[id]`, `PUT /api/personalities/active`; every mutation traced. Composition (`buildSystemPrompt`/`hasPersonality`, pure) is unchanged: base alone, or base + `---\nAdditional instructions:\n<persona>`; the bot-messaging service records a **`system prompt composed`** step (`personalityApplied` + full composed prompt) between `addressing check` and `request`; the runtime injects the **active** personality's prompt via `getActivePersonalityPrompt()`. Verified live: created a persona on `/personalities`, set it active (Active badge + `activeId` via API), deleted it (list emptied and active auto-cleared via the FK), all four mutations traced `success` on `/personalities/debug`; no console errors. **Known users + owner-by-dropdown**: a `known_users` table (migration `0004`) capturing everyone who messages the bot, a `/users` page with inline alias editing, and the owner is now chosen from a **dropdown of known users** (id stored directly — the earlier lazy @username→id resolution is removed). **Maintenance mode + owner checks** built and verified live (a pure `bot-messaging/policy.ts`; blocked-but-addressed messages traced as skipped). The **shared Debug UI** is now built and verified live — the last feature-contract gap for both `settings` and priority-1 `bot-messaging`. A global `/debug` page (filter by feature/status, pagination, "Download all") plus a shared `/debug/[id]` detail view (metadata panel, error panel, ordered event timeline with LLM usage, per-trace JSON download) and a feature-scoped `/settings/debug`. Backed by `server/trace/service.ts` (list/detail/bundle) over the existing recorder/repository, thin `app/api/traces/**` handlers, and reusable `components/debug/*`. Verified live against the running dev server on real recorded traces: list renders 11 traces; a bot reply detail shows LLM usage (`prompt 38 · completion 184 · total 222 · 5741ms`); an error trace shows the error panel + timeline; `/settings/debug` shows only settings traces; single + filtered bundle downloads return the `llm-tg-bot/trace-bundle@1` envelope with attachment headers; no console errors.
 Realtime: the dashboard now updates **live over SSE** (user decision — not polling/WebSockets). Shared layer: in-process `server/realtime/hub.ts` pub/sub, `GET /api/events` SSE stream, `useLiveRefresh`/`LiveIndicator` client; the trace recorder publishes on create/settle. Verified live: with the page untouched, a newly recorded `test-connection` trace appeared at the top of `/debug` on its own; the `/api/events` stream stays open (200); no console errors. Debug rows are now fully clickable (stretched link) — clicking any cell opens the trace.
-Next: **Priority 3 — History feature** (store/retrieve/inject conversation history). Feature 1's only open item is an operator-run live test with a real bot token; feature 2 (prompts) is now done pending the same shared live run.
+**Priority 3 — History feature (done):** a **1:1 conversation mirror** (`chat_messages`, migration `0006`) capturing every human message and every bot reply with full metadata (chat id, Telegram message id, sender id, reply-to pointer, content, sent/edited/deleted timestamps). New `features/history/*` (repository/schema/format/service/ui). Messages are captured **passively** on every incoming message (even un-addressed group chatter) in `bot-manager.onMessage`; the delivered reply is mirrored via a `recordReply` dep. Per reply, `getConversationWindow` loads the **current UTC day's** messages and injects them as **structured prior turns** (`user`/`assistant`) between the cache-stable system prompt and the current message — the bot-messaging service records a `history window loaded` step. In groups, human turns are prefixed with the sender's known-user label. **Edits** are mirrored (`bot.on("edited_message")` → `applyMessageEdit`, traced). **Deletes:** the Telegram Bot API delivers no deletion update for ordinary chats, so user-initiated deletes cannot be mirrored — a `deleted_at` column exists to represent deletions we *can* know about (bot's own / Business-connection events) and the constraint is recorded in Decision Notes. Pages: `/history` (chat list), `/history/[chatId]` (full mirror with edited/deleted badges), `/history/debug` (shared `TraceExplorer`, edit traces). Verified live: seeded two chats → `/history` lists both (most-recent first, correct counts), `/history/777` shows the metadata mirror incl. reply pointer + an `edited` badge, `/history/debug` renders; no console errors; dev DB left clean. Base system prompt gained a short Conversation section (history-awareness).
+Next: **Priority 4 — MCP tools basic support.** The shared feature-1/feature-2/feature-3 gate is an operator-run live test with a real bot token (do not create Telegram credentials).
 
 ### Session log
 
+- 2026-07-12 (follow-up 5): **Live updates for data pages (user directive).**
+  User set a **standing rule**: every data-display page (current and future) must
+  update live over the shared SSE layer — no manual refresh (memory
+  `live-data-no-manual-refresh`). Triggered by History not auto-updating.
+  - Added `history` + `users` to `REALTIME_TOPICS` (`lib/realtime.ts`).
+  - `history` service calls `publishEvent("history")` after each record/edit;
+    known-users service calls `publishEvent("users")` after capture + alias edit.
+  - `<LiveIndicator topic>` added to `/history`, `/history/[chatId]`, and
+    `/users` headers (Debug pages already live via the `traces` topic).
+  - Also uncovered + fixed the real cause of the earlier "reply but nothing in
+    history": the Telegram poller is a boot-time `globalThis` singleton, so HMR
+    doesn't reload its handlers — a dashboard Stop/Start (or dev-server restart)
+    is required after server-side bot changes. After restart, real messages
+    record correctly (verified: chat 312973896 has 4 rows; the 2nd reply
+    referenced the 1st turn → history injection working; trace shows the
+    `history window loaded` step).
+  - Verified the live loop end-to-end: with `/users` open and untouched, an alias
+    PATCH (in-process `publishEvent("users")`) produced a `/users?_rsc` refetch.
+    Known limitation logged: `KnownUsersTable`'s alias input holds server data in
+    `useState`, so that cell doesn't reflect a refresh (row data does); pure
+    Server-Component tables like History update visibly.
+  - Checks: lint ✓, typecheck ✓, unit 89 ✓, integration 47 ✓, build ✓ (0
+    warnings).
+- 2026-07-12 (follow-up 4): **Priority 3 — History feature (done).** A 1:1
+  Telegram conversation mirror + current-day context injection. User decisions
+  this session (via AskUserQuestion): injection = **structured prior turns**
+  (real `user`/`assistant` messages, not an MVP-style tagged transcript block),
+  storing **full per-message metadata**; window scope = **current day's
+  messages**; the mirror must track **edit and delete** events 1:1.
+  - **Schema (migration `0006_tricky_eternity.sql`):** `chat_messages` —
+    identity `id` (append-only log; monotonic order, extension-free — a
+    documented exception to the app-UUID convention), `chat_id`,
+    `telegram_message_id`, `role` (`user`/`assistant`), `user_id`, `content`,
+    `reply_to_message_id`, `sent_at`, `edited_at`, `deleted_at`, `created_at`.
+    Unique `(chat_id, telegram_message_id)` (so `edited_message` locates the row);
+    index `(chat_id, sent_at)`.
+  - **Feature module** `features/history/*`: `repository.ts` (append idempotent
+    on conflict / getByTelegramId / updateContent / getMessagesSince /
+    listChatSummaries / getChatMessages), pure `format.ts` (`startOfUtcDay`,
+    `toPriorTurn` with group speaker prefix, `collectUserIds`), `schema.ts` (zod
+    record/edit inputs + client view types), `service.ts`
+    (`recordIncomingMessage`/`recordAssistantMessage` — passive, untraced;
+    `applyMessageEdit` — traced; `getConversationWindow` — today's messages as
+    prior turns, group labels via `getKnownUsersByIds` + `formatKnownUserLabel`;
+    `getHistoryOverview`/`getChatHistory` for the pages).
+  - **Injection:** bot-messaging `service.ts` gained `loadHistory` + `recordReply`
+    deps and `sendReply` now returns `{ messageId }`; the reply flow records a
+    `history window loaded` step and injects the window between the (cache-stable)
+    system prompt and the current turn, then mirrors the delivered reply
+    (best-effort). `BASE_SYSTEM_PROMPT` gained a short Conversation section.
+  - **Runtime:** `bot-manager.onMessage` mirrors every human message passively
+    (alongside `rememberUser`); `buildDeps` wires `loadHistory`/`recordReply` and
+    returns the delivered id from `sendReply`; new `bot.on("edited_message")` →
+    `applyMessageEdit`; `allowed_updates` now `["message","edited_message"]`.
+  - **Deletes — Telegram limitation:** the Bot API has no deletion update for
+    ordinary private/group chats, so user-initiated deletes cannot be mirrored.
+    `deleted_at` exists for deletions we can know about (bot's own /
+    Business-connection `deleted_business_messages`); recorded in Decision Notes.
+  - **Pages:** `/history` (chat list), `/history/[chatId]` (full mirror with
+    edited/deleted badges), `/history/debug` (shared `TraceExplorer`, edit
+    traces). Nav `/history` un-`soon`ed.
+  - **Tests:** `format.test.ts` (+8: day boundary, prior-turn mapping incl.
+    group prefix + unknown-speaker fallback, id collection); bot-messaging
+    `service.test.ts` (+1 history injection order + `recordReply`; flow/deps
+    updated); `history.integration.test.ts` (+7: append idempotency, empty-skip,
+    today-only window excluding current, group labels, edit rewrite + success
+    trace, edit-unknown → skipped, chat summaries order). Unit 89, integration 47.
+  - **Verified live** on the dev server (migration applied): seeded two chats →
+    `/history` lists both most-recent-first with counts; `/history/777` shows the
+    metadata mirror (reply pointer, `edited` badge); `/history/debug` renders; no
+    console errors. Seeded rows deleted afterward — dev DB clean.
+  - Checks: lint ✓, typecheck ✓, unit 89 ✓, integration 47 ✓, build ✓ (0
+    warnings), db:generate/db:migrate ✓.
 - 2026-07-12 (follow-up 3): **UI-kit consolidation + `/users` card-per-section**
   (user request). (1) Moved the last stray shared primitive, `StatusCard`, into
   the ui-kit (`components/ui/StatusCard.tsx`, barrel-exported with `StatusTone`);
@@ -585,12 +659,12 @@ Next: **Priority 3 — History feature** (store/retrieve/inject conversation his
 | --- | --- | --- | --- |
 | Phase 0: Product and Behavior Inventory | todo | none | Define v1 must-have/nice/drop list |
 | Phase 1: Next.js Foundation | done | lint/typecheck/test/build all pass; folders + scripts + shared infra in place | Documented in README "Repository Layout" |
-| Phase 2: Data Model and Persistence | in-progress | Drizzle schema + migrations + trace repository/recorder + `settings` table; unit 27 + integration 11 (Testcontainers); `db:migrate` verified | Add feature tables (chats/messages) with their features |
+| Phase 2: Data Model and Persistence | in-progress | Drizzle schema + migrations + trace repository/recorder + `settings`/`personalities`/`known_users`/`chat_messages` tables; unit 89 + integration 47 (Testcontainers); `db:migrate` verified. `chat_messages` (history mirror) is the first append-only log table — identity PK | Add remaining feature tables (memories/tasks/mood) with their features |
 | Phase 3: Configuration and Settings | in-progress | Config moved env→DB (user direction). DB-backed LLM-connection settings (`features/settings/*`, typed columns: base URL/API key/model), `openai` provider client (`server/llm/client.ts`), `GET`/`PATCH` `app/api/settings` + `POST /test-connection` (real `/v1/models` probe); key masked + trace-redacted; verified live. Overview/shell/health reworked onto real probes. Plan Phase 3 realigned to this direction | Add model params/prompts with their features; surface traces in shared Debug UI |
 | Phase 4: Telegram Bot Interface | in-progress | In-process long-polling bot (grammy) via `instrumentation.ts` + `server/telegram/bot-manager.ts` singleton; DB-backed token; deterministic addressing; **maintenance mode + owner checks** (owner chosen from the `known_users` dropdown, pure `bot-messaging/policy.ts` id-match, blocked messages traced as skipped); known-user capture on every message; Start/Stop API + Overview control; message traces in the shared Debug UI; verified live. lint/typecheck/test/build ✓ | Live run with a real token (operator-supplied) |
-| Phase 5: LLM Conversation Core | todo | none | Design provider and conversation service |
+| Phase 5: LLM Conversation Core | in-progress | Provider client (`chatCompletion`) + turn assembly: system prompt (base + active personality) → current-day history window (structured prior turns) → current message; usage/latency + full bodies traced. Context assembly now covers prompts + history | Add memory/mood context blocks (priorities 9/11) and the MCP tool-call loop (priority 4) |
 | Phase 6: Dashboard Shell | in-progress | UI kit + responsive AppShell (sidebar/drawer/topbar); Overview, Settings, and now the shared Debug pages (`/debug`, `/debug/[id]`, `/settings/debug`) built on shared primitives + `components/debug/*`; lint/typecheck/test/build ✓, verified live | Add shared table/filter primitive (Debug uses a bespoke table for now); feature routes as features land |
-| Phase 7: Realtime and Status Updates | in-progress | Decision recorded (user): **SSE**, not polling/WebSockets. Shared realtime layer built: in-process `server/realtime/hub.ts` (globalThis pub/sub), `GET /api/events` SSE Route Handler (heartbeat + abort cleanup), client `useLiveRefresh` hook + `LiveIndicator`; trace recorder publishes on create/settle → Debug list live-updates. lint/typecheck/test/build pending re-run | Wire bot/LLM health + job state onto the hub as those surfaces need live updates |
+| Phase 7: Realtime and Status Updates | in-progress | Decision recorded (user): **SSE**, not polling/WebSockets, and a **standing rule that every data-display page live-updates via this layer**. Shared realtime layer: in-process `server/realtime/hub.ts` (globalThis pub/sub), `GET /api/events` SSE Route Handler, client `useLiveRefresh` + `LiveIndicator`. Live topics: `traces` (Debug), `history` (chat mirror), `users` (known users). Verified live | Wire `bot`/`status` topics from the bot manager + status probes onto Overview; reconcile client-state tables to reflect live refreshes |
 | Phase 8: Background Work Design | todo | none | Choose operating model per job |
 | Phase 9: Feature Recreation | todo | none | Start features in priority order |
 | Phase 10: Testing Strategy | todo | none | Configure unit/route/dashboard tests |
@@ -607,7 +681,7 @@ Features not listed here are not v1 by default. Add any additional feature to th
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 1 | Bot messaging: text receive/reply | in-progress | defined (see 2026-07-11 log) | yes (shared `/debug` + `/debug/[id]`, filter by feature) | yes (single + filtered `/api/traces/**/bundle`) | yes (addressing, **maintenance/owner policy**, service, chatCompletion, token masking, trace service/schema) | settings, health, Telegram intake, LLM provider, shared traces | Live run with a real token (operator-supplied) — then priority 2 |
 | 2 | System and personality prompts | done | defined (see 2026-07-12 log) | yes (`/personalities/debug` + shared `/debug`; `system prompt composed` step shows the full composed prompt) | yes (shared `/api/traces/**/bundle`) | yes (`prompt.ts` composition, personalities service/schema/integration, bot-messaging service) | settings, LLM provider | Live token run shares feature-1's gate; next → priority 3 (history) |
-| 3 | History feature | todo | missing | no | no | no | bot messaging, shared traces, DB schema | Design messages/history schema |
+| 3 | History feature | done | defined (see 2026-07-12 follow-up 4 log) | yes (`/history/debug` edit traces + `history window loaded` step on every reply) | yes (shared `/api/traces/**/bundle`) | yes (`format.ts`, history integration, bot-messaging injection) | bot messaging, shared traces, DB schema | Live token run shares the feature-1/2 gate; next → priority 4 (MCP tools). Note: user-initiated Telegram deletes can't be mirrored (Bot API limitation) |
 | 4 | MCP tools basic support | todo | missing | no | no | no | LLM core, shared traces | Design tool registry and tool-call loop |
 | 5 | Search MCP tool | todo | missing | no | no | no | MCP basic support | Define Tavily/search boundary |
 | 6 | Visit/read link MCP tool | todo | missing | no | no | no | MCP basic support | Define fetch/read/SSRF policy |
@@ -626,6 +700,7 @@ Foundation work supports features but is not a substitute for feature completion
 | Area | Status | Proof | Next |
 | --- | --- | --- | --- |
 | Settings and health | in-progress | DB-backed settings (`features/settings/*`): LLM connection (base URL/key/model), **active personality** (`active_personality_id`, FK → personalities, `getActivePersonalityId`), Telegram token, and **owner (id chosen from known users, denormalized username) + maintenance mode**; `GET`/`PATCH` + `test-connection` real probe; secrets masked + trace-redacted; pure `getBotPolicy` read; unit + integration tests. Config source is the DB, not env (`config-in-db-not-env`); Overview + `/api/health` probe real state | Extend settings columns per feature (history next) |
+| History | done | `features/history/*` + `chat_messages` table (migration `0006`): 1:1 Telegram mirror (full metadata, unique `(chat_id, telegram_message_id)`); passive capture in `bot-manager.onMessage` + reply mirroring; `getConversationWindow` injects the current UTC-day's messages as structured prior turns (group speaker labels via known-users); `edited_message` mirrored + traced; `/history`, `/history/[chatId]`, `/history/debug`; unit + integration tested; verified live | Vision rows layer here (priority 7); MCP history/search tools for deeper-than-today lookups (priority 4+) |
 | Personalities | done | `features/personalities/*` + `personalities` table (migration `0005`) + `settings.active_personality_id` (FK on-delete-set-null): CRUD service (create/edit/delete, CI name-uniqueness + max-32 guards), active selection, `getActivePersonalityPrompt` for composition; `/personalities` page (create/edit/delete/set-active) + `/personalities/debug`; `GET/POST /api/personalities`, `PATCH/DELETE /api/personalities/[id]`, `PUT /api/personalities/active`; every mutation traced; unit + integration tested; verified live | Mood (priority 9) extends this table with per-persona mood defaults |
 | LLM provider core | in-progress | `server/llm/client.ts` (`openai`): `listModels`/health probe + `chatCompletion` (reply text + normalized usage + latency, empty-response→503), base-URL normalization, `ApiError` mapping; connection sourced from DB settings; unit-tested (incl. mocked completion) + verified live | Add context assembly (history/prompts) with priorities 2–3; tool-call loop at priority 4 |
 | Telegram intake foundation | in-progress | In-process long-polling `server/telegram/bot-manager.ts` (grammy) — singleton lifecycle, DB-backed token, autostart via `instrumentation.ts` + Start/Stop API; deterministic `features/bot-messaging/server/addressing.ts` + `policy.ts` (owner/maintenance, unit-tested); remembers every human sender to `known_users`; per-message Debug traces; verified live | Live run with a real token |
@@ -646,7 +721,7 @@ Foundation work supports features but is not a substitute for feature completion
 | Shared form components | done | `components/ui` `Input`, `Textarea`, `Select`, `Label`, `Field` (label+hint+error+aria wiring), `Switch`, `Checkbox`; first consumed by `features/settings/ui/SettingsForm.tsx` | Extract a form-state/submit helper if a 2nd feature form duplicates the fetch/status pattern |
 | Shared table/filter components | in-progress | Shared `components/ui/Table` primitives (`Table`/`TableHead`/`TableBody`/`TableRow`/`TableHeaderCell`/`TableCell` — scroll container, borders, header typography, `interactive`/`header` row variants, align/valign). Both `components/debug/TraceList` and `features/known-users/ui/KnownUsersTable` compose from it (no bespoke table markup). Verified live | Add filter/pagination primitives (Debug still uses `DebugFilters`); adopt in new feature tables |
 | Shared debug components | done | `components/debug/*` (barrel): `TraceExplorer` (uncapped list + filters + live + export), `TraceList` (clickable rows), `TraceDetail`, `TraceTimeline` (per-step timing), `JsonBlock` (collapsible, theme-aware `react-json-view-lite`), `TraceStatusBadge`, `DownloadButton`, `DebugFilters`; consumed by `/debug`, `/debug/[id]`, `/settings/debug`; verified live (JSON tree, timings, full bodies, theme switch) | Add per-feature Debug pages as thin `TraceExplorer` wrappers (e.g. a bot-messaging section when it gets a dashboard route) |
-| Shared realtime (SSE) | in-progress | `lib/realtime.ts` (event contract) + `server/realtime/hub.ts` (in-process pub/sub singleton) + `GET /api/events` SSE stream + `components/realtime/useLiveRefresh` hook + `LiveIndicator` pill; trace recorder publishes `traces` events → Debug list refreshes live. Decision: SSE not polling/WS (user) | Publish `bot`/`status` topics from the bot manager + status probes; consume on Overview |
+| Shared realtime (SSE) | in-progress | `lib/realtime.ts` (event contract) + `server/realtime/hub.ts` (in-process pub/sub singleton) + `GET /api/events` SSE stream + `components/realtime/useLiveRefresh` hook + `LiveIndicator` pill. Topics `traces` (Debug), `history` (chat mirror — publishes on record/edit), `users` (known-users — publishes on capture/alias edit) all live; each page drops a `<LiveIndicator topic>` and its service calls `publishEvent`. **Standing rule (user):** every data-display page must live-update via this layer — no manual refresh (memory `live-data-no-manual-refresh`). Verified live: a `users` publish triggered a `/users?_rsc` refetch with the page untouched. Decision: SSE not polling/WS (user) | Publish `bot`/`status` topics from the bot manager + status probes; consume on Overview. Reconcile client-state tables (e.g. `KnownUsersTable` alias input) so live prop changes show |
 | Shared status components | done | `components/ui/Badge` (tones+dot), `EmptyState`, `Skeleton`/`Spinner`, refactored `StatusCard`/`PageHeader` onto tokens | Add explicit error panel when debug UI lands |
 | Test harness | done | Vitest unit config (57) + Testcontainers integration config (22); `server-only` alias stub; `vi.hoisted`+`vi.mock` pattern for isolating services from persistence (see `bot-messaging/service.test.ts`) | Add Route Handler + dashboard smoke tests per feature |
 
@@ -664,6 +739,9 @@ writing `docs/decisions/*.md`. This table is the lightweight record.
 | Owner field timing | done | user | Deferred to the Telegram intake phase (priority 1) — needs the bot to resolve @username→id |
 | Owner selection model | done | user | Owner is **chosen from a dropdown of known users** (users who have messaged the bot), storing the numeric id directly. Supersedes the earlier free-text @username + lazy-resolution approach — no username→id resolution needed since the id is known. |
 | Known-user aliases | done | user | Aliases are **operator-curated manual nicknames**, edited inline on the Users page (not auto-tracked username history). Intended for future name-based group addressing. |
+| History injection model (priority 3) | done | user | **Structured prior turns** — history is replayed as real `user`/`assistant` chat-completion messages between the system prompt and the current turn (not an MVP-style `[RECENT CHAT]` transcript block inside the user message). Keeps the system prompt byte-stable/cache-friendly. Group human turns are prefixed with the sender's known-user label. Storage keeps **full metadata** (chat id, TG message id, sender id, reply-to, content, timestamps) for a 1:1 mirror. |
+| History window scope (priority 3) | done | user | The per-reply context window is **the current day's messages** (UTC day boundary via `startOfUtcDay`), not a fixed message count or a character/token budget. |
+| Telegram edit/delete mirroring (priority 3) | done | agent (constraint surfaced to user) | **Edits** are mirrored via `edited_message` updates. **Deletes cannot be**: the Telegram Bot API delivers no deletion update for ordinary private/group chats (only `deleted_business_messages`, and only for Business connections), so user-initiated deletes are invisible to the bot. `chat_messages.deleted_at` exists to represent deletions we *can* know about (the bot's own deletions, or Business-connection events); it is not populated by ordinary user deletions. |
 | Prompt model (priority 2) | done | user | **Full personalities CRUD feature** (corrected from an initial single-field approach). The base system prompt stays a fixed code constant; personas are a `personalities` table with a **dedicated `/personalities` page** (create/edit/delete + **set active**) and `settings.active_personality_id`. The active persona's prompt is composed into every reply. Mood (priority 9) will build on this table. |
 | Migration workflow | done | user | `generate` committed SQL files; applied via `drizzle-kit migrate` (`npm run db:migrate`), run by the Docker entrypoint before `next start`. No in-app auto-migration (instrumentation approach rejected as non-standard). |
 | DB test strategy | done | user | Real Postgres via Testcontainers (integration suite) |
@@ -686,11 +764,12 @@ No blockers recorded.
 
 ### Current state (2026-07-12)
 
-- Phase 1 done; Phases 2/3/4/6/11 in-progress and verified: `npm run lint`,
-  `npm run typecheck`, `npm run test` (81 unit), `npm run test:integration`
-  (40, Testcontainers), `npm run build` (0 warnings) all pass. Priority-1 bot
-  messaging (text receive/reply) and priority-2 (system & personality prompts —
-  a full personalities CRUD feature with active selection) are built and verified
+- Phase 1 done; Phases 2/3/4/5/6/11 in-progress and verified: `npm run lint`,
+  `npm run typecheck`, `npm run test` (89 unit), `npm run test:integration`
+  (47, Testcontainers), `npm run build` (0 warnings) all pass. Priority-1 bot
+  messaging (text receive/reply), priority-2 (system & personality prompts — a
+  full personalities CRUD feature), and priority-3 (**history** — a 1:1
+  conversation mirror + current-day context injection) are built and verified
   live in-browser; the shared Debug UI (list/detail/download) is built and
   verified live too.
 - **Telegram intake is decided and built**: in-process long polling via
@@ -756,16 +835,33 @@ No blockers recorded.
   composed` step). Do not reintroduce `DEFAULT_SYSTEM_PROMPT` or a single
   `personality_prompt` settings field (that approach was tried and reverted —
   personalities must stay a CRUD feature with active selection).
-- **Next best task: priority 3 — History feature.** Store, retrieve, and inject
-  conversation history into replies. This is the first feature to add per-message
-  persistence (chats/messages tables) — design the schema (see Phase 2's entity
-  list and `../ollama-tg-bot` `features/history/*` for behavior), a service to
-  append/retrieve, and the injection point in `buildSystemPrompt`/the message
-  assembly in `features/bot-messaging/server/service.ts` (history rides the user
-  turn in the MVP, not the system prompt — keep the system prompt cache-stable).
-  Trace history retrieval; add its Debug view via a `TraceExplorer` wrapper.
-  The remaining feature-1/feature-2 gate is an operator-run live test with a real
-  bot token (do not create Telegram credentials).
+- **Priority 3 (History) is done** (2026-07-12 follow-up 4). It's a 1:1
+  conversation mirror (`chat_messages`, migration `0006`) + current-day context
+  injection. Key facts for future work:
+  - Passive capture happens in `bot-manager.onMessage` (every human message,
+    even un-addressed) via `recordIncomingMessage`; the delivered reply is
+    mirrored via the bot-messaging `recordReply` dep. Do not move capture into
+    the addressed-only path — the window needs un-addressed group chatter.
+  - The window is injected as **structured prior turns** by
+    `getConversationWindow` (today's UTC-day messages), placed between the
+    system prompt and the current turn — keep the system prompt cache-stable, do
+    not fold history into it. Vision/media rows will layer onto `chat_messages`
+    at priority 7; the MCP history/search tools (deeper-than-today lookups) layer
+    at priority 4+.
+  - **Do not build a Telegram delete handler for ordinary chats** — the Bot API
+    delivers no deletion update there (see Decision Notes). `deleted_at` is for
+    deletions we can actually observe (bot's own / Business connections).
+- **Next best task: priority 4 — MCP tools basic support.** Design the shared
+  tool registry, tool-schema→provider conversion, the tool-call loop (bounded
+  iterations), tool trace recording, and safe tool-error handling. This unblocks
+  priorities 5 (search) and 6 (visit/read link). Ground behavior in
+  `../ollama-tg-bot` (`features/completions` tool loop + `features/history/mcp-tools.ts`
+  for the history tools' shape) and **ask the user** before choosing the tool
+  transport/registry model (MCP client vs. in-process tool functions) — it's a
+  case-by-case architecture decision. The tool-call loop appends to the same
+  `messages` array the history window feeds, in `features/bot-messaging/server/service.ts`.
+  The remaining feature-1/2/3 gate is an operator-run live test with a real bot
+  token (do not create Telegram credentials).
 - Deferred within bot messaging: markdown/HTML reply rendering (v1 is plain
   text), the MVP LLM "analyzer" addressing fallback, media/vision intake
   (priority 7), and `@grammyjs/runner` for concurrent update handling (built-in

@@ -41,7 +41,9 @@ function deps(over: Partial<BotMessagingDeps> = {}): BotMessagingDeps {
     bot: BOT,
     policy: OPEN_POLICY,
     generateReply: vi.fn().mockResolvedValue({ content: "hi back", model: "m", latencyMs: 5 }),
-    sendReply: vi.fn().mockResolvedValue(undefined),
+    sendReply: vi.fn().mockResolvedValue({ messageId: 99 }),
+    loadHistory: vi.fn().mockResolvedValue({ messages: [], count: 0 }),
+    recordReply: vi.fn().mockResolvedValue(undefined),
     startTyping: vi.fn().mockReturnValue(stopTyping),
     ...over,
   };
@@ -93,9 +95,41 @@ describe("handleIncomingMessage", () => {
     expect(messages[1]).toEqual({ role: "user", content: "hello there" });
     expect(d.sendReply).toHaveBeenCalledWith("hi back");
     expect(recorder.succeed).toHaveBeenCalledOnce();
+    // The delivered reply is mirrored into history, threaded to the triggering msg.
+    expect(d.recordReply).toHaveBeenCalledWith({
+      content: "hi back",
+      telegramMessageId: 99,
+      replyToMessageId: 7,
+    });
     // Typing shown while generating, then stopped once the turn settles.
     expect(d.startTyping).toHaveBeenCalledOnce();
     expect(stopTyping).toHaveBeenCalledOnce();
+  });
+
+  it("injects the loaded history window as prior turns between system and current", async () => {
+    const priorTurns = [
+      { role: "user", content: "earlier question" },
+      { role: "assistant", content: "earlier answer" },
+    ];
+    const d = deps({
+      loadHistory: vi.fn().mockResolvedValue({ messages: priorTurns, count: 2 }),
+    });
+    await handleIncomingMessage(incoming({ text: "follow up" }), d);
+    const messages = (d.generateReply as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(messages.map((m: { role: string }) => m.role)).toEqual([
+      "system",
+      "user",
+      "assistant",
+      "user",
+    ]);
+    expect(messages[1]).toEqual(priorTurns[0]);
+    expect(messages[2]).toEqual(priorTurns[1]);
+    expect(messages[3]).toEqual({ role: "user", content: "follow up" });
+    // The window size is recorded as a step.
+    const loaded = recorder.event.mock.calls
+      .map((c) => c[0])
+      .find((e) => e.message === "history window loaded");
+    expect(loaded.data).toEqual({ messageCount: 2 });
   });
 
   it("uses the base system prompt when no personality is configured", async () => {
@@ -144,10 +178,11 @@ describe("handleIncomingMessage", () => {
     const events = recorder.event.mock.calls.map((c) => c[0]);
     const byMessage = (message: string) => events.find((e) => e.message === message);
 
-    // Fixed flow: addressing check → system prompt → request → response → send.
+    // Fixed flow: addressing → system prompt → history → request → response → send.
     expect(events.map((e) => e.message)).toEqual([
       "addressing check",
       "system prompt composed",
+      "history window loaded",
       "request",
       "response",
       "send message",

@@ -2,6 +2,7 @@ import { Bug, Database } from "lucide-react";
 import Link from "next/link";
 
 import { Button, EmptyState, PageHeader } from "@/components/ui";
+import { LiveIndicator } from "@/components/realtime/LiveIndicator";
 import { listUsers } from "@/features/known-users/server/service";
 import type { KnownUser } from "@/features/known-users/server/schema";
 import { KnownUsersTable } from "@/features/known-users/ui/KnownUsersTable";
@@ -28,12 +29,15 @@ export default async function UsersPage() {
         title="Known users"
         description="Everyone who has messaged the bot. Curate aliases and pick the owner from this list in Settings."
         actions={
-          <Button asChild variant="outline" size="sm">
-            <Link href="/users/debug">
-              <Bug className="h-4 w-4" aria-hidden />
-              Debug
-            </Link>
-          </Button>
+          <div className="flex items-center gap-2">
+            <LiveIndicator topic="users" />
+            <Button asChild variant="outline" size="sm">
+              <Link href="/users/debug">
+                <Bug className="h-4 w-4" aria-hidden />
+                Debug
+              </Link>
+            </Button>
+          </div>
         }
       />
 

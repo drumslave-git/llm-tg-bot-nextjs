@@ -14,6 +14,12 @@ import {
   type BotMessagingDeps,
   type IncomingMessage,
 } from "@/features/bot-messaging/server/service";
+import {
+  applyMessageEdit,
+  getConversationWindow,
+  recordAssistantMessage,
+  recordIncomingMessage,
+} from "@/features/history/server/service";
 import { rememberUser } from "@/features/known-users/server/service";
 import { ApiError } from "@/lib/api-error";
 import { chatCompletion, type ChatMessage } from "@/server/llm/client";
@@ -82,6 +88,10 @@ function buildDeps(
   policy: BotPolicy,
   personalityPrompt: string | null,
 ): BotMessagingDeps {
+  const chatId = String(ctx.chat!.id);
+  const isGroup = ctx.chat!.type !== "private";
+  const currentMessageId = ctx.message!.message_id;
+
   return {
     bot,
     policy,
@@ -95,6 +105,21 @@ function buildDeps(
       const interval = setInterval(tick, TYPING_REFRESH_MS);
       return () => clearInterval(interval);
     },
+    loadHistory() {
+      return getConversationWindow({
+        chatId,
+        isGroup,
+        excludeTelegramMessageId: currentMessageId,
+      });
+    },
+    async recordReply(input) {
+      await recordAssistantMessage({
+        chatId,
+        telegramMessageId: input.telegramMessageId,
+        content: input.content,
+        replyToMessageId: input.replyToMessageId,
+      });
+    },
     async generateReply(messages: ChatMessage[]) {
       const runtime = await getLlmRuntime();
       if (!runtime) {
@@ -106,9 +131,10 @@ function buildDeps(
       );
     },
     async sendReply(text: string) {
-      await ctx.reply(text, {
-        reply_parameters: { message_id: ctx.message!.message_id },
+      const sent = await ctx.reply(text, {
+        reply_parameters: { message_id: currentMessageId },
       });
+      return { messageId: sent.message_id };
     },
   };
 }
@@ -118,9 +144,11 @@ async function onMessage(ctx: Context): Promise<void> {
   const message = ctx.message;
   if (!message || !ctx.chat) return;
 
-  // Remember every human sender (all messages, addressed or not) so the operator
-  // can see who talks to the bot and pick the owner from a concrete list.
+  // Remember every human sender + mirror every human message (addressed or not),
+  // so the operator sees who talks to the bot and the history window has the full
+  // running conversation. Both are best-effort and must not block handling.
   const from = ctx.from;
+  const text = message.text ?? message.caption ?? "";
   if (from && !from.is_bot) {
     await rememberUser({
       userId: String(from.id),
@@ -128,6 +156,16 @@ async function onMessage(ctx: Context): Promise<void> {
       firstName: from.first_name ?? null,
       lastName: from.last_name ?? null,
     });
+    if (text.trim()) {
+      await recordIncomingMessage({
+        chatId: String(ctx.chat.id),
+        telegramMessageId: message.message_id,
+        userId: String(from.id),
+        content: text,
+        replyToMessageId: message.reply_to_message?.message_id ?? null,
+        sentAt: new Date(message.date * 1000),
+      });
+    }
   }
 
   const incoming: IncomingMessage = {
@@ -137,7 +175,7 @@ async function onMessage(ctx: Context): Promise<void> {
     messageId: message.message_id,
     fromId: ctx.from?.id,
     fromIsBot: ctx.from?.is_bot ?? false,
-    text: message.text ?? message.caption ?? "",
+    text,
   };
 
   const [policy, personalityPrompt] = await Promise.all([
@@ -149,6 +187,34 @@ async function onMessage(ctx: Context): Promise<void> {
     incoming,
     buildDeps(ctx, { id: ctx.me.id, username: ctx.me.username }, policy, personalityPrompt),
   );
+}
+
+/**
+ * Mirror a Telegram `edited_message` into history so the stored conversation
+ * tracks edits 1:1. Only text/caption edits are mirrored; edits with no textual
+ * content are ignored.
+ */
+async function onEditedMessage(ctx: Context): Promise<void> {
+  const edited = ctx.editedMessage;
+  if (!edited || !ctx.chat) return;
+  const content = edited.text ?? edited.caption ?? "";
+  if (!content.trim()) return;
+
+  await applyMessageEdit(
+    {
+      chatId: String(ctx.chat.id),
+      telegramMessageId: edited.message_id,
+      content,
+      editedAt: new Date((edited.edit_date ?? edited.date) * 1000),
+    },
+    {
+      kind: "telegram",
+      actor: ctx.from ? String(ctx.from.id) : String(ctx.chat.id),
+      correlationId: `${ctx.chat.id}:${edited.message_id}`,
+    },
+  ).catch((err) => {
+    console.error("Failed to mirror edited message:", errorMessage(err));
+  });
 }
 
 /**
@@ -174,6 +240,7 @@ export async function startBot(): Promise<BotStatus> {
 
     const bot = new Bot(token);
     bot.on("message", (ctx) => onMessage(ctx));
+    bot.on("edited_message", (ctx) => onEditedMessage(ctx));
     bot.catch((err) => {
       console.error("Telegram bot error:", err.error);
     });
@@ -194,7 +261,7 @@ export async function startBot(): Promise<BotStatus> {
     };
 
     // Long-polling loop; do not await (it resolves only when the bot stops).
-    void bot.start({ allowed_updates: ["message"] }).catch((err) => {
+    void bot.start({ allowed_updates: ["message", "edited_message"] }).catch((err) => {
       s.bot = null;
       s.status = { ...s.status, state: "error", error: errorMessage(err) };
     });

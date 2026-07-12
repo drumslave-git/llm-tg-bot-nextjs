@@ -4,6 +4,7 @@ import type { DrizzleDb } from "@/db/drizzle";
 import { getDb } from "@/db/drizzle";
 import { ApiError } from "@/lib/api-error";
 import type { TraceTrigger } from "@/lib/trace";
+import { publishEvent } from "@/server/realtime/hub";
 import { startTrace } from "@/server/trace";
 import {
   getKnownUser,
@@ -50,6 +51,7 @@ export async function rememberUser(
 ): Promise<void> {
   try {
     await upsertKnownUser(db, profile);
+    publishEvent("users");
   } catch {
     // Best-effort capture; swallow so message handling continues.
   }
@@ -71,6 +73,7 @@ export async function updateAliases(
     const record = await setKnownUserAliases(db, userId, input.aliases);
     if (!record) throw ApiError.notFound("Unknown user");
     await trace.event({ type: "db", message: "aliases updated" });
+    publishEvent("users");
     await trace.succeed({
       outputSummary: `${input.aliases.length} alias(es)`,
       relatedIds: { known_users: [userId] },

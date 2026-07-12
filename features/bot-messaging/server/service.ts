@@ -51,13 +51,29 @@ export interface IncomingMessage {
   text: string;
 }
 
+/** A delivered Telegram message, as reported back by the runtime. */
+export interface SentMessage {
+  messageId: number;
+}
+
 /** Collaborators the service needs; injected for testability. */
 export interface BotMessagingDeps {
   bot: BotIdentity;
   /** Generate assistant reply text. Throws on provider/config failure. */
   generateReply: (messages: ChatMessage[]) => Promise<GeneratedReply>;
-  /** Deliver a reply back to the originating chat. */
-  sendReply: (text: string) => Promise<void>;
+  /** Deliver a reply back to the originating chat; resolves with its delivered id. */
+  sendReply: (text: string) => Promise<SentMessage>;
+  /**
+   * Load the current-day conversation window as prior turns to inject before the
+   * current message. Injected so the service stays free of DB/history coupling.
+   */
+  loadHistory: () => Promise<{ messages: ChatMessage[]; count: number }>;
+  /** Persist the delivered assistant reply into the history mirror (best-effort). */
+  recordReply: (input: {
+    content: string;
+    telegramMessageId: number;
+    replyToMessageId: number;
+  }) => Promise<void>;
   /**
    * Begin showing the "typing…" chat action, returning a function that stops it.
    * Called as soon as a message is addressed and stopped once the turn settles,
@@ -190,11 +206,21 @@ export async function handleIncomingMessage(
         },
       });
 
+      // 3. Load the current-day conversation window and inject it as prior turns
+      // between the (cache-stable) system prompt and the current message.
+      const history = await deps.loadHistory();
+      await trace.event({
+        type: "step",
+        message: "history window loaded",
+        data: { messageCount: history.count },
+      });
+
       const messages: ChatMessage[] = [
         { role: "system", content: systemPrompt },
+        ...history.messages,
         { role: "user", content: text },
       ];
-      // 3. LLM request — full request body (recorded before the call so the
+      // 4. LLM request — full request body (recorded before the call so the
       // response step's elapsed time reflects real provider latency).
       await trace.event({
         type: "llm_request",
@@ -218,14 +244,25 @@ export async function handleIncomingMessage(
       });
 
       const outgoing = formatReply(reply.content);
-      await deps.sendReply(outgoing);
+      const sent = await deps.sendReply(outgoing);
       // 5. Delivered message — full content.
       await trace.event({
         type: "output",
         level: "success",
         message: "send message",
-        data: { content: outgoing },
+        data: { content: outgoing, messageId: sent.messageId },
       });
+      // Mirror the reply into history (best-effort — never fail a delivered
+      // reply because persistence hiccupped).
+      try {
+        await deps.recordReply({
+          content: outgoing,
+          telegramMessageId: sent.messageId,
+          replyToMessageId: incoming.messageId,
+        });
+      } catch {
+        // swallow — the reply was delivered; the mirror is a side record
+      }
       await trace.succeed({ outputSummary: outgoing });
       return { status: "replied", text: outgoing };
     } catch (err) {
