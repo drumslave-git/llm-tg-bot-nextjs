@@ -1,9 +1,10 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
+import { recordIncomingMessage } from "@/features/history/server/service";
 import { listTraces } from "@/server/trace/repository";
 import { startTestDb, type TestDb } from "@/test/db";
 import { getKnownUser, upsertKnownUser } from "./repository";
-import { listUsers, rememberUser, updateAliases } from "./service";
+import { addAliasByReference, listUsers, rememberUser, updateAliases } from "./service";
 
 let ctx: TestDb;
 
@@ -75,5 +76,87 @@ describe("updateAliases", () => {
     );
     const { traces } = await listTraces(ctx.db, { feature: "known-users" });
     expect(traces[0].status).toBe("error");
+  });
+});
+
+describe("addAliasByReference", () => {
+  const CHAT = "500";
+  let seq = 0;
+
+  /** Make a known user a participant of a chat by recording a message from them. */
+  async function seedParticipant(
+    profile: { userId: string; username: string | null; firstName: string | null; lastName: string | null },
+    chatId = CHAT,
+  ) {
+    await upsertKnownUser(ctx.db, profile);
+    await recordIncomingMessage(
+      {
+        chatId,
+        telegramMessageId: ++seq,
+        userId: profile.userId,
+        content: `hi from ${profile.userId}`,
+        sentAt: new Date("2026-07-12T10:00:00.000Z"),
+      },
+      ctx.db,
+    );
+  }
+
+  it("resolves a participant by name and appends the new alias, tracing the change", async () => {
+    await seedParticipant({ userId: "1", username: "alice", firstName: "Alice", lastName: "Anderson" });
+
+    const result = await addAliasByReference(
+      { chatId: CHAT, reference: "alice", aliases: ["Ali"] },
+      { kind: "telegram", actor: CHAT },
+      ctx.db,
+    );
+    expect(result).toMatchObject({ status: "updated", added: ["Ali"] });
+    expect((await getKnownUser(ctx.db, "1"))?.aliases).toEqual(["Ali"]);
+
+    const { traces } = await listTraces(ctx.db, { feature: "known-users" });
+    expect(traces[0]).toMatchObject({ action: "add-aliases", status: "success" });
+  });
+
+  it("returns not_found for a name that no participant matches", async () => {
+    await seedParticipant({ userId: "1", username: "alice", firstName: "Alice", lastName: null });
+    const result = await addAliasByReference(
+      { chatId: CHAT, reference: "charlie", aliases: ["C"] },
+      { kind: "telegram", actor: CHAT },
+      ctx.db,
+    );
+    expect(result).toEqual({ status: "not_found" });
+    const { traces } = await listTraces(ctx.db, { feature: "known-users" });
+    expect(traces[0].status).toBe("skipped");
+  });
+
+  it("returns ambiguous when the reference matches more than one participant", async () => {
+    await seedParticipant({ userId: "1", username: "alice_a", firstName: "Alice", lastName: "Anderson" });
+    await seedParticipant({ userId: "2", username: "alice_b", firstName: "Alice", lastName: "Brown" });
+    const result = await addAliasByReference(
+      { chatId: CHAT, reference: "Alice", aliases: ["Ali"] },
+      { kind: "telegram", actor: CHAT },
+      ctx.db,
+    );
+    expect(result).toEqual({ status: "ambiguous", count: 2 });
+  });
+
+  it("is a no-op when the alias is already implied by the user's identity", async () => {
+    await seedParticipant({ userId: "1", username: "alice", firstName: "Alice", lastName: null });
+    const result = await addAliasByReference(
+      { chatId: CHAT, reference: "alice", aliases: ["Alice", "@alice"] },
+      { kind: "telegram", actor: CHAT },
+      ctx.db,
+    );
+    expect(result.status).toBe("noop");
+    expect((await getKnownUser(ctx.db, "1"))?.aliases).toEqual([]);
+  });
+
+  it("only matches participants of the current chat, not users from other chats", async () => {
+    await seedParticipant({ userId: "9", username: "alice", firstName: "Alice", lastName: null }, "999");
+    const result = await addAliasByReference(
+      { chatId: CHAT, reference: "alice", aliases: ["Ali"] },
+      { kind: "telegram", actor: CHAT },
+      ctx.db,
+    );
+    expect(result).toEqual({ status: "not_found" });
   });
 });

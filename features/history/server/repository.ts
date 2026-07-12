@@ -1,6 +1,6 @@
 import "server-only";
 
-import { and, asc, desc, eq, gte, ilike, isNull, lte, ne, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, ilike, isNotNull, isNull, lte, ne, sql } from "drizzle-orm";
 
 import type { DrizzleDb } from "@/db/drizzle";
 import { chatMessages, type ChatMessageRow } from "@/db/schema";
@@ -209,6 +209,25 @@ export async function getChatMessagesInRange(
     )
     .orderBy(asc(chatMessages.id));
   return rows.map(mapRow);
+}
+
+/**
+ * Distinct sender user ids that have posted in a chat (non-deleted `user` rows).
+ * Backs chat-scoped tools that resolve a name reference to a participant, so a
+ * tool can only ever touch someone who has actually spoken in the current chat.
+ */
+export async function getChatParticipantIds(db: DrizzleDb, chatId: string): Promise<string[]> {
+  const rows = await db
+    .selectDistinct({ userId: chatMessages.userId })
+    .from(chatMessages)
+    .where(
+      and(
+        eq(chatMessages.chatId, chatId),
+        isNotNull(chatMessages.userId),
+        isNull(chatMessages.deletedAt),
+      ),
+    );
+  return rows.map((r) => r.userId).filter((id): id is string => id != null);
 }
 
 /** Per-chat rollups (message count + last activity), most-recently-active first. */
