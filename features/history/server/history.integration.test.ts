@@ -4,6 +4,7 @@ import { upsertKnownUser } from "@/features/known-users/server/repository";
 import { startTrace } from "@/server/trace";
 import { listTraces } from "@/server/trace/repository";
 import { startTestDb, type TestDb } from "@/test/db";
+import { getChatMessagesInRange, searchChatMessages } from "./repository";
 import {
   applyMessageEdit,
   getChatHistory,
@@ -222,5 +223,71 @@ describe("getHistoryOverview", () => {
     // Chat 9's last activity (TODAY) is more recent than chat 5's (EARLIER_TODAY).
     expect(overview[0]).toMatchObject({ chatId: "9", messageCount: 1 });
     expect(overview[1]).toMatchObject({ chatId: "5", messageCount: 2 });
+  });
+});
+
+describe("searchChatMessages", () => {
+  it("matches content case-insensitively, excludes deleted, and caps at the limit", async () => {
+    await recordIncomingMessage(
+      { chatId: "5", telegramMessageId: 1, userId: "100", content: "I love Pizza", sentAt: EARLIER_TODAY },
+      ctx.db,
+    );
+    await recordAssistantMessage(
+      { chatId: "5", telegramMessageId: 2, content: "pizza is great", sentAt: EARLIER_TODAY },
+      ctx.db,
+    );
+    await recordIncomingMessage(
+      { chatId: "5", telegramMessageId: 3, userId: "100", content: "unrelated", sentAt: EARLIER_TODAY },
+      ctx.db,
+    );
+    // A different chat must never leak into another chat's search.
+    await recordIncomingMessage(
+      { chatId: "9", telegramMessageId: 1, userId: "100", content: "pizza elsewhere", sentAt: EARLIER_TODAY },
+      ctx.db,
+    );
+
+    const hits = await searchChatMessages(ctx.db, "5", "pizza", 50);
+    expect(hits.map((h) => h.content)).toEqual(["I love Pizza", "pizza is great"]);
+
+    const capped = await searchChatMessages(ctx.db, "5", "pizza", 1);
+    expect(capped).toHaveLength(1);
+  });
+
+  it("treats LIKE metacharacters as literals", async () => {
+    await recordIncomingMessage(
+      { chatId: "5", telegramMessageId: 1, userId: "100", content: "discount 50% today", sentAt: EARLIER_TODAY },
+      ctx.db,
+    );
+    await recordIncomingMessage(
+      { chatId: "5", telegramMessageId: 2, userId: "100", content: "no percent here", sentAt: EARLIER_TODAY },
+      ctx.db,
+    );
+    const hits = await searchChatMessages(ctx.db, "5", "50%", 50);
+    expect(hits.map((h) => h.content)).toEqual(["discount 50% today"]);
+  });
+});
+
+describe("getChatMessagesInRange", () => {
+  it("returns messages within the inclusive range, oldest first", async () => {
+    await recordIncomingMessage(
+      { chatId: "5", telegramMessageId: 1, userId: "100", content: "yesterday", sentAt: YESTERDAY },
+      ctx.db,
+    );
+    await recordIncomingMessage(
+      { chatId: "5", telegramMessageId: 2, userId: "100", content: "early today", sentAt: EARLIER_TODAY },
+      ctx.db,
+    );
+    await recordIncomingMessage(
+      { chatId: "5", telegramMessageId: 3, userId: "100", content: "midday today", sentAt: TODAY },
+      ctx.db,
+    );
+
+    const range = await getChatMessagesInRange(
+      ctx.db,
+      "5",
+      new Date("2026-07-12T00:00:00.000Z"),
+      new Date("2026-07-12T23:59:59.000Z"),
+    );
+    expect(range.map((r) => r.content)).toEqual(["early today", "midday today"]);
   });
 });

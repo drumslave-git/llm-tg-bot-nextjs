@@ -1,6 +1,6 @@
 import "server-only";
 
-import { and, asc, desc, eq, gte, isNull, ne, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, ilike, isNull, lte, ne, sql } from "drizzle-orm";
 
 import type { DrizzleDb } from "@/db/drizzle";
 import { chatMessages, type ChatMessageRow } from "@/db/schema";
@@ -150,6 +150,63 @@ export async function getChatMessagesSince(
     .select()
     .from(chatMessages)
     .where(and(...filters))
+    .orderBy(asc(chatMessages.id));
+  return rows.map(mapRow);
+}
+
+/** Escape LIKE metacharacters so a query term matches literally. */
+function escapeLike(term: string): string {
+  return term.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+}
+
+/**
+ * Non-deleted messages in a chat whose content matches `query` (case-insensitive
+ * substring), oldest first, capped at `limit`. Backs the `history_search` MCP
+ * tool — a deeper-than-today lookup the model can request when the current-day
+ * window is not enough.
+ */
+export async function searchChatMessages(
+  db: DrizzleDb,
+  chatId: string,
+  query: string,
+  limit: number,
+): Promise<ChatMessageRecord[]> {
+  const rows = await db
+    .select()
+    .from(chatMessages)
+    .where(
+      and(
+        eq(chatMessages.chatId, chatId),
+        isNull(chatMessages.deletedAt),
+        ilike(chatMessages.content, `%${escapeLike(query)}%`),
+      ),
+    )
+    .orderBy(asc(chatMessages.id))
+    .limit(limit);
+  return rows.map(mapRow);
+}
+
+/**
+ * Non-deleted messages in a chat sent within `[from, to]` (inclusive), oldest
+ * first. Backs the `history_get_in_range` MCP tool.
+ */
+export async function getChatMessagesInRange(
+  db: DrizzleDb,
+  chatId: string,
+  from: Date,
+  to: Date,
+): Promise<ChatMessageRecord[]> {
+  const rows = await db
+    .select()
+    .from(chatMessages)
+    .where(
+      and(
+        eq(chatMessages.chatId, chatId),
+        isNull(chatMessages.deletedAt),
+        gte(chatMessages.sentAt, from),
+        lte(chatMessages.sentAt, to),
+      ),
+    )
     .orderBy(asc(chatMessages.id));
   return rows.map(mapRow);
 }

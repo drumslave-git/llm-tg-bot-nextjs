@@ -21,8 +21,11 @@ import {
   recordIncomingMessage,
 } from "@/features/history/server/service";
 import { rememberUser } from "@/features/known-users/server/service";
+import { getToolset } from "@/features/mcp-tools/server/service";
 import { ApiError } from "@/lib/api-error";
 import { chatCompletion, type ChatMessage } from "@/server/llm/client";
+import { chatCompletionWithTools } from "@/server/llm/tool-loop";
+import { runWithToolContext } from "@/server/mcp/context";
 
 /**
  * In-process Telegram bot lifecycle (long polling), owned by a single manager.
@@ -120,14 +123,29 @@ function buildDeps(
         replyToMessageId: input.replyToMessageId,
       });
     },
-    async generateReply(messages: ChatMessage[]) {
+    async generateReply(messages: ChatMessage[], onToolCall) {
       const runtime = await getLlmRuntime();
       if (!runtime) {
         throw ApiError.serviceUnavailable("LLM is not configured — set the endpoint and model in Settings");
       }
-      return chatCompletion(
-        { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey },
-        { model: runtime.model, messages },
+      const conn = { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey };
+      // No tools registered → a single inference (cache-friendly path). A reply
+      // that needs no tool still costs one inference even when tools are offered.
+      const toolset = await getToolset();
+      if (!toolset) {
+        return chatCompletion(conn, { model: runtime.model, messages });
+      }
+      // Run the tool-call loop with the current chat bound, so tools only ever
+      // read this conversation's data.
+      return runWithToolContext({ chatId }, () =>
+        chatCompletionWithTools(conn, {
+          model: runtime.model,
+          messages,
+          tools: toolset.tools,
+          callTool: toolset.callTool,
+          onToolCall: (rec) =>
+            onToolCall?.({ name: rec.name, args: rec.args, result: rec.result, ok: rec.ok }),
+        }),
       );
     },
     async sendReply(text: string) {

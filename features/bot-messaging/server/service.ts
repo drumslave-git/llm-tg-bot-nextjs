@@ -56,11 +56,29 @@ export interface SentMessage {
   messageId: number;
 }
 
+/**
+ * A tool call executed while generating a reply, surfaced by the generator so the
+ * service can record it on the reply trace. `result` is the tool's raw result.
+ */
+export interface ReplyToolCall {
+  name: string;
+  args: unknown;
+  result: unknown;
+  ok: boolean;
+}
+
 /** Collaborators the service needs; injected for testability. */
 export interface BotMessagingDeps {
   bot: BotIdentity;
-  /** Generate assistant reply text. Throws on provider/config failure. */
-  generateReply: (messages: ChatMessage[]) => Promise<GeneratedReply>;
+  /**
+   * Generate assistant reply text. Throws on provider/config failure. When tools
+   * are enabled the generator runs a tool-call loop and reports each executed
+   * call via `onToolCall`, so the service records them on the reply trace.
+   */
+  generateReply: (
+    messages: ChatMessage[],
+    onToolCall?: (call: ReplyToolCall) => void | Promise<void>,
+  ) => Promise<GeneratedReply>;
   /** Deliver a reply back to the originating chat; resolves with its delivered id. */
   sendReply: (text: string) => Promise<SentMessage>;
   /**
@@ -228,7 +246,16 @@ export async function handleIncomingMessage(
         data: { messages },
       });
 
-      const reply = await deps.generateReply(messages);
+      // Record each tool call the generator runs (if any) as it happens, so the
+      // reply trace shows the full tool-call loop between request and response.
+      const reply = await deps.generateReply(messages, async (call) => {
+        await trace.event({
+          type: "external_call",
+          level: call.ok ? "info" : "warn",
+          message: `tool: ${call.name}`,
+          data: { args: call.args, result: call.result },
+        });
+      });
       // 4. LLM response — full raw response body + model/token stats.
       await trace.event({
         type: "llm_response",

@@ -198,6 +198,41 @@ describe("handleIncomingMessage", () => {
     expect(byMessage("send message").data.content).toBe(reply);
   });
 
+  it("records tool calls reported by the generator as external_call events on the reply trace", async () => {
+    // A generator that runs one tool before answering, via the onToolCall sink.
+    const d = deps({
+      generateReply: vi.fn().mockImplementation(async (_messages, onToolCall) => {
+        await onToolCall?.({
+          name: "history_search",
+          args: { query: "pizza" },
+          result: { text: "found 2 messages" },
+          ok: true,
+        });
+        return { content: "here you go", model: "m", latencyMs: 5 };
+      }),
+    });
+    const out = await handleIncomingMessage(incoming({ text: "what did we say about pizza?" }), d);
+    expect(out).toEqual({ status: "replied", text: "here you go" });
+
+    const events = recorder.event.mock.calls.map((c) => c[0]);
+    // The tool call lands between the request and the response.
+    expect(events.map((e) => e.message)).toEqual([
+      "addressing check",
+      "system prompt composed",
+      "history window loaded",
+      "request",
+      "tool: history_search",
+      "response",
+      "send message",
+    ]);
+    const toolEvent = events.find((e) => e.message === "tool: history_search");
+    expect(toolEvent.type).toBe("external_call");
+    expect(toolEvent.data).toEqual({
+      args: { query: "pizza" },
+      result: { text: "found 2 messages" },
+    });
+  });
+
   it("blocks a non-owner in maintenance mode: sends a static notice, traces (skipped), no LLM", async () => {
     const d = deps({ policy: { ownerUserId: "1", maintenanceModeEnabled: true } });
     const out = await handleIncomingMessage(incoming({ text: "hello", fromId: 100 }), d);

@@ -5,6 +5,7 @@ import {
   Settings,
   Users,
   VenetianMask,
+  Wrench,
   type LucideIcon,
 } from "lucide-react";
 
@@ -41,6 +42,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { href: "/settings", label: "Settings", icon: Settings },
       { href: "/personalities", label: "Personalities", icon: VenetianMask },
+      { href: "/tools", label: "Tools", icon: Wrench },
     ],
   },
 ];

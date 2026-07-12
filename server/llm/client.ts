@@ -21,7 +21,7 @@ export interface LlmConnection {
 }
 
 const LIST_MODELS_TIMEOUT_MS = 15_000;
-const CHAT_COMPLETION_TIMEOUT_MS = 120_000;
+export const CHAT_COMPLETION_TIMEOUT_MS = 120_000;
 
 /** A single chat turn sent to the model. */
 export interface ChatMessage {
@@ -55,7 +55,8 @@ export function toOpenAiBaseUrl(base: string): string {
   return host.endsWith("/v1") ? host : `${host}/v1`;
 }
 
-function client(conn: LlmConnection): OpenAI {
+/** Construct an OpenAI SDK client for an OpenAI-compatible endpoint. */
+export function createOpenAiClient(conn: LlmConnection): OpenAI {
   return new OpenAI({
     apiKey: conn.apiKey?.trim() || "not-needed",
     baseURL: toOpenAiBaseUrl(conn.baseUrl),
@@ -70,7 +71,7 @@ function apiErrorDetail(err: APIError): string {
 }
 
 /** Map provider/network failures to a clean {@link ApiError} without leaking internals. */
-function toLlmError(err: unknown, baseUrl: string): ApiError {
+export function toLlmError(err: unknown, baseUrl: string): ApiError {
   if (err instanceof ApiError) return err;
   if (err instanceof APIConnectionTimeoutError) {
     return ApiError.serviceUnavailable(`Connection to ${baseUrl} timed out`);
@@ -98,7 +99,7 @@ export async function listModels(
   timeoutMs: number = LIST_MODELS_TIMEOUT_MS,
 ): Promise<string[]> {
   try {
-    const page = await client(conn).models.list({ timeout: timeoutMs });
+    const page = await createOpenAiClient(conn).models.list({ timeout: timeoutMs });
     const seen = new Set<string>();
     for (const entry of page.data ?? []) {
       const id = (entry.id ?? "").trim();
@@ -123,7 +124,7 @@ export async function chatCompletion(
   const requestBody = { model: input.model, messages: input.messages };
   const start = Date.now();
   try {
-    const completion = await client(conn).chat.completions.create(requestBody, {
+    const completion = await createOpenAiClient(conn).chat.completions.create(requestBody, {
       timeout: input.timeoutMs ?? CHAT_COMPLETION_TIMEOUT_MS,
     });
     const latencyMs = Date.now() - start;

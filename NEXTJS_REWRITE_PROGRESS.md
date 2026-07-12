@@ -15,13 +15,91 @@ Status values:
 Status: in-progress
 Owner: agent/2026-07-12
 Last updated: 2026-07-12
-Proof: `npm run lint` ✓, `npm run typecheck` ✓, `npm run test` ✓ (89 unit), `npm run test:integration` ✓ (47, real Postgres via Testcontainers), `npm run build` ✓ (0 warnings). **Priority 2 — system & personality prompts (done):** the base system prompt is a fixed code constant (`BASE_SYSTEM_PROMPT` in `features/bot-messaging/server/prompt.ts`); the operator manages personas as a **full personalities CRUD feature** (user decision — corrected from an initial single-field approach). A `personalities` table (migration `0005`: id/name/prompt/timestamps) + `settings.active_personality_id` (FK, `on delete set null`). New `features/personalities/*` (repository/schema/service/ui) with a **`/personalities` page** (create/edit/delete + set-active) and **`/personalities/debug`**; routes `GET/POST /api/personalities`, `PATCH/DELETE /api/personalities/[id]`, `PUT /api/personalities/active`; every mutation traced. Composition (`buildSystemPrompt`/`hasPersonality`, pure) is unchanged: base alone, or base + `---\nAdditional instructions:\n<persona>`; the bot-messaging service records a **`system prompt composed`** step (`personalityApplied` + full composed prompt) between `addressing check` and `request`; the runtime injects the **active** personality's prompt via `getActivePersonalityPrompt()`. Verified live: created a persona on `/personalities`, set it active (Active badge + `activeId` via API), deleted it (list emptied and active auto-cleared via the FK), all four mutations traced `success` on `/personalities/debug`; no console errors. **Known users + owner-by-dropdown**: a `known_users` table (migration `0004`) capturing everyone who messages the bot, a `/users` page with inline alias editing, and the owner is now chosen from a **dropdown of known users** (id stored directly — the earlier lazy @username→id resolution is removed). **Maintenance mode + owner checks** built and verified live (a pure `bot-messaging/policy.ts`; blocked-but-addressed messages traced as skipped). The **shared Debug UI** is now built and verified live — the last feature-contract gap for both `settings` and priority-1 `bot-messaging`. A global `/debug` page (filter by feature/status, pagination, "Download all") plus a shared `/debug/[id]` detail view (metadata panel, error panel, ordered event timeline with LLM usage, per-trace JSON download) and a feature-scoped `/settings/debug`. Backed by `server/trace/service.ts` (list/detail/bundle) over the existing recorder/repository, thin `app/api/traces/**` handlers, and reusable `components/debug/*`. Verified live against the running dev server on real recorded traces: list renders 11 traces; a bot reply detail shows LLM usage (`prompt 38 · completion 184 · total 222 · 5741ms`); an error trace shows the error panel + timeline; `/settings/debug` shows only settings traces; single + filtered bundle downloads return the `llm-tg-bot/trace-bundle@1` envelope with attachment headers; no console errors.
+Proof: `npm run lint` ✓, `npm run typecheck` ✓, `npm run test` ✓ (107 unit), `npm run test:integration` ✓ (52, real Postgres via Testcontainers), `npm run build` ✓ (0 warnings). **Priority 2 — system & personality prompts (done):** the base system prompt is a fixed code constant (`BASE_SYSTEM_PROMPT` in `features/bot-messaging/server/prompt.ts`); the operator manages personas as a **full personalities CRUD feature** (user decision — corrected from an initial single-field approach). A `personalities` table (migration `0005`: id/name/prompt/timestamps) + `settings.active_personality_id` (FK, `on delete set null`). New `features/personalities/*` (repository/schema/service/ui) with a **`/personalities` page** (create/edit/delete + set-active) and **`/personalities/debug`**; routes `GET/POST /api/personalities`, `PATCH/DELETE /api/personalities/[id]`, `PUT /api/personalities/active`; every mutation traced. Composition (`buildSystemPrompt`/`hasPersonality`, pure) is unchanged: base alone, or base + `---\nAdditional instructions:\n<persona>`; the bot-messaging service records a **`system prompt composed`** step (`personalityApplied` + full composed prompt) between `addressing check` and `request`; the runtime injects the **active** personality's prompt via `getActivePersonalityPrompt()`. Verified live: created a persona on `/personalities`, set it active (Active badge + `activeId` via API), deleted it (list emptied and active auto-cleared via the FK), all four mutations traced `success` on `/personalities/debug`; no console errors. **Known users + owner-by-dropdown**: a `known_users` table (migration `0004`) capturing everyone who messages the bot, a `/users` page with inline alias editing, and the owner is now chosen from a **dropdown of known users** (id stored directly — the earlier lazy @username→id resolution is removed). **Maintenance mode + owner checks** built and verified live (a pure `bot-messaging/policy.ts`; blocked-but-addressed messages traced as skipped). The **shared Debug UI** is now built and verified live — the last feature-contract gap for both `settings` and priority-1 `bot-messaging`. A global `/debug` page (filter by feature/status, pagination, "Download all") plus a shared `/debug/[id]` detail view (metadata panel, error panel, ordered event timeline with LLM usage, per-trace JSON download) and a feature-scoped `/settings/debug`. Backed by `server/trace/service.ts` (list/detail/bundle) over the existing recorder/repository, thin `app/api/traces/**` handlers, and reusable `components/debug/*`. Verified live against the running dev server on real recorded traces: list renders 11 traces; a bot reply detail shows LLM usage (`prompt 38 · completion 184 · total 222 · 5741ms`); an error trace shows the error panel + timeline; `/settings/debug` shows only settings traces; single + filtered bundle downloads return the `llm-tg-bot/trace-bundle@1` envelope with attachment headers; no console errors.
 Realtime: the dashboard now updates **live over SSE** (user decision — not polling/WebSockets). Shared layer: in-process `server/realtime/hub.ts` pub/sub, `GET /api/events` SSE stream, `useLiveRefresh`/`LiveIndicator` client; the trace recorder publishes on create/settle. Verified live: with the page untouched, a newly recorded `test-connection` trace appeared at the top of `/debug` on its own; the `/api/events` stream stays open (200); no console errors. Debug rows are now fully clickable (stretched link) — clicking any cell opens the trace.
 **Priority 3 — History feature (done):** a **1:1 conversation mirror** (`chat_messages`, migration `0006`) capturing every human message and every bot reply with full metadata (chat id, Telegram message id, sender id, reply-to pointer, content, sent/edited/deleted timestamps). New `features/history/*` (repository/schema/format/service/ui). Messages are captured **passively** on every incoming message (even un-addressed group chatter) in `bot-manager.onMessage`; the delivered reply is mirrored via a `recordReply` dep. Per reply, `getConversationWindow` loads the **current UTC day's** messages and injects them as **structured prior turns** (`user`/`assistant`) between the cache-stable system prompt and the current message — the bot-messaging service records a `history window loaded` step. In groups, human turns are prefixed with the sender's known-user label. **Edits** are mirrored (`bot.on("edited_message")` → `applyMessageEdit`, traced). **Deletes:** the Telegram Bot API delivers no deletion update for ordinary chats, so user-initiated deletes cannot be mirrored — a `deleted_at` column exists to represent deletions we *can* know about (bot's own / Business-connection events) and the constraint is recorded in Decision Notes. Pages: `/history` (chat list), `/history/[chatId]` (full mirror with edited/deleted badges), `/history/debug` (shared `TraceExplorer`, edit traces). Verified live: seeded two chats → `/history` lists both (most-recent first, correct counts), `/history/777` shows the metadata mirror incl. reply pointer + an `edited` badge, `/history/debug` renders; no console errors; dev DB left clean. Base system prompt gained a short Conversation section (history-awareness).
-Next: **Priority 4 — MCP tools basic support.** The shared feature-1/feature-2/feature-3 gate is an operator-run live test with a real bot token (do not create Telegram credentials).
+**Priority 4 — MCP tools basic support (done):** tools use the **real MCP SDK** (`@modelcontextprotocol/sdk`, in-process — user decision, MVP parity): one shared `McpServer` with per-feature tool registrars, linked to a `Client` over an in-process transport pair (`server/mcp/*`: `in-process-transport`, `registry` `BotMcpRegistry`, `openai-tools` conversion, `context` per-turn `AsyncLocalStorage` chat binding, `runtime` `globalThis` singleton). A **bounded, stall-guarded tool-call loop** (`server/llm/tool-loop.ts` — pure `runToolLoop` core + `chatCompletionWithTools`) appends tool results to the same `messages` array the history window feeds, so a reply that needs no tool is still a single cache-friendly inference. The **first history MCP tools** ship (user decision): `history_search` + `history_get_in_range` (`features/history/server/mcp-tools.ts`) — deeper-than-today lookups scoped to the current chat via the tool context (the model never passes a chat id). **All registered tools are always available** — there is **no per-tool on/off** (user decision, follow-up 8): the runtime always offers every registered tool via `getToolset()`. The **`/tools` page** is a read-only registry listing (grouped by feature); `GET /api/tools`. Tool **calls** are recorded as full `external_call` events on the bot-messaging **reply** trace (args + result), so they show in `/debug` — the MCP-tools feature owns no traces of its own, so it has no dedicated Debug page. Verified via the test suite (the `getToolsView`/`getToolset` unit test drives the real in-process registry end to end) + typecheck/build; an earlier live check confirmed the page renders and traces record before the on/off mechanism was removed. The remaining feature-1..4 gate is an operator-run live LLM+token round-trip.
+Next: **Priority 5 — Search MCP tool** (Tavily), built on the MCP infra above. The shared feature-1..4 gate is an operator-run live test with a real bot token (do not create Telegram credentials).
 
 ### Session log
 
+- 2026-07-12 (follow-up 8): **Removed MCP tool on/off** (user: "we dont need
+  turning on/off for mcp tools"). All registered MCP tools are now **always
+  available** to the model; the runtime always offers every registered tool.
+  - **Deleted:** the `settings.enabled_tool_names` column (migration `0007`
+    **squashed** — sql + snapshot + journal entry removed, dev DB column dropped +
+    stray `__drizzle_migrations` row deleted; `db:generate` shows no diff, settings
+    back to 10 columns), settings `getEnabledToolNames`/`setEnabledToolNames`, the
+    registry enabled-set (`setEnabledToolNames` + filtering — `listAllTools` →
+    `listTools`, `callTool` no longer gates), mcp-tools `setToolEnabled` +
+    `setToolEnabledSchema` + `ToolView.enabled`, `PATCH /api/tools/[name]`, the
+    `/tools/debug` page, and the `tools` SSE topic.
+  - **Now:** `getToolset()` (was `getEnabledToolset`) returns every registered
+    tool; bot-manager always runs the tool loop when any tool is registered.
+    `getToolsView()` is a read-only registry listing; the `/tools` page renders it
+    as a static, grouped, read-only list (no switches, no Live pill, no Debug
+    link). The `mcp-tools` service test moved to the unit suite (no DB).
+  - Checks: lint ✓, typecheck ✓, unit **107** ✓, integration **52** ✓, build ✓
+    (0 warnings), `db:generate` (no diff) ✓. Live browser re-check pending — the
+    dev server must be restarted to pick up server-side changes (the MCP registry
+    is a `globalThis` singleton, like the bot poller; HMR does not refresh it).
+- 2026-07-12 (follow-up 7): **Priority 4 — MCP tools basic support (done).**
+  Tool transport = **real MCP SDK, in-process** (user decision via
+  AskUserQuestion — MVP parity; enables connecting external MCP servers later);
+  v1 scope = **infrastructure + the first history tools** (user decision).
+  - **Dep:** `@modelcontextprotocol/sdk@^1.29` (verified it works with this repo's
+    **zod 4** — peer `^3.25 || ^4.0`; the working `registerTool` form takes a
+    **ZodRawShape**, not `z.object(...)`).
+  - **Shared MCP infra** `server/mcp/*`: `in-process-transport.ts` (linked
+    `Transport` pair), `tool-result.ts` (`McpToolCallResult`), `openai-tools.ts`
+    (`mcpToolToOpenAi` — strips the SDK's `$schema` marker; `callToolResultToText`;
+    `toToolCallResult`), `context.ts` (`AsyncLocalStorage` per-turn `{chatId}` +
+    `runWithToolContext`/`getToolContext`), `registry.ts` (`BotMcpRegistry`:
+    server↔client connect, `registerTools(feature, registrar, names)`,
+    `listAllTools`/`listOpenAiTools` (enabled-filtered)/`callTool`), `runtime.ts`
+    (`loadMcpRegistry` — `globalThis` singleton, registers history tools).
+  - **Tool-call loop** `server/llm/tool-loop.ts`: pure `runToolLoop` (progress-/
+    stall-guarded, `MAX_STALL_ROUNDS=3`, optional `maxRounds`, usage+latency
+    summed, `onToolCall` per call) + `chatCompletionWithTools` (wires the OpenAI
+    client; same `ChatCompletionResult` shape as `chatCompletion`; throws on a
+    stalled/empty loop). `client.ts` now exports `createOpenAiClient`/`toLlmError`/
+    `CHAT_COMPLETION_TIMEOUT_MS` for reuse.
+  - **History tools** `features/history/server/mcp-tools.ts`: `history_search`
+    (case-insensitive content match, multi-query merge) + `history_get_in_range`
+    (ISO range). Chat bound via the tool context (no model-supplied id → no
+    cross-chat leakage). New repo queries `searchChatMessages` (LIKE-escaped) +
+    `getChatMessagesInRange`.
+  - **Enablement + dashboard** `features/mcp-tools/*`: `settings.enabled_tool_names
+    text[]` (migration `0007`) with server-only `getEnabledToolNames`/
+    `setEnabledToolNames` accessors; `service.ts` (`getToolsView`,
+    `setToolEnabled` — traced under feature `mcp-tools`, prunes stale names,
+    `getEnabledToolset` for the runtime). `/tools` page (per-tool switches, live
+    via new `tools` SSE topic) + `/tools/debug`; `GET /api/tools`, `PATCH
+    /api/tools/[name]`. Nav gained a **Tools** item.
+  - **Wiring:** `bot-manager.buildDeps.generateReply` now resolves the enabled
+    toolset per turn — none → single `chatCompletion` (unchanged); some → run
+    `chatCompletionWithTools` inside `runWithToolContext({chatId})`. Bot-messaging
+    `service.ts` `generateReply` gained an optional `onToolCall` sink; each tool
+    call is recorded as a full `external_call` event on the **reply** trace
+    (between `request` and `response`), so tool activity shows in `/debug` — no
+    separate feature trace for calls.
+  - **Tests:** unit `server/mcp/openai-tools.test.ts` (+6), `server/mcp/
+    registry.test.ts` (+4, in-process SDK round-trip — proves zod-4 compat),
+    `server/llm/tool-loop.test.ts` (+7: answer, tool→answer, tool error,
+    isError, stall, maxRounds), `features/mcp-tools/server/schema.test.ts` (+2),
+    bot-messaging `service.test.ts` (+1: tool call → `external_call` event flow) →
+    **108 unit**. Integration: history repo search/range (+3),
+    `features/mcp-tools/server/mcp-tools.integration.test.ts` (+7: view, enable/
+    disable + trace, unknown→fail, stale-prune, toolset null/resolved) → **59**.
+  - **Verified live** (dev server + dev DB, migration applied): `/tools` lists the
+    two history tools grouped under `history`; enabling `history_search` persisted
+    (Enabled badge; toggle flipped) and recorded an `mcp-tools`/`enable` success
+    trace on `/tools/debug` (139ms); `GET`/`PATCH /api/tools` return the standard
+    envelope; no console errors. Dev DB restored (both tools disabled).
+  - **Not yet verified:** a real LLM tool-call round-trip through a live bot —
+    shares the operator-run token gate for features 1–4.
+  - Checks: lint ✓, typecheck ✓, unit 108 ✓, integration 59 ✓, build ✓ (0
+    warnings), db:generate/db:migrate ✓.
 - 2026-07-12 (follow-up 6): **History message → trace navigation + newest-first
   order** (user requests). (1) The per-chat mirror (`/history/[chatId]`) is now
   ordered **newest first** (`getChatMessages` → `desc(id)`); the LLM injection
@@ -680,7 +758,7 @@ Next: **Priority 4 — MCP tools basic support.** The shared feature-1/feature-2
 | Phase 2: Data Model and Persistence | in-progress | Drizzle schema + migrations + trace repository/recorder + `settings`/`personalities`/`known_users`/`chat_messages` tables; unit 89 + integration 47 (Testcontainers); `db:migrate` verified. `chat_messages` (history mirror) is the first append-only log table — identity PK | Add remaining feature tables (memories/tasks/mood) with their features |
 | Phase 3: Configuration and Settings | in-progress | Config moved env→DB (user direction). DB-backed LLM-connection settings (`features/settings/*`, typed columns: base URL/API key/model), `openai` provider client (`server/llm/client.ts`), `GET`/`PATCH` `app/api/settings` + `POST /test-connection` (real `/v1/models` probe); key masked + trace-redacted; verified live. Overview/shell/health reworked onto real probes. Plan Phase 3 realigned to this direction | Add model params/prompts with their features; surface traces in shared Debug UI |
 | Phase 4: Telegram Bot Interface | in-progress | In-process long-polling bot (grammy) via `instrumentation.ts` + `server/telegram/bot-manager.ts` singleton; DB-backed token; deterministic addressing; **maintenance mode + owner checks** (owner chosen from the `known_users` dropdown, pure `bot-messaging/policy.ts` id-match, blocked messages traced as skipped); known-user capture on every message; Start/Stop API + Overview control; message traces in the shared Debug UI; verified live. lint/typecheck/test/build ✓ | Live run with a real token (operator-supplied) |
-| Phase 5: LLM Conversation Core | in-progress | Provider client (`chatCompletion`) + turn assembly: system prompt (base + active personality) → current-day history window (structured prior turns) → current message; usage/latency + full bodies traced. Context assembly now covers prompts + history | Add memory/mood context blocks (priorities 9/11) and the MCP tool-call loop (priority 4) |
+| Phase 5: LLM Conversation Core | in-progress | Provider client (`chatCompletion`) + turn assembly: system prompt (base + active personality) → current-day history window (structured prior turns) → current message; usage/latency + full bodies traced. **MCP tool-call loop** landed (`server/llm/tool-loop.ts` — bounded/stall-guarded, appends tool results to the same messages array); tool calls traced as `external_call` on the reply trace | Add memory/mood context blocks (priorities 9/11); v1 tool-call safety is in place |
 | Phase 6: Dashboard Shell | in-progress | UI kit + responsive AppShell (sidebar/drawer/topbar); Overview, Settings, and now the shared Debug pages (`/debug`, `/debug/[id]`, `/settings/debug`) built on shared primitives + `components/debug/*`; lint/typecheck/test/build ✓, verified live | Add shared table/filter primitive (Debug uses a bespoke table for now); feature routes as features land |
 | Phase 7: Realtime and Status Updates | in-progress | Decision recorded (user): **SSE**, not polling/WebSockets, and a **standing rule that every data-display page live-updates via this layer**. Shared realtime layer: in-process `server/realtime/hub.ts` (globalThis pub/sub), `GET /api/events` SSE Route Handler, client `useLiveRefresh` + `LiveIndicator`. Live topics: `traces` (Debug), `history` (chat mirror), `users` (known users). Verified live | Wire `bot`/`status` topics from the bot manager + status probes onto Overview; reconcile client-state tables to reflect live refreshes |
 | Phase 8: Background Work Design | todo | none | Choose operating model per job |
@@ -700,8 +778,8 @@ Features not listed here are not v1 by default. Add any additional feature to th
 | 1 | Bot messaging: text receive/reply | in-progress | defined (see 2026-07-11 log) | yes (shared `/debug` + `/debug/[id]`, filter by feature) | yes (single + filtered `/api/traces/**/bundle`) | yes (addressing, **maintenance/owner policy**, service, chatCompletion, token masking, trace service/schema) | settings, health, Telegram intake, LLM provider, shared traces | Live run with a real token (operator-supplied) — then priority 2 |
 | 2 | System and personality prompts | done | defined (see 2026-07-12 log) | yes (`/personalities/debug` + shared `/debug`; `system prompt composed` step shows the full composed prompt) | yes (shared `/api/traces/**/bundle`) | yes (`prompt.ts` composition, personalities service/schema/integration, bot-messaging service) | settings, LLM provider | Live token run shares feature-1's gate; next → priority 3 (history) |
 | 3 | History feature | done | defined (see 2026-07-12 follow-up 4 log) | yes (`/history/debug` edit traces + `history window loaded` step on every reply) | yes (shared `/api/traces/**/bundle`) | yes (`format.ts`, history integration, bot-messaging injection) | bot messaging, shared traces, DB schema | Live token run shares the feature-1/2 gate; next → priority 4 (MCP tools). Note: user-initiated Telegram deletes can't be mirrored (Bot API limitation) |
-| 4 | MCP tools basic support | todo | missing | no | no | no | LLM core, shared traces | Design tool registry and tool-call loop |
-| 5 | Search MCP tool | todo | missing | no | no | no | MCP basic support | Define Tavily/search boundary |
+| 4 | MCP tools basic support | done | defined (see 2026-07-12 follow-up 7/8 logs) | n/a (pure infra, no feature mutations) — tool **calls** appear as `external_call` events on the bot-messaging **reply** traces in `/debug` | yes (shared `/api/traces/**/bundle`) | yes (mcp registry/openai-tools/tool-loop/mcp-tools-service unit, history search/range integration, bot-messaging tool-event flow) | LLM core, shared traces, history | Live LLM tool round-trip shares the token gate; next → priority 5 (search) |
+| 5 | Search MCP tool | todo | missing | no | no | no | MCP basic support | Define Tavily/search boundary — register as an MCP tool via `server/mcp` + `/tools` enablement |
 | 6 | Visit/read link MCP tool | todo | missing | no | no | no | MCP basic support | Define fetch/read/SSRF policy |
 | 7 | Bot messaging: vision | todo | missing | no | no | no | bot messaging, media schema, LLM provider | Define media intake and vision context |
 | 8 | Vision backfill background job | todo | missing | no | no | no | bot vision, background job model | Define backfill locking/status model |
@@ -724,6 +802,7 @@ Foundation work supports features but is not a substitute for feature completion
 | Telegram intake foundation | in-progress | In-process long-polling `server/telegram/bot-manager.ts` (grammy) — singleton lifecycle, DB-backed token, autostart via `instrumentation.ts` + Start/Stop API; deterministic `features/bot-messaging/server/addressing.ts` + `policy.ts` (owner/maintenance, unit-tested); remembers every human sender to `known_users`; per-message Debug traces; verified live | Live run with a real token |
 | Known users | done | `features/known-users/*` + `known_users` table (migration `0004`): captured on every message (profile refresh, aliases preserved); `/users` page with inline alias editing (dedupe/trim), `/users/debug`; `GET /api/users` + `PATCH /api/users/[id]`; alias edits traced; owner is chosen from this list. Unit + integration tested; verified live | Use aliases for name-based addressing when the group analyzer lands |
 | Dashboard overview | in-progress | `app/page.tsx` on real probes (`server/status.ts`: `SELECT 1` + live `/v1/models`); sidebar bot-status on cheap DB readiness; verified live | Add real metrics + Telegram status once those features land |
+| MCP tools | done | `server/mcp/*` (real `@modelcontextprotocol/sdk`, in-process: transport/registry/openai-tools/context/runtime singleton) + `server/llm/tool-loop.ts` (bounded/stall-guarded loop); `features/mcp-tools/*` (`getToolsView`/`getToolset` + read-only `/tools` page + `GET /api/tools`); **all registered tools always available (no on/off)**; first tools = history `history_search`/`history_get_in_range` (chat-scoped via `AsyncLocalStorage`); tool calls traced as `external_call` on reply traces; unit + integration tested | Add search (priority 5) + link (priority 6) tools via the same registrar pattern; images in tool results deferred to vision (priority 7) |
 | Debug traces and LLM usage | done | `lib/trace.ts` types + `server/trace` recorder/repository/service on Drizzle; shared Debug UI (`/debug`, `/debug/[id]`, `/settings/debug`) renders steps, LLM request/response + token usage, errors, related ids; JSON bundle download; unit + integration tested; verified live | Add trace-context to the Route Handler wrapper so API calls auto-record; surface a trace link from Overview status cards |
 
 ## Shared Infrastructure Progress
@@ -767,6 +846,10 @@ writing `docs/decisions/*.md`. This table is the lightweight record.
 | Telegram webhook vs polling | done | user | **Long polling, in-process** (started from `instrumentation.ts`), not a webhook and not a separate worker. Rationale: self-hosted single container behind NAT (no inbound HTTPS needed); I/O-bound handlers already run concurrently on the event loop, so a worker/thread buys nothing now. Isolated behind a bot-manager singleton so moving to a dedicated worker later (multi-replica / CPU-bound) is a contained change. |
 | Telegram poller lifecycle | done | user | **Autostart on boot** (fails gracefully and surfaces on the dashboard when no token) **+ dashboard Start/Stop** controls. Token lives in DB settings; a token change requires restart (poller binds token at start). |
 | Realtime polling vs SSE vs WebSocket | done | user | **SSE via standard Route Handlers** (a single `GET /api/events` stream + client hook), not polling and not WebSockets. Rationale: all current live needs (bot/LLM health, jobs, debug traces) are one-way server→client; SSE is Next-standard, runs under `next start` and the standalone Docker image with no custom server, whereas WebSockets would require a custom Node server / separate service + sticky sessions. In-process hub (`server/realtime/hub.ts`, `globalThis` singleton) fans out to subscribers; matches the single-container model. WebSockets revisited only if a feature needs client→server streaming (e.g. browser-agent control at priority 13). |
+| MCP tool transport/registry (priority 4) | done | user | **Real MCP SDK, in-process** (`@modelcontextprotocol/sdk`) — one shared `McpServer` with per-feature registrars, linked to a `Client` over an in-process transport pair, tools converted to OpenAI tool shape. Chosen over a plain in-process tool registry for MVP parity and the ability to connect **external** MCP servers later with the same loop. Verified compatible with the repo's zod 4. |
+| MCP v1 scope (priority 4) | done | user | **Infrastructure + the first history tools.** Ship the registry, tool-call loop, per-tool trace recording, safe tool errors, tests, AND expose history as MCP tools now (`history_search`, `history_get_in_range` — deeper-than-today lookups). |
+| MCP tool on/off (priority 4) | done | user | **No per-tool on/off — all registered tools are always available** to the model ("we dont need turning on/off for mcp tools"). The earlier `settings.enabled_tool_names` + `/tools` toggles were removed and the migration squashed. The `/tools` page is a read-only registry listing. |
+| MCP tool trace placement (priority 4) | done | agent | Tool **calls** are traced as `external_call` events on the bot-messaging **reply** trace (full args+result), so they appear in `/debug` — no separate per-call feature trace, and the `mcp-tools` feature (now pure infra, no mutations) has no dedicated Debug page. Tools are bound to the current chat via `AsyncLocalStorage` (the model never passes a chat id → no cross-chat leakage). |
 | Background job operating model | todo | — | undecided |
 
 ## Blockers
@@ -869,17 +952,34 @@ No blockers recorded.
   - **Do not build a Telegram delete handler for ordinary chats** — the Bot API
     delivers no deletion update there (see Decision Notes). `deleted_at` is for
     deletions we can actually observe (bot's own / Business connections).
-- **Next best task: priority 4 — MCP tools basic support.** Design the shared
-  tool registry, tool-schema→provider conversion, the tool-call loop (bounded
-  iterations), tool trace recording, and safe tool-error handling. This unblocks
-  priorities 5 (search) and 6 (visit/read link). Ground behavior in
-  `../ollama-tg-bot` (`features/completions` tool loop + `features/history/mcp-tools.ts`
-  for the history tools' shape) and **ask the user** before choosing the tool
-  transport/registry model (MCP client vs. in-process tool functions) — it's a
-  case-by-case architecture decision. The tool-call loop appends to the same
-  `messages` array the history window feeds, in `features/bot-messaging/server/service.ts`.
-  The remaining feature-1/2/3 gate is an operator-run live test with a real bot
-  token (do not create Telegram credentials).
+- **Priority 4 (MCP tools basic support) is done** (2026-07-12 follow-up 7).
+  Tools use the **real MCP SDK, in-process** (user decision). Key facts for future
+  tool work (priorities 5, 6, 12):
+  - A new tool-owning feature adds a `server/mcp-tools.ts` with a
+    `registerXMcpTools(server)` registrar + exported tool-name list, then registers
+    it in `server/mcp/runtime.ts` `build()`. Handlers read the current chat via
+    `getToolContext()` and their own persistence (`getDb()`); they must NOT accept
+    a caller-supplied chat/entity id.
+  - `registerTool` inputSchema is a **ZodRawShape** (`{ q: z.string() }`), not
+    `z.object(...)`. Tools return `{ content:[{type:"text",text}], structuredContent }`.
+  - **All registered tools are always available — there is no on/off** (user
+    decision, follow-up 8). The runtime resolves the toolset with `getToolset()`
+    and the loop lives in `server/llm/tool-loop.ts`; a new tool just needs a
+    registrar wired into `server/mcp/runtime.ts`. Tool calls are traced as
+    `external_call` events on the **reply** trace (do not add a separate per-call
+    trace). The `/tools` page is a read-only registry listing.
+  - The MVP's history/image/link/search/memory/tasks tools + `tool-loop.ts` remain
+    the behavior reference under `../ollama-tg-bot`.
+- **Next best task: priority 5 — Search MCP tool.** Register a Tavily-backed
+  `web_search` MCP tool through `server/mcp` (a `features/web-search` module with a
+  `register…McpTools` registrar added to `server/mcp/runtime.ts`); it becomes
+  available automatically (no on/off). The API key belongs in DB-backed settings
+  (memory `config-in-db-not-env`)
+  — add a settings column + a server-only accessor, and give the tool a host
+  context (extend `McpToolContext` or a registrar arg) rather than reading env.
+  Ground behavior in `../ollama-tg-bot` `features/web-search/mcp-tools.ts`. The
+  remaining feature-1..4 gate is an operator-run live test with a real bot token
+  (do not create Telegram credentials).
 - Deferred within bot messaging: markdown/HTML reply rendering (v1 is plain
   text), the MVP LLM "analyzer" addressing fallback, media/vision intake
   (priority 7), and `@grammyjs/runner` for concurrent update handling (built-in
