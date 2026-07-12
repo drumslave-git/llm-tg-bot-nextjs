@@ -1,7 +1,6 @@
 import { Bug, Settings as SettingsIcon } from "lucide-react";
 import Link from "next/link";
 
-import { StatusCard, type StatusTone } from "@/components/StatusCard";
 import {
   Badge,
   Button,
@@ -12,6 +11,8 @@ import {
   CardTitle,
   EmptyState,
   PageHeader,
+  StatusCard,
+  type StatusTone,
 } from "@/components/ui";
 import { BotControl } from "@/features/bot-messaging/ui/BotControl";
 import { getSettings } from "@/features/settings/server/service";

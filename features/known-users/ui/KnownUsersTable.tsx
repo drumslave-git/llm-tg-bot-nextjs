@@ -5,6 +5,11 @@ import { useState } from "react";
 
 import {
   Button,
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
   EmptyState,
   Input,
   Table,
@@ -105,31 +110,41 @@ function AliasRow({ user }: { user: KnownUser }) {
 }
 
 export function KnownUsersTable({ users }: { users: KnownUser[] }) {
-  if (users.length === 0) {
-    return (
-      <EmptyState
-        icon={Users}
-        title="No users yet"
-        description="Users appear here once they message the bot. Start the bot and send it a message."
-      />
-    );
-  }
-
   return (
-    <Table minWidth={720}>
-      <TableHead>
-        <TableRow header>
-          <TableHeaderCell>Name</TableHeaderCell>
-          <TableHeaderCell>Username</TableHeaderCell>
-          <TableHeaderCell>User ID</TableHeaderCell>
-          <TableHeaderCell>Aliases</TableHeaderCell>
-        </TableRow>
-      </TableHead>
-      <TableBody>
-        {users.map((user) => (
-          <AliasRow key={user.userId} user={user} />
-        ))}
-      </TableBody>
-    </Table>
+    <Card>
+      <CardHeader>
+        <div>
+          <CardTitle>Users</CardTitle>
+          <CardDescription>
+            Captured automatically on each message. Aliases are alternate names you add.
+          </CardDescription>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {users.length === 0 ? (
+          <EmptyState
+            icon={Users}
+            title="No users yet"
+            description="Users appear here once they message the bot. Start the bot and send it a message."
+          />
+        ) : (
+          <Table minWidth={720}>
+            <TableHead>
+              <TableRow header>
+                <TableHeaderCell>Name</TableHeaderCell>
+                <TableHeaderCell>Username</TableHeaderCell>
+                <TableHeaderCell>User ID</TableHeaderCell>
+                <TableHeaderCell>Aliases</TableHeaderCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {users.map((user) => (
+                <AliasRow key={user.userId} user={user} />
+              ))}
+            </TableBody>
+          </Table>
+        )}
+      </CardContent>
+    </Card>
   );
 }

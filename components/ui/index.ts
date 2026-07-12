@@ -26,6 +26,7 @@ export { Separator } from "./Separator";
 export { Skeleton, Spinner } from "./Skeleton";
 export { Slot } from "./Slot";
 export { StatCard } from "./StatCard";
+export { StatusCard, type StatusTone } from "./StatusCard";
 export { Switch } from "./Switch";
 export {
   Table,

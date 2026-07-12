@@ -1,16 +1,7 @@
 import { Bug, Database } from "lucide-react";
 import Link from "next/link";
 
-import {
-  Button,
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-  EmptyState,
-  PageHeader,
-} from "@/components/ui";
+import { Button, EmptyState, PageHeader } from "@/components/ui";
 import { listUsers } from "@/features/known-users/server/service";
 import type { KnownUser } from "@/features/known-users/server/schema";
 import { KnownUsersTable } from "@/features/known-users/ui/KnownUsersTable";
@@ -20,7 +11,7 @@ export const dynamic = "force-dynamic";
 
 /**
  * Known-users dashboard page. Server Component: lists every user who has messaged
- * the bot. Aliases are operator-curated inline (Client Component).
+ * the bot. The table (a Client Component) owns its own card + inline alias edits.
  */
 export default async function UsersPage() {
   let users: KnownUser[] | null = null;
@@ -46,27 +37,15 @@ export default async function UsersPage() {
         }
       />
 
-      <Card>
-        <CardHeader>
-          <div>
-            <CardTitle>Users</CardTitle>
-            <CardDescription>
-              Captured automatically on each message. Aliases are alternate names you add.
-            </CardDescription>
-          </div>
-        </CardHeader>
-        <CardContent>
-          {users ? (
-            <KnownUsersTable users={users} />
-          ) : (
-            <EmptyState
-              icon={Database}
-              title="Database unavailable"
-              description={dbError ?? "The users database could not be reached."}
-            />
-          )}
-        </CardContent>
-      </Card>
+      {users ? (
+        <KnownUsersTable users={users} />
+      ) : (
+        <EmptyState
+          icon={Database}
+          title="Database unavailable"
+          description={dbError ?? "The users database could not be reached."}
+        />
+      )}
     </>
   );
 }

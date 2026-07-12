@@ -21,6 +21,26 @@ Next: **Priority 3 — History feature** (store/retrieve/inject conversation his
 
 ### Session log
 
+- 2026-07-12 (follow-up 3): **UI-kit consolidation + `/users` card-per-section**
+  (user request). (1) Moved the last stray shared primitive, `StatusCard`, into
+  the ui-kit (`components/ui/StatusCard.tsx`, barrel-exported with `StatusTone`);
+  the Overview now imports it from `@/components/ui`. Removed the empty
+  `components/dashboard/` dir. Audited every page's non-`ui` `@/components/*`
+  imports: only `components/debug/*` (shared trace UI), `components/theme/*`,
+  `components/realtime/*`, and `components/layout/*` remain — cohesive shared
+  modules, not primitives, so they stay. No page hand-rolls a primitive that the
+  kit provides. (2) Aligned `/users` to the same card-per-section layout as
+  `/personalities`: `KnownUsersTable` now owns its `Card` (CardHeader title +
+  description, CardContent table/empty), and `app/users/page.tsx` is just
+  `PageHeader` + the component (bare `EmptyState` on DB error, matching
+  personalities). Checks: lint ✓, typecheck ✓, unit 81 ✓, build ✓ (0 warnings).
+  Verified live (both DB-down and DB-up): `/users` renders the error-path
+  "Database unavailable" fallback when the DB is down, and — after restarting the
+  dev Postgres container — the card-per-section happy-path (the `Card` with title
+  + description wrapping the users table; row `@drumslave` with inline alias
+  editor). Overview renders the kit's `StatusCard`s (DATABASE/LLM/MODEL/TELEGRAM).
+  Only console noise is the pre-existing benign `ThemeScript` pre-hydration dev
+  warning.
 - 2026-07-12 (follow-up 2): **UI-kit adoption for personalities** (user
   feedback — `PersonalitiesManager` had too many bespoke elements). Refactored it
   to compose entirely from shared primitives: the create form and each persona
@@ -622,7 +642,7 @@ Foundation work supports features but is not a substitute for feature completion
 | Shared trace schema | done | `lib/trace.ts` types + `db/schema.ts` tables + `server/trace` repository/recorder, tested | Wire recorder into features as they land |
 | Shared log/trace export | done | `jsonDownload` (`server/http.ts`) + `buildTraceBundle`/`buildTraceListBundle` (`server/trace/service.ts`) + `app/api/traces/[id]/bundle` & `app/api/traces/bundle` routes + `DownloadButton`; single + filtered bundle downloads verified live (attachment headers, `trace-bundle@1` envelope) | — |
 | Shared dashboard layout | done | `components/layout/AppShell` (responsive rail + mobile drawer), `Sidebar` (config-driven, active state), `Topbar`; theme toggle + tokens | Add breadcrumbs + per-route topbar title as routes grow |
-| UI kit tokens/primitives | done | `app/globals.css` semantic tokens (Tailwind v4 `@theme`, `.dark`); `components/ui/*` (Button/Card/Badge/Avatar/Progress/Separator/StatCard/EmptyState/Skeleton/**PageHeader**) + `lib/cn.ts`; barrel is the single entry point (`PageHeader` moved into the kit 2026-07-12; feature UIs like `PersonalitiesManager` compose from `Card`/`Field`, no bespoke chrome); verified live | Extend with Tabs/Dialog/Toast when features need them |
+| UI kit tokens/primitives | done | `app/globals.css` semantic tokens (Tailwind v4 `@theme`, `.dark`); `components/ui/*` (Button/Card/Badge/Avatar/Progress/Separator/StatCard/StatusCard/EmptyState/Skeleton/**PageHeader**) + `lib/cn.ts`; barrel is the single entry point (`PageHeader` + `StatusCard` moved into the kit 2026-07-12; no page imports a local primitive; feature UIs like `PersonalitiesManager`/`KnownUsersTable` compose from `Card`/`Field`, no bespoke chrome); verified live | Extend with Tabs/Dialog/Toast when features need them |
 | Shared form components | done | `components/ui` `Input`, `Textarea`, `Select`, `Label`, `Field` (label+hint+error+aria wiring), `Switch`, `Checkbox`; first consumed by `features/settings/ui/SettingsForm.tsx` | Extract a form-state/submit helper if a 2nd feature form duplicates the fetch/status pattern |
 | Shared table/filter components | in-progress | Shared `components/ui/Table` primitives (`Table`/`TableHead`/`TableBody`/`TableRow`/`TableHeaderCell`/`TableCell` — scroll container, borders, header typography, `interactive`/`header` row variants, align/valign). Both `components/debug/TraceList` and `features/known-users/ui/KnownUsersTable` compose from it (no bespoke table markup). Verified live | Add filter/pagination primitives (Debug still uses `DebugFilters`); adopt in new feature tables |
 | Shared debug components | done | `components/debug/*` (barrel): `TraceExplorer` (uncapped list + filters + live + export), `TraceList` (clickable rows), `TraceDetail`, `TraceTimeline` (per-step timing), `JsonBlock` (collapsible, theme-aware `react-json-view-lite`), `TraceStatusBadge`, `DownloadButton`, `DebugFilters`; consumed by `/debug`, `/debug/[id]`, `/settings/debug`; verified live (JSON tree, timings, full bodies, theme switch) | Add per-feature Debug pages as thin `TraceExplorer` wrappers (e.g. a bot-messaging section when it gets a dashboard route) |

@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Card } from "@/components/ui/Card";
+import { Card } from "./Card";
 
 export type StatusTone = "ok" | "warn" | "error" | "neutral";
 
@@ -25,13 +25,8 @@ export function StatusCard({
   return (
     <Card className="p-4">
       <div className="flex items-center gap-2">
-        <span
-          className={`h-2 w-2 rounded-full ${TONE_DOT[tone]}`}
-          aria-hidden
-        />
-        <span className="text-xs font-medium tracking-wide text-muted uppercase">
-          {label}
-        </span>
+        <span className={`h-2 w-2 rounded-full ${TONE_DOT[tone]}`} aria-hidden />
+        <span className="text-xs font-medium tracking-wide text-muted uppercase">{label}</span>
       </div>
       <div className="mt-2 text-sm font-medium">{value}</div>
       {hint ? <div className="mt-1 text-xs text-faint">{hint}</div> : null}
