@@ -1,3 +1,6 @@
+import Link from "next/link";
+import { ExternalLink } from "lucide-react";
+
 import {
   Badge,
   Card,
@@ -13,7 +16,7 @@ import {
   TableRow,
 } from "@/components/ui";
 import { formatTimestamp } from "@/lib/format";
-import type { ChatMessageView } from "../server/schema";
+import type { ChatMessageWithTrace } from "../server/schema";
 
 /**
  * Read-only mirror of one chat's stored messages, oldest first. Shows the full
@@ -25,7 +28,7 @@ export function ChatHistoryTable({
   messages,
 }: {
   chatId: string;
-  messages: ChatMessageView[];
+  messages: ChatMessageWithTrace[];
 }) {
   return (
     <Card>
@@ -38,7 +41,7 @@ export function ChatHistoryTable({
         </div>
       </CardHeader>
       <CardContent>
-        <Table minWidth={860}>
+        <Table minWidth={960}>
           <TableHead>
             <TableRow header>
               <TableHeaderCell>Sent</TableHeaderCell>
@@ -47,6 +50,7 @@ export function ChatHistoryTable({
               <TableHeaderCell>Sender</TableHeaderCell>
               <TableHeaderCell>Reply→</TableHeaderCell>
               <TableHeaderCell>Content</TableHeaderCell>
+              <TableHeaderCell>Trace</TableHeaderCell>
             </TableRow>
           </TableHead>
           <TableBody>
@@ -75,6 +79,19 @@ export function ChatHistoryTable({
                     ) : null}
                     {m.deletedAt ? <Badge tone="danger">deleted</Badge> : null}
                   </span>
+                </TableCell>
+                <TableCell className="whitespace-nowrap">
+                  {m.traceId ? (
+                    <Link
+                      href={`/debug/${m.traceId}`}
+                      className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+                    >
+                      <ExternalLink className="h-3.5 w-3.5" aria-hidden />
+                      Trace
+                    </Link>
+                  ) : (
+                    <span className="text-xs text-faint">—</span>
+                  )}
                 </TableCell>
               </TableRow>
             ))}

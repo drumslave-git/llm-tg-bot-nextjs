@@ -22,6 +22,24 @@ Next: **Priority 4 — MCP tools basic support.** The shared feature-1/feature-2
 
 ### Session log
 
+- 2026-07-12 (follow-up 6): **History message → trace navigation + newest-first
+  order** (user requests). (1) The per-chat mirror (`/history/[chatId]`) is now
+  ordered **newest first** (`getChatMessages` → `desc(id)`); the LLM injection
+  window (`getChatMessagesSince`) stays chronological. (2) Each message row links
+  to the trace that handled its turn: a new **Trace** column → `/debug/[id]`.
+  Resolution is by trace **correlation id** (`${chatId}:${messageId}`) — a user
+  row uses its own id, an assistant row uses the message it replied to, so a
+  turn's user+assistant rows both point at the same trace. Added
+  `getLatestTraceIdsByCorrelation` to `server/trace/repository.ts` (batch lookup,
+  newest per correlation id via the existing `traces_correlation_idx`);
+  `getChatHistory` annotates each row with `traceId` (`ChatMessageWithTrace`).
+  The trace already carries both relations — input via `correlationId`, reply via
+  the `send message` event's `messageId` — so no schema change was needed. Tests:
+  history integration (+2: newest-first order, user+reply→same-trace / no-trace →
+  null). Verified live: chat 312973896's 4 rows render newest-first with Trace
+  links; clicking one opened its `bot-messaging/reply` detail (correlation
+  `312973896:867`, reply `messageId:868`). Checks: lint ✓, typecheck ✓, unit 89
+  ✓, integration 49 ✓, build ✓ (0 warnings).
 - 2026-07-12 (follow-up 5): **Live updates for data pages (user directive).**
   User set a **standing rule**: every data-display page (current and future) must
   update live over the shared SSE layer — no manual refresh (memory
@@ -700,7 +718,7 @@ Foundation work supports features but is not a substitute for feature completion
 | Area | Status | Proof | Next |
 | --- | --- | --- | --- |
 | Settings and health | in-progress | DB-backed settings (`features/settings/*`): LLM connection (base URL/key/model), **active personality** (`active_personality_id`, FK → personalities, `getActivePersonalityId`), Telegram token, and **owner (id chosen from known users, denormalized username) + maintenance mode**; `GET`/`PATCH` + `test-connection` real probe; secrets masked + trace-redacted; pure `getBotPolicy` read; unit + integration tests. Config source is the DB, not env (`config-in-db-not-env`); Overview + `/api/health` probe real state | Extend settings columns per feature (history next) |
-| History | done | `features/history/*` + `chat_messages` table (migration `0006`): 1:1 Telegram mirror (full metadata, unique `(chat_id, telegram_message_id)`); passive capture in `bot-manager.onMessage` + reply mirroring; `getConversationWindow` injects the current UTC-day's messages as structured prior turns (group speaker labels via known-users); `edited_message` mirrored + traced; `/history`, `/history/[chatId]`, `/history/debug`; unit + integration tested; verified live | Vision rows layer here (priority 7); MCP history/search tools for deeper-than-today lookups (priority 4+) |
+| History | done | `features/history/*` + `chat_messages` table (migration `0006`): 1:1 Telegram mirror (full metadata, unique `(chat_id, telegram_message_id)`); passive capture in `bot-manager.onMessage` + reply mirroring; `getConversationWindow` injects the current UTC-day's messages as structured prior turns (group speaker labels via known-users); `edited_message` mirrored + traced; `/history` (chat list), `/history/[chatId]` (mirror, **newest-first**, each row links to its handling trace via correlation id), `/history/debug`; live-updates over SSE (`history` topic); unit + integration tested; verified live | Vision rows layer here (priority 7); MCP history/search tools for deeper-than-today lookups (priority 4+) |
 | Personalities | done | `features/personalities/*` + `personalities` table (migration `0005`) + `settings.active_personality_id` (FK on-delete-set-null): CRUD service (create/edit/delete, CI name-uniqueness + max-32 guards), active selection, `getActivePersonalityPrompt` for composition; `/personalities` page (create/edit/delete/set-active) + `/personalities/debug`; `GET/POST /api/personalities`, `PATCH/DELETE /api/personalities/[id]`, `PUT /api/personalities/active`; every mutation traced; unit + integration tested; verified live | Mood (priority 9) extends this table with per-persona mood defaults |
 | LLM provider core | in-progress | `server/llm/client.ts` (`openai`): `listModels`/health probe + `chatCompletion` (reply text + normalized usage + latency, empty-response→503), base-URL normalization, `ApiError` mapping; connection sourced from DB settings; unit-tested (incl. mocked completion) + verified live | Add context assembly (history/prompts) with priorities 2–3; tool-call loop at priority 4 |
 | Telegram intake foundation | in-progress | In-process long-polling `server/telegram/bot-manager.ts` (grammy) — singleton lifecycle, DB-backed token, autostart via `instrumentation.ts` + Start/Stop API; deterministic `features/bot-messaging/server/addressing.ts` + `policy.ts` (owner/maintenance, unit-tested); remembers every human sender to `known_users`; per-message Debug traces; verified live | Live run with a real token |

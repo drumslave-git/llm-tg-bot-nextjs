@@ -38,3 +38,14 @@ export type ApplyEditInput = z.infer<typeof applyEditSchema>;
 /** Client-facing shapes (already free of secrets). */
 export type ChatMessageView = ChatMessageRecord;
 export type ChatSummaryView = ChatSummary;
+
+/**
+ * A stored message plus the id of the trace that handled its turn, so the
+ * dashboard can link a message straight to its `/debug/[id]` trace. For a user
+ * message that is the trace of the reply it triggered; for an assistant reply it
+ * is the same trace (resolved via the message it replied to). Null when no trace
+ * exists (e.g. an un-addressed message that was never handled).
+ */
+export interface ChatMessageWithTrace extends ChatMessageRecord {
+  traceId: string | null;
+}

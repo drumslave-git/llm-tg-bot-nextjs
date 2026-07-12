@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { upsertKnownUser } from "@/features/known-users/server/repository";
+import { startTrace } from "@/server/trace";
 import { listTraces } from "@/server/trace/repository";
 import { startTestDb, type TestDb } from "@/test/db";
 import {
@@ -76,6 +77,44 @@ describe("getChatHistory", () => {
 
     const messages = await getChatHistory("5", ctx.db);
     expect(messages.map((m) => m.content)).toEqual(["third", "second", "first"]);
+  });
+});
+
+describe("getChatHistory trace links", () => {
+  it("links a user message and its reply to the trace that handled the turn", async () => {
+    // A reply trace correlates to the incoming message: `${chatId}:${messageId}`.
+    const trace = await startTrace(
+      {
+        feature: "bot-messaging",
+        action: "reply",
+        trigger: { kind: "telegram", correlationId: "5:1" },
+        inputSummary: "hi",
+      },
+      ctx.db,
+    );
+    await trace.succeed({ outputSummary: "hello" });
+
+    await recordIncomingMessage(
+      { chatId: "5", telegramMessageId: 1, userId: "100", content: "hi", sentAt: TODAY },
+      ctx.db,
+    );
+    await recordAssistantMessage(
+      { chatId: "5", telegramMessageId: 2, content: "hello", replyToMessageId: 1, sentAt: TODAY },
+      ctx.db,
+    );
+    // A later, un-addressed message with no trace.
+    await recordIncomingMessage(
+      { chatId: "5", telegramMessageId: 3, userId: "100", content: "no trace", sentAt: TODAY },
+      ctx.db,
+    );
+
+    const messages = await getChatHistory("5", ctx.db);
+    const byMsg = (id: number) => messages.find((m) => m.telegramMessageId === id)!;
+    // Both the user turn and its reply resolve to the same handling trace.
+    expect(byMsg(1).traceId).toBe(trace.id);
+    expect(byMsg(2).traceId).toBe(trace.id);
+    // The un-addressed message has no trace.
+    expect(byMsg(3).traceId).toBeNull();
   });
 });
 

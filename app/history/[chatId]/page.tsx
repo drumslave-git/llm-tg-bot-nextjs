@@ -4,7 +4,7 @@ import Link from "next/link";
 import { Button, EmptyState, PageHeader } from "@/components/ui";
 import { LiveIndicator } from "@/components/realtime/LiveIndicator";
 import { getChatHistory } from "@/features/history/server/service";
-import type { ChatMessageView } from "@/features/history/server/schema";
+import type { ChatMessageWithTrace } from "@/features/history/server/schema";
 import { ChatHistoryTable } from "@/features/history/ui/ChatHistoryTable";
 
 // History is read from the database at request time.
@@ -22,7 +22,7 @@ export default async function ChatHistoryPage({
   const { chatId: raw } = await params;
   const chatId = decodeURIComponent(raw);
 
-  let messages: ChatMessageView[] | null = null;
+  let messages: ChatMessageWithTrace[] | null = null;
   let dbError: string | null = null;
   try {
     messages = await getChatHistory(chatId);

@@ -8,6 +8,7 @@ import type { ChatMessage } from "@/server/llm/client";
 import type { TraceTrigger } from "@/lib/trace";
 import { publishEvent } from "@/server/realtime/hub";
 import { startTrace } from "@/server/trace";
+import { getLatestTraceIdsByCorrelation } from "@/server/trace/repository";
 import { collectUserIds, startOfUtcDay, toPriorTurn } from "./format";
 import {
   appendChatMessage,
@@ -22,6 +23,7 @@ import {
   applyEditSchema,
   recordMessageSchema,
   type ApplyEditInput,
+  type ChatMessageWithTrace,
   type RecordMessageInput,
 } from "./schema";
 
@@ -208,10 +210,33 @@ export async function getHistoryOverview(db: DrizzleDb = getDb()): Promise<ChatS
   return listChatSummaries(db);
 }
 
-/** The full stored mirror for one chat (dashboard detail view). */
+/**
+ * Correlation id of the trace that handled a message's turn. A trace's
+ * correlation id is `${chatId}:${incomingMessageId}` (see the bot-messaging
+ * service), so a user row uses its own Telegram id and an assistant row uses the
+ * message it replied to (the incoming turn). Null when there is no anchor.
+ */
+function traceCorrelationFor(record: ChatMessageRecord): string | null {
+  const anchor = record.role === "assistant" ? record.replyToMessageId : record.telegramMessageId;
+  return anchor != null ? `${record.chatId}:${anchor}` : null;
+}
+
+/**
+ * The full stored mirror for one chat (dashboard detail view), each message
+ * annotated with the id of the trace that handled its turn so the UI can link
+ * straight to `/debug/[id]`.
+ */
 export async function getChatHistory(
   chatId: string,
   db: DrizzleDb = getDb(),
-): Promise<ChatMessageRecord[]> {
-  return getChatMessages(db, chatId);
+): Promise<ChatMessageWithTrace[]> {
+  const records = await getChatMessages(db, chatId);
+  const correlations = records
+    .map(traceCorrelationFor)
+    .filter((value): value is string => value != null);
+  const traceIds = await getLatestTraceIdsByCorrelation(db, correlations);
+  return records.map((record) => {
+    const correlation = traceCorrelationFor(record);
+    return { ...record, traceId: correlation ? (traceIds.get(correlation) ?? null) : null };
+  });
 }

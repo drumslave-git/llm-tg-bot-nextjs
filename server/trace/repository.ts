@@ -205,3 +205,31 @@ export async function getEventsForTraces(
   }
   return grouped;
 }
+
+/**
+ * Latest trace id for each of the given correlation ids, in one query. Powers
+ * "jump to the trace that handled this message" links from other features — a
+ * trace's correlation id is `${chatId}:${messageId}`. When several traces share
+ * a correlation id, only the most recent is returned.
+ */
+export async function getLatestTraceIdsByCorrelation(
+  db: DrizzleDb,
+  correlationIds: string[],
+): Promise<Map<string, string>> {
+  const result = new Map<string, string>();
+  const unique = [...new Set(correlationIds.filter(Boolean))];
+  if (unique.length === 0) return result;
+
+  const rows = await db
+    .select({ id: traces.id, correlationId: traces.correlationId })
+    .from(traces)
+    .where(inArray(traces.correlationId, unique))
+    .orderBy(desc(traces.startedAt));
+
+  for (const row of rows) {
+    if (row.correlationId && !result.has(row.correlationId)) {
+      result.set(row.correlationId, row.id);
+    }
+  }
+  return result;
+}
