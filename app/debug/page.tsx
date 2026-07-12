@@ -1,8 +1,7 @@
 import { Database } from "lucide-react";
 
-import { PageHeader } from "@/components/PageHeader";
 import { TraceExplorer } from "@/components/debug";
-import { EmptyState } from "@/components/ui";
+import { EmptyState, PageHeader } from "@/components/ui";
 import { getTraceList, type TraceListView } from "@/server/trace";
 import { traceQuerySchema } from "@/server/trace/schema";
 

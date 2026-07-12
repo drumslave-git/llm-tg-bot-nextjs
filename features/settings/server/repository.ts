@@ -21,6 +21,7 @@ export interface SettingsRecord {
   llmBaseUrl: string | null;
   llmApiKey: string | null;
   model: string | null;
+  activePersonalityId: string | null;
   telegramBotToken: string | null;
   ownerUsername: string | null;
   ownerUserId: string | null;
@@ -33,6 +34,7 @@ export interface SettingsPatch {
   llmBaseUrl?: string | null;
   llmApiKey?: string | null;
   model?: string | null;
+  activePersonalityId?: string | null;
   telegramBotToken?: string | null;
   ownerUsername?: string | null;
   ownerUserId?: string | null;
@@ -44,6 +46,7 @@ function mapRow(row: SettingsRow): SettingsRecord {
     llmBaseUrl: row.llmBaseUrl,
     llmApiKey: row.llmApiKey,
     model: row.model,
+    activePersonalityId: row.activePersonalityId,
     telegramBotToken: row.telegramBotToken,
     ownerUsername: row.ownerUsername,
     ownerUserId: row.ownerUserId,

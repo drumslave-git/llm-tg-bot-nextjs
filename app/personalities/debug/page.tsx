@@ -8,16 +8,16 @@ import { traceQuerySchema } from "@/server/trace/schema";
 // Traces are read from the database at request time.
 export const dynamic = "force-dynamic";
 
-const FEATURE = "known-users";
+const FEATURE = "personalities";
 
 const first = (value: string | string[] | undefined): string | undefined =>
   Array.isArray(value) ? value[0] : value;
 
 /**
- * Known-users Debug page — the shared explorer scoped to the `known-users`
- * feature (alias-edit traces).
+ * Personalities Debug page — the shared explorer scoped to the `personalities`
+ * feature (create/update/delete/set-active traces).
  */
-export default async function UsersDebugPage({
+export default async function PersonalitiesDebugPage({
   searchParams,
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
@@ -41,11 +41,16 @@ export default async function UsersDebugPage({
   return (
     <>
       <PageHeader
-        title="Users · Debug"
-        description="Alias-edit traces. Inspect steps and download a JSON bundle."
+        title="Personalities · Debug"
+        description="Create/edit/delete/set-active traces. Inspect steps and download a JSON bundle."
       />
       {view ? (
-        <TraceExplorer view={view} query={query} basePath="/users/debug" showFeatureFilter={false} />
+        <TraceExplorer
+          view={view}
+          query={query}
+          basePath="/personalities/debug"
+          showFeatureFilter={false}
+        />
       ) : (
         <EmptyState
           icon={Database}

@@ -3,8 +3,8 @@ import {
   LayoutDashboard,
   MessageSquare,
   Settings,
-  SlidersHorizontal,
   Users,
+  VenetianMask,
   type LucideIcon,
 } from "lucide-react";
 
@@ -40,12 +40,7 @@ export const NAV_GROUPS: NavGroup[] = [
     label: "Configure",
     items: [
       { href: "/settings", label: "Settings", icon: Settings },
-      {
-        href: "/prompts",
-        label: "Prompts",
-        icon: SlidersHorizontal,
-        soon: true,
-      },
+      { href: "/personalities", label: "Personalities", icon: VenetianMask },
     ],
   },
 ];

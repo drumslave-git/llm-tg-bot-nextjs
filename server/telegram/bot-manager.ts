@@ -8,6 +8,7 @@ import {
   getTelegramBotToken,
 } from "@/features/settings/server/service";
 import type { BotPolicy } from "@/features/settings/server/service";
+import { getActivePersonalityPrompt } from "@/features/personalities/server/service";
 import {
   handleIncomingMessage,
   type BotMessagingDeps,
@@ -79,10 +80,12 @@ function buildDeps(
   ctx: Context,
   bot: { id: number; username: string },
   policy: BotPolicy,
+  personalityPrompt: string | null,
 ): BotMessagingDeps {
   return {
     bot,
     policy,
+    personalityPrompt,
     startTyping() {
       // Preserve the forum-topic thread so typing shows in the right place.
       const threadId = ctx.message?.message_thread_id;
@@ -137,11 +140,14 @@ async function onMessage(ctx: Context): Promise<void> {
     text: message.text ?? message.caption ?? "",
   };
 
-  const policy = await getBotPolicy();
+  const [policy, personalityPrompt] = await Promise.all([
+    getBotPolicy(),
+    getActivePersonalityPrompt(),
+  ]);
 
   await handleIncomingMessage(
     incoming,
-    buildDeps(ctx, { id: ctx.me.id, username: ctx.me.username }, policy),
+    buildDeps(ctx, { id: ctx.me.id, username: ctx.me.username }, policy, personalityPrompt),
   );
 }
 

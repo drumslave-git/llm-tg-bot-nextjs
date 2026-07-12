@@ -1,7 +1,6 @@
 import { Bug, Database } from "lucide-react";
 import Link from "next/link";
 
-import { PageHeader } from "@/components/PageHeader";
 import {
   Button,
   Card,
@@ -10,6 +9,7 @@ import {
   CardHeader,
   CardTitle,
   EmptyState,
+  PageHeader,
 } from "@/components/ui";
 import { listUsers } from "@/features/known-users/server/service";
 import type { KnownUser } from "@/features/known-users/server/schema";

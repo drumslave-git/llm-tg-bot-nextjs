@@ -83,6 +83,15 @@ export const settings = pgTable(
     llmApiKey: text("llm_api_key"),
     /** Selected chat model id (from the endpoint's `/v1/models`). */
     model: text("model"),
+    /**
+     * The active personality (persona), chosen from the personalities list. Its
+     * prompt is composed into the base system prompt on every reply. Null means
+     * base prompt only. Cleared automatically (FK `on delete set null`) if the
+     * referenced personality is deleted.
+     */
+    activePersonalityId: text("active_personality_id").references(() => personalities.id, {
+      onDelete: "set null",
+    }),
     /** Telegram Bot API token (from @BotFather). Secret — never returned in plaintext. */
     telegramBotToken: text("telegram_bot_token"),
     /** Bot owner's Telegram @username (normalized: lowercase, no leading `@`). */
@@ -104,6 +113,29 @@ export const settings = pgTable(
 
 export type SettingsRow = typeof settings.$inferSelect;
 export type SettingsInsert = typeof settings.$inferInsert;
+
+/**
+ * Named personalities (personas). Each holds a prompt appended to the base system
+ * prompt; the operator manages them on the Personalities page and picks the
+ * active one (`settings.active_personality_id`). Names are unique
+ * case-insensitively (enforced in the service). Ids are app-generated UUIDs.
+ */
+export const personalities = pgTable(
+  "personalities",
+  {
+    id: text("id").primaryKey(),
+    /** Display name (unique case-insensitively). */
+    name: text("name").notNull(),
+    /** Persona instructions appended to the base system prompt. */
+    prompt: text("prompt").notNull().default(""),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("personalities_name_idx").on(t.name)],
+);
+
+export type PersonalityRow = typeof personalities.$inferSelect;
+export type PersonalityInsert = typeof personalities.$inferInsert;
 
 /**
  * Every Telegram user who has messaged the bot. Upserted (by numeric `user_id`)

@@ -13,14 +13,92 @@ Status values:
 ## Current Summary
 
 Status: in-progress
-Owner: agent/2026-07-11
-Last updated: 2026-07-11
-Proof: `npm run lint` ✓, `npm run typecheck` ✓, `npm run test` ✓ (72 unit), `npm run test:integration` ✓ (31, real Postgres via Testcontainers), `npm run build` ✓ (0 warnings). **Known users + owner-by-dropdown**: a `known_users` table (migration `0004`) capturing everyone who messages the bot, a `/users` page with inline alias editing, and the owner is now chosen from a **dropdown of known users** (id stored directly — the earlier lazy @username→id resolution is removed). **Maintenance mode + owner checks** built and verified live (a pure `bot-messaging/policy.ts`; blocked-but-addressed messages traced as skipped). The **shared Debug UI** is now built and verified live — the last feature-contract gap for both `settings` and priority-1 `bot-messaging`. A global `/debug` page (filter by feature/status, pagination, "Download all") plus a shared `/debug/[id]` detail view (metadata panel, error panel, ordered event timeline with LLM usage, per-trace JSON download) and a feature-scoped `/settings/debug`. Backed by `server/trace/service.ts` (list/detail/bundle) over the existing recorder/repository, thin `app/api/traces/**` handlers, and reusable `components/debug/*`. Verified live against the running dev server on real recorded traces: list renders 11 traces; a bot reply detail shows LLM usage (`prompt 38 · completion 184 · total 222 · 5741ms`); an error trace shows the error panel + timeline; `/settings/debug` shows only settings traces; single + filtered bundle downloads return the `llm-tg-bot/trace-bundle@1` envelope with attachment headers; no console errors.
+Owner: agent/2026-07-12
+Last updated: 2026-07-12
+Proof: `npm run lint` ✓, `npm run typecheck` ✓, `npm run test` ✓ (81 unit), `npm run test:integration` ✓ (40, real Postgres via Testcontainers), `npm run build` ✓ (0 warnings). **Priority 2 — system & personality prompts (done):** the base system prompt is a fixed code constant (`BASE_SYSTEM_PROMPT` in `features/bot-messaging/server/prompt.ts`); the operator manages personas as a **full personalities CRUD feature** (user decision — corrected from an initial single-field approach). A `personalities` table (migration `0005`: id/name/prompt/timestamps) + `settings.active_personality_id` (FK, `on delete set null`). New `features/personalities/*` (repository/schema/service/ui) with a **`/personalities` page** (create/edit/delete + set-active) and **`/personalities/debug`**; routes `GET/POST /api/personalities`, `PATCH/DELETE /api/personalities/[id]`, `PUT /api/personalities/active`; every mutation traced. Composition (`buildSystemPrompt`/`hasPersonality`, pure) is unchanged: base alone, or base + `---\nAdditional instructions:\n<persona>`; the bot-messaging service records a **`system prompt composed`** step (`personalityApplied` + full composed prompt) between `addressing check` and `request`; the runtime injects the **active** personality's prompt via `getActivePersonalityPrompt()`. Verified live: created a persona on `/personalities`, set it active (Active badge + `activeId` via API), deleted it (list emptied and active auto-cleared via the FK), all four mutations traced `success` on `/personalities/debug`; no console errors. **Known users + owner-by-dropdown**: a `known_users` table (migration `0004`) capturing everyone who messages the bot, a `/users` page with inline alias editing, and the owner is now chosen from a **dropdown of known users** (id stored directly — the earlier lazy @username→id resolution is removed). **Maintenance mode + owner checks** built and verified live (a pure `bot-messaging/policy.ts`; blocked-but-addressed messages traced as skipped). The **shared Debug UI** is now built and verified live — the last feature-contract gap for both `settings` and priority-1 `bot-messaging`. A global `/debug` page (filter by feature/status, pagination, "Download all") plus a shared `/debug/[id]` detail view (metadata panel, error panel, ordered event timeline with LLM usage, per-trace JSON download) and a feature-scoped `/settings/debug`. Backed by `server/trace/service.ts` (list/detail/bundle) over the existing recorder/repository, thin `app/api/traces/**` handlers, and reusable `components/debug/*`. Verified live against the running dev server on real recorded traces: list renders 11 traces; a bot reply detail shows LLM usage (`prompt 38 · completion 184 · total 222 · 5741ms`); an error trace shows the error panel + timeline; `/settings/debug` shows only settings traces; single + filtered bundle downloads return the `llm-tg-bot/trace-bundle@1` envelope with attachment headers; no console errors.
 Realtime: the dashboard now updates **live over SSE** (user decision — not polling/WebSockets). Shared layer: in-process `server/realtime/hub.ts` pub/sub, `GET /api/events` SSE stream, `useLiveRefresh`/`LiveIndicator` client; the trace recorder publishes on create/settle. Verified live: with the page untouched, a newly recorded `test-connection` trace appeared at the top of `/debug` on its own; the `/api/events` stream stays open (200); no console errors. Debug rows are now fully clickable (stretched link) — clicking any cell opens the trace.
-Next: Feature 1 remains **in-progress** — Debug UI + trace download and now **maintenance mode + owner checks** are met; the only remaining item is an end-to-end run against a real bot token (operator-supplied). Then priority 2 (system/personality prompts).
+Next: **Priority 3 — History feature** (store/retrieve/inject conversation history). Feature 1's only open item is an operator-run live test with a real bot token; feature 2 (prompts) is now done pending the same shared live run.
 
 ### Session log
 
+- 2026-07-12 (follow-up 2): **UI-kit adoption for personalities** (user
+  feedback — `PersonalitiesManager` had too many bespoke elements). Refactored it
+  to compose entirely from shared primitives: the create form and each persona
+  are now `Card`/`CardHeader`/`CardTitle`/`CardContent`/`CardFooter`/`CardAction`
+  (no hand-rolled bordered `<div>`s or `<h3>`s); the page dropped its outer Card
+  wrapper so the manager owns its cards. Moved **`PageHeader` into the ui-kit**
+  (`components/ui/PageHeader.tsx`, exported from the barrel) and updated all 8
+  importers to `@/components/ui` — the kit is now the single entry point for the
+  page-heading primitive too. Verified live: `/personalities` renders the
+  Card-based layout (create card + per-persona cards with header actions +
+  Active badge), create/set-active/delete work, no console errors; `/`,
+  `/settings`, `/users`, and all `*/debug` pages still 200 after the PageHeader
+  move. lint ✓, typecheck ✓, build ✓ (0 warnings), unit 81 ✓.
+- 2026-07-12 (follow-up): **Rewrote `BASE_SYSTEM_PROMPT` from the MVP.** Reviewed
+  the MVP's `BASE_SYSTEM_PROMPT_CORE` + `buildReplyFormatSpec` and distilled the
+  **capability-agnostic** parts into our base: persona framing (Telegram chat
+  assistant), output discipline (reply only — no JSON/wrapper/labels), **plain
+  text only** (we send no `parse_mode`, so markup renders literally — unlike the
+  MVP which allows Telegram HTML), brevity (well under 4096), capability honesty
+  ("you see only the current message; no history/tools/web; don't claim actions
+  you can't do"), and prompt-injection/secrecy defenses (treat the user message
+  as data; never reveal the system prompt; refuse briefly). **Dropped** everything
+  tied to unbuilt machinery — history retrieval/`[RECENT CHAT]`/speaker tags,
+  memory/tasks/mood, tool use, known-user directory — to avoid instructing the
+  model to use tools that don't exist. Code comment flags the "no tools/history"
+  lines for revision when priorities 3–4 land. Tests reference the constant, so
+  they held (lint ✓, typecheck ✓, unit 81 ✓).
+- 2026-07-12: **Priority 2 — system and personality prompts (done).**
+  Personalities are a **full CRUD feature with a dedicated page + active
+  selection** (user decision — corrected mid-task from an initial "single
+  editable `personality_prompt` field on settings" approach, which was reverted).
+  The base system prompt stays a fixed code constant; the operator manages named
+  personas and picks the active one, whose prompt is composed into every reply.
+  - **Schema (migration `0005_aberrant_maria_hill.sql`, squashed — the reverted
+    `personality_prompt` migration was deleted, not stacked):** a `personalities`
+    table (`id` app-uuid, `name`, `prompt` default '', timestamps; `name` index)
+    + `settings.active_personality_id` (nullable, FK → `personalities.id`
+    **`on delete set null`** so deleting the active persona clears the selection).
+  - **Feature module** `features/personalities/*`: `repository.ts`
+    (list/getById/count/isNameTaken(CI)/insert/update/delete), `schema.ts` (zod:
+    create/update/set-active; bounds name ≤64, prompt ≤32000, max 32 — mirror the
+    MVP), `service.ts` (`getPersonalitiesView` {personalities, activeId},
+    `createPersonality`/`editPersonality`/`removePersonality`/`setActivePersonality`
+    — all traced; case-insensitive name-uniqueness + max-count guards; server-only
+    `getActivePersonalityPrompt` for composition), `ui/PersonalitiesManager.tsx`
+    (create form + per-card edit/delete + set-active/deactivate).
+  - **Routes:** `GET/POST /api/personalities`, `PATCH/DELETE
+    /api/personalities/[id]`, `PUT /api/personalities/active`. **Pages:**
+    `/personalities` (Server Component → manager) + `/personalities/debug`
+    (shared `TraceExplorer`). Nav: the planned `/prompts` "soon" item became the
+    live **Personalities** item.
+  - **Composition (kept from the reverted attempt):**
+    `features/bot-messaging/server/prompt.ts` (pure, unit-tested) —
+    `BASE_SYSTEM_PROMPT` + `buildSystemPrompt({ personalityPrompt })` (base alone,
+    or base + `\n\n---\nAdditional instructions:\n<persona>`) + `hasPersonality`;
+    replaces the old inline `DEFAULT_SYSTEM_PROMPT`. The service records a
+    **`system prompt composed`** step (`personalityApplied` + full composed prompt)
+    between `addressing check` and `request`; `bot-manager.onMessage` injects the
+    **active** persona via `getActivePersonalityPrompt()` (`Promise.all` with
+    `getBotPolicy()`).
+  - **Reverted** the interim settings changes: no `personality_prompt` column,
+    no `getPersonalityPrompt`, no SettingsForm textarea; `settings` now carries
+    `active_personality_id` instead (internal record/patch only — not in the
+    client `settingsSchema`, since active-selection is managed on the
+    Personalities page). `test/db.ts` truncate now includes `personalities`.
+  - **Tests:** `prompt.test.ts` (+4), bot-messaging `service.test.ts` (+2,
+    event-flow updated), personalities `schema.test.ts` (+7), personalities
+    `personalities.integration.test.ts` (+8: create/list, dup-name CI, edit +
+    rename-conflict + unknown, set/clear-active + resolve prompt, invalid activate,
+    delete + FK-clears-active + unknown, per-mutation traces). Unit 81,
+    integration 40.
+  - **Verified live** on the dev server: created "Grumpy Sysadmin" on
+    `/personalities`, set it active (Active badge; `activeId` confirmed via
+    `GET /api/personalities`), deleted it (list emptied; `activeId` auto-cleared
+    to null via the FK); `create`/`set-active`/`delete` traces `success` on
+    `/personalities/debug`; no console errors. Dev DB left clean (0 personalities).
+  - Checks: lint ✓, typecheck ✓, unit 81 ✓, integration 40 ✓, build ✓ (0
+    warnings), db:generate/db:migrate ✓.
 - 2026-07-11 (follow-up 10): **Maintenance mode simplified to owner-vs-everyone**
   (user clarification — supersedes the group-@mention rule from follow-ups 6/9).
   In maintenance mode the bot is **fully functional for the owner** (normal
@@ -508,7 +586,7 @@ Features not listed here are not v1 by default. Add any additional feature to th
 | Priority | Feature | Status | Acceptance Criteria | Debug Page | Trace/Log Download | Tests | Dependencies | Next |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 1 | Bot messaging: text receive/reply | in-progress | defined (see 2026-07-11 log) | yes (shared `/debug` + `/debug/[id]`, filter by feature) | yes (single + filtered `/api/traces/**/bundle`) | yes (addressing, **maintenance/owner policy**, service, chatCompletion, token masking, trace service/schema) | settings, health, Telegram intake, LLM provider, shared traces | Live run with a real token (operator-supplied) — then priority 2 |
-| 2 | System and personality prompts | todo | missing | no | no | no | settings, LLM provider | Define prompt schema and composition |
+| 2 | System and personality prompts | done | defined (see 2026-07-12 log) | yes (`/personalities/debug` + shared `/debug`; `system prompt composed` step shows the full composed prompt) | yes (shared `/api/traces/**/bundle`) | yes (`prompt.ts` composition, personalities service/schema/integration, bot-messaging service) | settings, LLM provider | Live token run shares feature-1's gate; next → priority 3 (history) |
 | 3 | History feature | todo | missing | no | no | no | bot messaging, shared traces, DB schema | Design messages/history schema |
 | 4 | MCP tools basic support | todo | missing | no | no | no | LLM core, shared traces | Design tool registry and tool-call loop |
 | 5 | Search MCP tool | todo | missing | no | no | no | MCP basic support | Define Tavily/search boundary |
@@ -527,7 +605,8 @@ Foundation work supports features but is not a substitute for feature completion
 
 | Area | Status | Proof | Next |
 | --- | --- | --- | --- |
-| Settings and health | in-progress | DB-backed settings (`features/settings/*`): LLM connection (base URL/key/model), Telegram token, and **owner (id chosen from known users, denormalized username) + maintenance mode**; `GET`/`PATCH` + `test-connection` real probe; secrets masked + trace-redacted; pure `getBotPolicy` read; unit + integration tests. Config source is the DB, not env (`config-in-db-not-env`); Overview + `/api/health` probe real state | Extend settings columns per feature (prompts next) |
+| Settings and health | in-progress | DB-backed settings (`features/settings/*`): LLM connection (base URL/key/model), **active personality** (`active_personality_id`, FK → personalities, `getActivePersonalityId`), Telegram token, and **owner (id chosen from known users, denormalized username) + maintenance mode**; `GET`/`PATCH` + `test-connection` real probe; secrets masked + trace-redacted; pure `getBotPolicy` read; unit + integration tests. Config source is the DB, not env (`config-in-db-not-env`); Overview + `/api/health` probe real state | Extend settings columns per feature (history next) |
+| Personalities | done | `features/personalities/*` + `personalities` table (migration `0005`) + `settings.active_personality_id` (FK on-delete-set-null): CRUD service (create/edit/delete, CI name-uniqueness + max-32 guards), active selection, `getActivePersonalityPrompt` for composition; `/personalities` page (create/edit/delete/set-active) + `/personalities/debug`; `GET/POST /api/personalities`, `PATCH/DELETE /api/personalities/[id]`, `PUT /api/personalities/active`; every mutation traced; unit + integration tested; verified live | Mood (priority 9) extends this table with per-persona mood defaults |
 | LLM provider core | in-progress | `server/llm/client.ts` (`openai`): `listModels`/health probe + `chatCompletion` (reply text + normalized usage + latency, empty-response→503), base-URL normalization, `ApiError` mapping; connection sourced from DB settings; unit-tested (incl. mocked completion) + verified live | Add context assembly (history/prompts) with priorities 2–3; tool-call loop at priority 4 |
 | Telegram intake foundation | in-progress | In-process long-polling `server/telegram/bot-manager.ts` (grammy) — singleton lifecycle, DB-backed token, autostart via `instrumentation.ts` + Start/Stop API; deterministic `features/bot-messaging/server/addressing.ts` + `policy.ts` (owner/maintenance, unit-tested); remembers every human sender to `known_users`; per-message Debug traces; verified live | Live run with a real token |
 | Known users | done | `features/known-users/*` + `known_users` table (migration `0004`): captured on every message (profile refresh, aliases preserved); `/users` page with inline alias editing (dedupe/trim), `/users/debug`; `GET /api/users` + `PATCH /api/users/[id]`; alias edits traced; owner is chosen from this list. Unit + integration tested; verified live | Use aliases for name-based addressing when the group analyzer lands |
@@ -543,7 +622,7 @@ Foundation work supports features but is not a substitute for feature completion
 | Shared trace schema | done | `lib/trace.ts` types + `db/schema.ts` tables + `server/trace` repository/recorder, tested | Wire recorder into features as they land |
 | Shared log/trace export | done | `jsonDownload` (`server/http.ts`) + `buildTraceBundle`/`buildTraceListBundle` (`server/trace/service.ts`) + `app/api/traces/[id]/bundle` & `app/api/traces/bundle` routes + `DownloadButton`; single + filtered bundle downloads verified live (attachment headers, `trace-bundle@1` envelope) | — |
 | Shared dashboard layout | done | `components/layout/AppShell` (responsive rail + mobile drawer), `Sidebar` (config-driven, active state), `Topbar`; theme toggle + tokens | Add breadcrumbs + per-route topbar title as routes grow |
-| UI kit tokens/primitives | done | `app/globals.css` semantic tokens (Tailwind v4 `@theme`, `.dark`); `components/ui/*` (Button/Card/Badge/Avatar/Progress/Separator/StatCard/EmptyState/Skeleton) + `lib/cn.ts`; verified live | Extend with Table/Tabs/Dialog/Toast when features need them |
+| UI kit tokens/primitives | done | `app/globals.css` semantic tokens (Tailwind v4 `@theme`, `.dark`); `components/ui/*` (Button/Card/Badge/Avatar/Progress/Separator/StatCard/EmptyState/Skeleton/**PageHeader**) + `lib/cn.ts`; barrel is the single entry point (`PageHeader` moved into the kit 2026-07-12; feature UIs like `PersonalitiesManager` compose from `Card`/`Field`, no bespoke chrome); verified live | Extend with Tabs/Dialog/Toast when features need them |
 | Shared form components | done | `components/ui` `Input`, `Textarea`, `Select`, `Label`, `Field` (label+hint+error+aria wiring), `Switch`, `Checkbox`; first consumed by `features/settings/ui/SettingsForm.tsx` | Extract a form-state/submit helper if a 2nd feature form duplicates the fetch/status pattern |
 | Shared table/filter components | in-progress | Shared `components/ui/Table` primitives (`Table`/`TableHead`/`TableBody`/`TableRow`/`TableHeaderCell`/`TableCell` — scroll container, borders, header typography, `interactive`/`header` row variants, align/valign). Both `components/debug/TraceList` and `features/known-users/ui/KnownUsersTable` compose from it (no bespoke table markup). Verified live | Add filter/pagination primitives (Debug still uses `DebugFilters`); adopt in new feature tables |
 | Shared debug components | done | `components/debug/*` (barrel): `TraceExplorer` (uncapped list + filters + live + export), `TraceList` (clickable rows), `TraceDetail`, `TraceTimeline` (per-step timing), `JsonBlock` (collapsible, theme-aware `react-json-view-lite`), `TraceStatusBadge`, `DownloadButton`, `DebugFilters`; consumed by `/debug`, `/debug/[id]`, `/settings/debug`; verified live (JSON tree, timings, full bodies, theme switch) | Add per-feature Debug pages as thin `TraceExplorer` wrappers (e.g. a bot-messaging section when it gets a dashboard route) |
@@ -565,6 +644,7 @@ writing `docs/decisions/*.md`. This table is the lightweight record.
 | Owner field timing | done | user | Deferred to the Telegram intake phase (priority 1) — needs the bot to resolve @username→id |
 | Owner selection model | done | user | Owner is **chosen from a dropdown of known users** (users who have messaged the bot), storing the numeric id directly. Supersedes the earlier free-text @username + lazy-resolution approach — no username→id resolution needed since the id is known. |
 | Known-user aliases | done | user | Aliases are **operator-curated manual nicknames**, edited inline on the Users page (not auto-tracked username history). Intended for future name-based group addressing. |
+| Prompt model (priority 2) | done | user | **Full personalities CRUD feature** (corrected from an initial single-field approach). The base system prompt stays a fixed code constant; personas are a `personalities` table with a **dedicated `/personalities` page** (create/edit/delete + **set active**) and `settings.active_personality_id`. The active persona's prompt is composed into every reply. Mood (priority 9) will build on this table. |
 | Migration workflow | done | user | `generate` committed SQL files; applied via `drizzle-kit migrate` (`npm run db:migrate`), run by the Docker entrypoint before `next start`. No in-app auto-migration (instrumentation approach rejected as non-standard). |
 | DB test strategy | done | user | Real Postgres via Testcontainers (integration suite) |
 | MVP data import | done | agent default | Out of scope for v1 (fresh DB) — reconfirm with user if import is needed before cutover |
@@ -584,13 +664,14 @@ No blockers recorded.
 - Do not copy MVP modules by default.
 - Keep shared patterns ahead of feature-specific code.
 
-### Current state (2026-07-11)
+### Current state (2026-07-12)
 
 - Phase 1 done; Phases 2/3/4/6/11 in-progress and verified: `npm run lint`,
-  `npm run typecheck`, `npm run test` (57 unit), `npm run test:integration`
-  (22, Testcontainers), `npm run build` (0 warnings) all pass. Priority-1 bot
-  messaging (text receive/reply) vertical slice is built and verified live
-  in-browser; the shared Debug UI (list/detail/download) is now built and
+  `npm run typecheck`, `npm run test` (81 unit), `npm run test:integration`
+  (40, Testcontainers), `npm run build` (0 warnings) all pass. Priority-1 bot
+  messaging (text receive/reply) and priority-2 (system & personality prompts —
+  a full personalities CRUD feature with active selection) are built and verified
+  live in-browser; the shared Debug UI (list/detail/download) is built and
   verified live too.
 - **Telegram intake is decided and built**: in-process long polling via
   `instrumentation.ts` → `server/telegram/register-node.ts` →
@@ -645,14 +726,26 @@ No blockers recorded.
   `components/debug`) with a `feature`-scoped `getTraceList` and
   `showFeatureFilter={false}` (see `app/settings/debug/page.tsx`). Row detail
   links reuse the single `/debug/[id]` route. Don't build a bespoke debug UI.
-- **Next best task: priority 2 — system and personality prompts.** Maintenance
-  mode + owner checks are done (`features/bot-messaging/server/policy.ts`;
-  settings columns `owner_username`/`owner_user_id`/`maintenance_mode_enabled`;
-  `resolveBotPolicy`). Prompts will replace the hard-coded `DEFAULT_SYSTEM_PROMPT`
-  in `features/bot-messaging/server/service.ts` — add prompt columns to
-  `settings` (or a prompts table), a composition step, and a Debug trace of the
-  composed prompt. The one remaining feature-1 gate is an operator-run live test
-  with a real bot token (do not create Telegram credentials).
+- **Priority 2 (system & personality prompts) is done** (2026-07-12): base
+  prompt is the code constant `BASE_SYSTEM_PROMPT` in
+  `features/bot-messaging/server/prompt.ts`. Personas are a **full CRUD feature**
+  (`features/personalities/*`, `/personalities` page, `personalities` table +
+  `settings.active_personality_id` FK). The **active** persona's prompt is
+  composed by `buildSystemPrompt` and injected via `getActivePersonalityPrompt()`
+  in `bot-manager.onMessage`; the composed prompt is traced (`system prompt
+  composed` step). Do not reintroduce `DEFAULT_SYSTEM_PROMPT` or a single
+  `personality_prompt` settings field (that approach was tried and reverted —
+  personalities must stay a CRUD feature with active selection).
+- **Next best task: priority 3 — History feature.** Store, retrieve, and inject
+  conversation history into replies. This is the first feature to add per-message
+  persistence (chats/messages tables) — design the schema (see Phase 2's entity
+  list and `../ollama-tg-bot` `features/history/*` for behavior), a service to
+  append/retrieve, and the injection point in `buildSystemPrompt`/the message
+  assembly in `features/bot-messaging/server/service.ts` (history rides the user
+  turn in the MVP, not the system prompt — keep the system prompt cache-stable).
+  Trace history retrieval; add its Debug view via a `TraceExplorer` wrapper.
+  The remaining feature-1/feature-2 gate is an operator-run live test with a real
+  bot token (do not create Telegram credentials).
 - Deferred within bot messaging: markdown/HTML reply rendering (v1 is plain
   text), the MVP LLM "analyzer" addressing fallback, media/vision intake
   (priority 7), and `@grammyjs/runner` for concurrent update handling (built-in

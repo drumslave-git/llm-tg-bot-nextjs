@@ -8,6 +8,7 @@ import type { ChatMessage, ChatUsage } from "@/server/llm/client";
 import { startTrace } from "@/server/trace";
 import { checkAddressed, type AddressSource, type BotIdentity } from "./addressing";
 import { checkMaintenance, isOwner, type BotPolicy } from "./policy";
+import { buildSystemPrompt, hasPersonality } from "./prompt";
 import { formatReply } from "./reply";
 
 /**
@@ -21,10 +22,6 @@ import { formatReply } from "./reply";
  */
 
 const FEATURE = "bot-messaging";
-
-const DEFAULT_SYSTEM_PROMPT =
-  "You are a helpful assistant replying to Telegram messages. " +
-  "Keep replies concise and plain-text.";
 
 const ERROR_REPLY = "Sorry — I couldn't generate a reply just now. Please try again.";
 
@@ -70,6 +67,11 @@ export interface BotMessagingDeps {
   startTyping: () => () => void;
   /** Owner + maintenance-mode state, resolved from settings by the runtime. */
   policy: BotPolicy;
+  /**
+   * Operator-configured persona instructions (from settings), composed into the
+   * system prompt for this reply. Null/absent → base prompt only.
+   */
+  personalityPrompt?: string | null;
   db?: DrizzleDb;
 }
 
@@ -176,11 +178,23 @@ export async function handleIncomingMessage(
         data: { addressed: true, reason: decision.source },
       });
 
+      // 2. Compose the system prompt (base + operator personality) and record it
+      // so the operator can see exactly what persona drove the reply.
+      const systemPrompt = buildSystemPrompt({ personalityPrompt: deps.personalityPrompt });
+      await trace.event({
+        type: "step",
+        message: "system prompt composed",
+        data: {
+          personalityApplied: hasPersonality(deps.personalityPrompt),
+          systemPrompt,
+        },
+      });
+
       const messages: ChatMessage[] = [
-        { role: "system", content: DEFAULT_SYSTEM_PROMPT },
+        { role: "system", content: systemPrompt },
         { role: "user", content: text },
       ];
-      // 2. LLM request — full request body (recorded before the call so the
+      // 3. LLM request — full request body (recorded before the call so the
       // response step's elapsed time reflects real provider latency).
       await trace.event({
         type: "llm_request",
@@ -189,7 +203,7 @@ export async function handleIncomingMessage(
       });
 
       const reply = await deps.generateReply(messages);
-      // 3. LLM response — full raw response body + model/token stats.
+      // 4. LLM response — full raw response body + model/token stats.
       await trace.event({
         type: "llm_response",
         message: "response",
@@ -205,7 +219,7 @@ export async function handleIncomingMessage(
 
       const outgoing = formatReply(reply.content);
       await deps.sendReply(outgoing);
-      // 4. Delivered message — full content.
+      // 5. Delivered message — full content.
       await trace.event({
         type: "output",
         level: "success",

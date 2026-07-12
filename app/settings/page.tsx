@@ -1,7 +1,6 @@
 import { Bug, Database } from "lucide-react";
 import Link from "next/link";
 
-import { PageHeader } from "@/components/PageHeader";
 import {
   Button,
   Card,
@@ -10,6 +9,7 @@ import {
   CardHeader,
   CardTitle,
   EmptyState,
+  PageHeader,
 } from "@/components/ui";
 import { getSettings, listAvailableModels } from "@/features/settings/server/service";
 import type { Settings } from "@/features/settings/server/schema";

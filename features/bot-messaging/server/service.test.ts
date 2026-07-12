@@ -14,6 +14,7 @@ vi.mock("@/server/trace", () => ({ startTrace: vi.fn().mockResolvedValue(recorde
 vi.mock("@/db/drizzle", () => ({ getDb: () => ({}) }));
 
 import { startTrace } from "@/server/trace";
+import { BASE_SYSTEM_PROMPT } from "./prompt";
 import { handleIncomingMessage, type BotMessagingDeps, type IncomingMessage } from "./service";
 
 const BOT = { id: 42, username: "MyBot" };
@@ -97,6 +98,34 @@ describe("handleIncomingMessage", () => {
     expect(stopTyping).toHaveBeenCalledOnce();
   });
 
+  it("uses the base system prompt when no personality is configured", async () => {
+    const d = deps();
+    await handleIncomingMessage(incoming({ text: "hi" }), d);
+    const messages = (d.generateReply as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(messages[0]).toEqual({ role: "system", content: BASE_SYSTEM_PROMPT });
+    const composed = recorder.event.mock.calls
+      .map((c) => c[0])
+      .find((e) => e.message === "system prompt composed");
+    expect(composed.data.personalityApplied).toBe(false);
+    expect(composed.data.systemPrompt).toBe(BASE_SYSTEM_PROMPT);
+  });
+
+  it("appends the configured personality prompt to the system prompt", async () => {
+    const persona = "You are a laconic pirate.";
+    const d = deps({ personalityPrompt: persona });
+    await handleIncomingMessage(incoming({ text: "hi" }), d);
+    const messages = (d.generateReply as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(messages[0].role).toBe("system");
+    expect(messages[0].content).toContain(BASE_SYSTEM_PROMPT);
+    expect(messages[0].content).toContain("Additional instructions:");
+    expect(messages[0].content).toContain(persona);
+    const composed = recorder.event.mock.calls
+      .map((c) => c[0])
+      .find((e) => e.message === "system prompt composed");
+    expect(composed.data.personalityApplied).toBe(true);
+    expect(composed.data.systemPrompt).toBe(messages[0].content);
+  });
+
   it("records the full untrimmed message, request, and raw response bodies", async () => {
     const longText = "x".repeat(500);
     const reply = "y".repeat(300);
@@ -115,9 +144,10 @@ describe("handleIncomingMessage", () => {
     const events = recorder.event.mock.calls.map((c) => c[0]);
     const byMessage = (message: string) => events.find((e) => e.message === message);
 
-    // Fixed flow: addressing check → request → response → send message.
+    // Fixed flow: addressing check → system prompt → request → response → send.
     expect(events.map((e) => e.message)).toEqual([
       "addressing check",
+      "system prompt composed",
       "request",
       "response",
       "send message",

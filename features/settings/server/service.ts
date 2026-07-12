@@ -86,6 +86,14 @@ export async function getLlmRuntime(
   return { baseUrl: record.llmBaseUrl, apiKey: record.llmApiKey, model: record.model };
 }
 
+/**
+ * Server-only: the active personality's id, or null when none is chosen. Used by
+ * the personalities feature to resolve the persona composed into replies.
+ */
+export async function getActivePersonalityId(db: DrizzleDb = getDb()): Promise<string | null> {
+  return (await getSettingsRecord(db))?.activePersonalityId ?? null;
+}
+
 /** The owner + maintenance state the bot needs to police an incoming message. */
 export interface BotPolicy {
   /** Owner's numeric user id (chosen from known users), or null when unset. */
