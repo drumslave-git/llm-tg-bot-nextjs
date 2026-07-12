@@ -21,6 +21,10 @@ import {
   recordIncomingMessage,
 } from "@/features/history/server/service";
 import { rememberUser } from "@/features/known-users/server/service";
+import {
+  getGroupContext,
+  rememberGroupActivity,
+} from "@/features/known-groups/server/service";
 import { getToolset } from "@/features/mcp-tools/server/service";
 import { ApiError } from "@/lib/api-error";
 import { chatCompletion, type ChatMessage } from "@/server/llm/client";
@@ -115,6 +119,11 @@ function buildDeps(
         excludeTelegramMessageId: currentMessageId,
       });
     },
+    // Groups only: inject the known-participant roster. Best-effort — a lookup
+    // failure resolves null rather than dropping the reply.
+    loadGroupContext: isGroup
+      ? () => getGroupContext(chatId).catch(() => null)
+      : undefined,
     async recordReply(input) {
       await recordAssistantMessage({
         chatId,
@@ -167,6 +176,7 @@ async function onMessage(ctx: Context): Promise<void> {
   // running conversation. Both are best-effort and must not block handling.
   const from = ctx.from;
   const text = message.text ?? message.caption ?? "";
+  const chat = ctx.chat;
   if (from && !from.is_bot) {
     await rememberUser({
       userId: String(from.id),
@@ -174,9 +184,20 @@ async function onMessage(ctx: Context): Promise<void> {
       firstName: from.first_name ?? null,
       lastName: from.last_name ?? null,
     });
+    // In a group, also remember the group and record this sender as a member, so
+    // the operator sees the bot's groups and the roster is available for context.
+    // Runs after rememberUser so the membership FK to known_users is satisfied.
+    if (chat.type === "group" || chat.type === "supergroup") {
+      await rememberGroupActivity({
+        chatId: String(chat.id),
+        title: chat.title,
+        type: chat.type,
+        userId: String(from.id),
+      });
+    }
     if (text.trim()) {
       await recordIncomingMessage({
-        chatId: String(ctx.chat.id),
+        chatId: String(chat.id),
         telegramMessageId: message.message_id,
         userId: String(from.id),
         content: text,

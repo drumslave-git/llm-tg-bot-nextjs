@@ -50,6 +50,13 @@
       "when": 1783866810783,
       "tag": "0006_tricky_eternity",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1783884394963,
+      "tag": "0007_normal_leper_queen",
+      "breakpoints": true
     }
   ]
 }

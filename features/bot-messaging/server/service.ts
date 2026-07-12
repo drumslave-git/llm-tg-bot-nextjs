@@ -86,6 +86,13 @@ export interface BotMessagingDeps {
    * current message. Injected so the service stays free of DB/history coupling.
    */
   loadHistory: () => Promise<{ messages: ChatMessage[]; count: number }>;
+  /**
+   * In a group, load the participant-roster context block (the group's known
+   * members and any operator notes) to inject as a system message after the base
+   * system prompt. Absent in private chats; resolves null when there is nothing to
+   * inject. Best-effort — must never fail the reply.
+   */
+  loadGroupContext?: () => Promise<{ content: string; memberCount: number } | null>;
   /** Persist the delivered assistant reply into the history mirror (best-effort). */
   recordReply: (input: {
     content: string;
@@ -224,6 +231,22 @@ export async function handleIncomingMessage(
         },
       });
 
+      // 2b. Group context — a roster of the group's known participants (plus any
+      // operator notes), injected as a system message so the model can recognize
+      // who is who even for people who have not spoken today. Groups only; skipped
+      // when there is nothing to inject (private chats never provide the loader).
+      let groupContext: { content: string; memberCount: number } | null = null;
+      if (deps.loadGroupContext) {
+        groupContext = await deps.loadGroupContext();
+        if (groupContext) {
+          await trace.event({
+            type: "step",
+            message: "group context loaded",
+            data: { memberCount: groupContext.memberCount },
+          });
+        }
+      }
+
       // 3. Load the current-day conversation window and inject it as prior turns
       // between the (cache-stable) system prompt and the current message.
       const history = await deps.loadHistory();
@@ -235,6 +258,7 @@ export async function handleIncomingMessage(
 
       const messages: ChatMessage[] = [
         { role: "system", content: systemPrompt },
+        ...(groupContext ? [{ role: "system" as const, content: groupContext.content }] : []),
         ...history.messages,
         { role: "user", content: text },
       ];

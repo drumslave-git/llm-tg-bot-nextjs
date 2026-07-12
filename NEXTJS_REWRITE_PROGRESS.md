@@ -23,6 +23,67 @@ Next: **Priority 5 — Search MCP tool** (Tavily), built on the MCP infra above.
 
 ### Session log
 
+- 2026-07-12 (follow-up 10): **Known groups + group↔user membership + group
+  context injection** (user request — a new user-directed feature, not in the
+  original priority list). Mirrors the known-users feature: a first-class list of
+  the groups the bot is in, the relation of which users belong to which group,
+  and — built on that relation — a roster of known participants injected into the
+  model's context for a group reply so it can recognize who is who.
+  - **Acceptance criteria (all met):** groups captured passively on each group
+    message; per-group membership recorded (refreshed `last_seen_at`); a bounded
+    roster (name + operator aliases + optional group notes) injected as a system
+    message for group replies; dashboard list + per-group detail (members + notes)
+    + Debug page; notes edits traced; live over SSE; unit + integration tests;
+    lint/typecheck/test/build green.
+  - **Schema (migration `0007_normal_leper_queen.sql`):** `known_groups`
+    (`chat_id` PK, `title`, `type`, operator-curated `notes`, timestamps —
+    passive upsert refreshes `title`/`type`, never clobbers `notes`) and
+    `group_members` (`(chat_id,user_id)` PK, FKs → `known_groups`/`known_users`
+    `on delete cascade`, `first_seen_at`/`last_seen_at`; chat + user indexes).
+  - **Feature module** `features/known-groups/*`: `server/repository.ts`
+    (`upsertKnownGroup`/`listKnownGroups` (member-count join)/`getKnownGroup`/
+    `setKnownGroupNotes`/`recordGroupMembership`/`getGroupMembers` (join to
+    known_users, most-recent-first, bounded)), `server/schema.ts`
+    (`knownGroupSchema`, `updateGroupNotesSchema` — trim/empty→null, ≤2000, view
+    types), pure `format.ts` (`formatKnownGroupLabel`, `formatGroupContext` — the
+    roster block builder, client-safe, unit-tested), `server/service.ts`
+    (`listGroups`/`getGroupWithMembers`/`rememberGroupActivity` (passive, untraced)/
+    `updateNotes` (traced)/`getGroupContext` — roster capped at 50), ui
+    (`KnownGroupsList`, `GroupMembersCard`, client `GroupNotesEditor`).
+  - **Runtime + injection:** `bot-manager.onMessage` calls `rememberGroupActivity`
+    for group/supergroup chats (after `rememberUser`, so the membership FK holds);
+    `buildDeps` provides a groups-only `loadGroupContext` (best-effort — a lookup
+    failure resolves null, never drops the reply). `bot-messaging/service.ts`
+    gained an optional `loadGroupContext` dep: when it returns non-null it records
+    a **`group context loaded`** step and injects the roster as a second `system`
+    message after the (cache-stable) base prompt, before the history window
+    (`[systemBase, groupRoster?, ...history, current]`). Private-chat flow is
+    byte-unchanged (no loader provided).
+  - **Routes/pages/nav:** `GET /api/groups`, `PATCH /api/groups/[id]` (notes);
+    `/groups` (list), `/groups/[chatId]` (notes editor + members, `notFound` on
+    unknown id), `/groups/debug` (shared `TraceExplorer`, notes-edit traces). Nav
+    gained a **Groups** item; new `groups` SSE topic (`LiveIndicator`).
+  - **Tests:** unit `format.test.ts` (+7: label + roster with aliases/notes/no-title
+    + null cases), `schema.test.ts` (+3: trim/clear/bounds), bot-messaging
+    `service.test.ts` (+2: group roster injected as 2nd system message + step
+    order; step omitted when loader→null) → **123 unit**. Integration
+    `known-groups.integration.test.ts` (+10: capture + title-refresh-without-
+    clobbering-notes, membership scoping, list order + counts, members order,
+    detail/unknown, notes set/clear + trace, unknown→error trace, context roster
+    build, empty/unknown→null) → **67**.
+  - **Verified live** on the dev server (migration applied): seeded a "Family Chat"
+    supergroup with two members → `/groups` lists it (2 members); `/groups/-1009999`
+    shows the notes editor + members table (George (@drumslave) with aliases
+    "Dad, Boss"; Alice Smith no aliases; ordered by last-seen); editing notes
+    PATCHed 200, persisted on reload, and recorded a `known-groups`/`update-notes`
+    **success** trace (102ms) on `/groups/debug`; no console errors. Seeded rows +
+    traces deleted afterward — dev DB restored.
+  - **Not verified live:** the actual LLM roster injection through a real Telegram
+    group message — shares the operator-run live-bot token gate (no Telegram
+    credentials created); covered by the unit + integration tests above.
+  - Checks: lint ✓ (0 warnings), typecheck ✓, unit 123 ✓, integration 67 ✓, build
+    ✓ (0 warnings, `/groups*` + `/api/groups*` routes present), db:generate/
+    db:migrate ✓.
 - 2026-07-12 (follow-up 9): **New MCP tool `update_user_aliases`** (user request:
   when the model sees a person referred to by another name/nickname, update
   `known_users`). A **write** tool (the first non-read-only one).

@@ -7,6 +7,7 @@ import {
   integer,
   jsonb,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -165,6 +166,59 @@ export const knownUsers = pgTable(
 
 export type KnownUserRow = typeof knownUsers.$inferSelect;
 export type KnownUserInsert = typeof knownUsers.$inferInsert;
+
+/**
+ * Every Telegram group/supergroup the bot participates in. Upserted (by numeric
+ * `chat_id`) on each incoming group message so the operator can see which groups
+ * the bot is in. Telegram profile fields (`title`, `type`) are refreshed on every
+ * message; `notes` is operator-curated (a free-text description of the group) and
+ * never overwritten by the passive upsert. Mirrors {@link knownUsers}.
+ */
+export const knownGroups = pgTable("known_groups", {
+  /** Numeric Telegram chat id, as a string (supergroup ids exceed 2^31). */
+  chatId: text("chat_id").primaryKey(),
+  /** Group title, refreshed on every message. */
+  title: text("title"),
+  /** Telegram chat type (`group` or `supergroup`). */
+  type: text("type"),
+  /** Operator-curated free-text description of the group. */
+  notes: text("notes"),
+  firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type KnownGroupRow = typeof knownGroups.$inferSelect;
+export type KnownGroupInsert = typeof knownGroups.$inferInsert;
+
+/**
+ * Group ↔ user membership: which known users have been seen in which known
+ * group. A row is recorded (and `last_seen_at` refreshed) whenever a user sends a
+ * message in a group, so the roster of a group's participants is available for
+ * context injection and the dashboard. The pair `(chat_id, user_id)` is unique.
+ */
+export const groupMembers = pgTable(
+  "group_members",
+  {
+    /** The group the user was seen in. */
+    chatId: text("chat_id")
+      .notNull()
+      .references(() => knownGroups.chatId, { onDelete: "cascade" }),
+    /** The known user seen in the group. */
+    userId: text("user_id")
+      .notNull()
+      .references(() => knownUsers.userId, { onDelete: "cascade" }),
+    firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.chatId, t.userId] }),
+    index("group_members_chat_idx").on(t.chatId),
+    index("group_members_user_idx").on(t.userId),
+  ],
+);
+
+export type GroupMemberRow = typeof groupMembers.$inferSelect;
+export type GroupMemberInsert = typeof groupMembers.$inferInsert;
 
 /**
  * A 1:1 mirror of the Telegram conversation: every human message and every bot
