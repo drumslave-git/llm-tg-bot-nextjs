@@ -4,6 +4,7 @@ import type { DrizzleDb } from "@/db/drizzle";
 import { getDb } from "@/db/drizzle";
 import { getKnownUser } from "@/features/known-users/server/repository";
 import { ApiError } from "@/lib/api-error";
+import { FEATURES } from "@/lib/features";
 import type { TraceTrigger } from "@/lib/trace";
 import { listModels } from "@/server/llm/client";
 
@@ -26,7 +27,7 @@ import type { Settings, TestConnection, UpdateSettings } from "./schema";
  * redacted from trace data.
  */
 
-const FEATURE = "settings";
+const FEATURE = FEATURES["settings"];
 
 /** Project an internal record to the client-safe shape (masking the secret). */
 function toClientSettings(record: SettingsRecord | null): Settings {
@@ -176,7 +177,7 @@ export async function updateSettings(
 ): Promise<Settings> {
   const fields = Object.keys(input);
   const trace = await startTrace(
-    { feature: FEATURE, action: "update", trigger, inputSummary: fields.join(", ") },
+    { feature: FEATURE.id, action: "update", trigger, inputSummary: fields.join(", ") },
     db,
   );
   try {
@@ -189,7 +190,7 @@ export async function updateSettings(
     await trace.event({ type: "db", message: "settings row upserted" });
     await trace.succeed({
       outputSummary: `Updated ${fields.join(", ")}`,
-      relatedIds: { settings: [SETTINGS_ID] },
+      relatedIds: { [FEATURE.relatedIdsKey]: [SETTINGS_ID] },
     });
     return toClientSettings(record);
   } catch (err) {
@@ -209,7 +210,7 @@ export async function testConnection(
   db: DrizzleDb = getDb(),
 ): Promise<{ models: string[] }> {
   const trace = await startTrace(
-    { feature: FEATURE, action: "test-connection", trigger, inputSummary: input.llmBaseUrl },
+    { feature: FEATURE.id, action: "test-connection", trigger, inputSummary: input.llmBaseUrl },
     db,
   );
   try {

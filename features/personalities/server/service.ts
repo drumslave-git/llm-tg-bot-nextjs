@@ -6,6 +6,7 @@ import type { DrizzleDb } from "@/db/drizzle";
 import { getDb } from "@/db/drizzle";
 import { getSettingsRecord, upsertSettings } from "@/features/settings/server/repository";
 import { ApiError } from "@/lib/api-error";
+import { FEATURES } from "@/lib/features";
 import type { TraceTrigger } from "@/lib/trace";
 import { startTrace } from "@/server/trace";
 import {
@@ -32,7 +33,7 @@ import {
  * trace recording for every mutation. Reads are cheap and untraced.
  */
 
-const FEATURE = "personalities";
+const FEATURE = FEATURES["personalities"];
 
 /** A stored record is already client-safe. */
 function toClient(record: PersonalityRecord): Personality {
@@ -70,7 +71,7 @@ export async function createPersonality(
   db: DrizzleDb = getDb(),
 ): Promise<Personality> {
   const trace = await startTrace(
-    { feature: FEATURE, action: "create", trigger, inputSummary: input.name },
+    { feature: FEATURE.id, action: "create", trigger, inputSummary: input.name },
     db,
   );
   try {
@@ -90,7 +91,7 @@ export async function createPersonality(
       prompt: input.prompt,
     });
     await trace.event({ type: "db", message: "personality created" });
-    await trace.succeed({ outputSummary: record.name, relatedIds: { personalities: [record.id] } });
+    await trace.succeed({ outputSummary: record.name, relatedIds: { [FEATURE.relatedIdsKey]: [record.id] } });
     return toClient(record);
   } catch (err) {
     await trace.fail(err);
@@ -106,7 +107,7 @@ export async function editPersonality(
   db: DrizzleDb = getDb(),
 ): Promise<Personality> {
   const trace = await startTrace(
-    { feature: FEATURE, action: "update", trigger, inputSummary: `personality ${id}` },
+    { feature: FEATURE.id, action: "update", trigger, inputSummary: `personality ${id}` },
     db,
   );
   try {
@@ -119,7 +120,7 @@ export async function editPersonality(
     const record = await updatePersonality(db, id, input);
     if (!record) throw ApiError.notFound("Unknown personality");
     await trace.event({ type: "db", message: "personality updated" });
-    await trace.succeed({ outputSummary: record.name, relatedIds: { personalities: [record.id] } });
+    await trace.succeed({ outputSummary: record.name, relatedIds: { [FEATURE.relatedIdsKey]: [record.id] } });
     return toClient(record);
   } catch (err) {
     await trace.fail(err);
@@ -137,14 +138,14 @@ export async function removePersonality(
   db: DrizzleDb = getDb(),
 ): Promise<void> {
   const trace = await startTrace(
-    { feature: FEATURE, action: "delete", trigger, inputSummary: `personality ${id}` },
+    { feature: FEATURE.id, action: "delete", trigger, inputSummary: `personality ${id}` },
     db,
   );
   try {
     const deleted = await deletePersonality(db, id);
     if (!deleted) throw ApiError.notFound("Unknown personality");
     await trace.event({ type: "db", message: "personality deleted" });
-    await trace.succeed({ outputSummary: `deleted ${id}`, relatedIds: { personalities: [id] } });
+    await trace.succeed({ outputSummary: `deleted ${id}`, relatedIds: { [FEATURE.relatedIdsKey]: [id] } });
   } catch (err) {
     await trace.fail(err);
     throw err;
@@ -162,7 +163,7 @@ export async function setActivePersonality(
 ): Promise<PersonalitiesView> {
   const trace = await startTrace(
     {
-      feature: FEATURE,
+      feature: FEATURE.id,
       action: "set-active",
       trigger,
       inputSummary: personalityId ?? "(none)",
@@ -179,7 +180,7 @@ export async function setActivePersonality(
     await trace.event({ type: "db", message: "active personality set" });
     await trace.succeed({
       outputSummary: personalityId ? `active ${personalityId}` : "cleared",
-      relatedIds: personalityId ? { personalities: [personalityId] } : undefined,
+      relatedIds: personalityId ? { [FEATURE.relatedIdsKey]: [personalityId] } : undefined,
     });
     return getPersonalitiesView(db);
   } catch (err) {

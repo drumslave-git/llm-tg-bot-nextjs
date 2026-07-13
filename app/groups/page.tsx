@@ -3,6 +3,7 @@ import Link from "next/link";
 
 import { Button, EmptyState, PageHeader } from "@/components/ui";
 import { LiveIndicator } from "@/components/realtime/LiveIndicator";
+import { featureDebugHref } from "@/lib/features";
 import { listGroups } from "@/features/known-groups/server/service";
 import type { KnownGroupSummary } from "@/features/known-groups/server/schema";
 import { KnownGroupsList } from "@/features/known-groups/ui/KnownGroupsList";
@@ -32,7 +33,7 @@ export default async function GroupsPage() {
           <div className="flex items-center gap-2">
             <LiveIndicator topic="groups" />
             <Button asChild variant="outline" size="sm">
-              <Link href="/groups/debug">
+              <Link href={featureDebugHref("known-groups")}>
                 <Bug className="h-4 w-4" aria-hidden />
                 Debug
               </Link>

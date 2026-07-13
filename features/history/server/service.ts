@@ -5,6 +5,7 @@ import { getDb } from "@/db/drizzle";
 import { formatKnownUserLabel } from "@/features/known-users/format";
 import { getKnownUsersByIds } from "@/features/known-users/server/repository";
 import type { ChatMessage } from "@/server/llm/client";
+import { FEATURES } from "@/lib/features";
 import type { TraceTrigger } from "@/lib/trace";
 import { publishEvent } from "@/server/realtime/hub";
 import { startTrace } from "@/server/trace";
@@ -37,7 +38,7 @@ import {
  * untraced (the mirror itself is the record); mutating edits are traced.
  */
 
-const FEATURE = "history";
+const FEATURE = FEATURES["history"];
 
 /** Input for capturing an incoming human message (role is always `user`). */
 export interface IncomingHistoryMessage {
@@ -79,7 +80,7 @@ export async function recordIncomingMessage(
     replyToMessageId: parsed.data.replyToMessageId ?? null,
     sentAt: parsed.data.sentAt,
   });
-  if (record) publishEvent("history");
+  if (record) publishEvent(FEATURE.realtimeTopic);
   return record;
 }
 
@@ -111,7 +112,7 @@ export async function recordAssistantMessage(
     replyToMessageId: parsed.data.replyToMessageId ?? null,
     sentAt: parsed.data.sentAt,
   });
-  if (record) publishEvent("history");
+  if (record) publishEvent(FEATURE.realtimeTopic);
   return record;
 }
 
@@ -127,7 +128,7 @@ export async function applyMessageEdit(
 ): Promise<ChatMessageRecord | null> {
   const trace = await startTrace(
     {
-      feature: FEATURE,
+      feature: FEATURE.id,
       action: "edit",
       trigger,
       inputSummary: input.content,
@@ -158,10 +159,10 @@ export async function applyMessageEdit(
       message: "message edited",
       data: { telegramMessageId: parsed.telegramMessageId, content: parsed.content },
     });
-    publishEvent("history");
+    publishEvent(FEATURE.realtimeTopic);
     await trace.succeed({
       outputSummary: parsed.content,
-      relatedIds: { chat_messages: [String(before.id)] },
+      relatedIds: { [FEATURE.relatedIdsKey]: [String(before.id)] },
     });
     return before;
   } catch (err) {

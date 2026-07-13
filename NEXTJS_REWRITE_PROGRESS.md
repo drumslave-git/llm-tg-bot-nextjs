@@ -24,6 +24,31 @@ Next: **Priority 6 — Visit/read link MCP tool** (fetch/read a URL with SSRF pr
 
 ### Session log
 
+- 2026-07-13 (follow-up): **Trace feature-id consistency — central registry +
+  Debug consolidation** (user request: "make traces consistent and keep them that
+  way"). Root issue: each feature's `feature` string was a bare literal duplicated
+  between its service (the trace *writer*) and its scoped Debug page (the *reader*),
+  with nothing enforcing they matched — a rename would silently empty the Debug
+  list. New single source of truth **`lib/features.ts`** (`FEATURES` registry,
+  `FeatureId`, `FEATURE_IDS`, `featureLabel`, `featureDebugHref`) mapping each
+  feature to its `id` / `label` / `realtimeTopic` / `relatedIdsKey` / `path`. All
+  six services now read `FEATURES[...].id`, `.realtimeTopic`, and `.relatedIdsKey`
+  instead of literals (bot-messaging, history, known-users, known-groups,
+  personalities, settings). **Removed the 5 per-feature Debug pages**
+  (`app/{groups,users,history,personalities,settings}/debug`); their dashboard
+  "Debug" buttons now link to the shared `/debug?feature=<id>` via
+  `featureDebugHref`. `DebugFilters` lists **every registered feature** (labeled),
+  unioned with feature ids found in the data, so a feature is always selectable and
+  an empty list reads as "no traces yet" rather than "missing". Verified live at
+  `/debug?feature=known-groups`: Groups pre-selected, labels correct
+  ("Bot messaging"/"Users"/"Groups"), download href carries the filter. Checks:
+  lint ✓, typecheck ✓ (via build), test ✓ 135/135, build ✓. **Findings for
+  follow-up:** (a) legacy `mcp-tools` traces exist in the DB but no current code
+  records that feature — orphaned rows (surfaced, unlabeled, in the filter);
+  (b) tool calls are traced as `external_call` events inside `bot-messaging` reply
+  traces, not under their own feature — the Tools dashboard has no Debug scope;
+  (c) passive user/group capture (`rememberUser`/`rememberGroupActivity`) remains
+  intentionally untraced (high-frequency upsert) — consistent across features.
 - 2026-07-13 (follow-up): **Settings split into Core / Integrations tabs** (user
   request — visual separation, "everything except the Tavily key is core"). New
   shared **`Tabs` primitive** in the UI kit (`components/ui/Tabs.tsx`,

@@ -4,6 +4,7 @@ import type { DrizzleDb } from "@/db/drizzle";
 import { getDb } from "@/db/drizzle";
 import { formatKnownUserLabel } from "@/features/known-users/format";
 import { ApiError } from "@/lib/api-error";
+import { FEATURES } from "@/lib/features";
 import type { TraceTrigger } from "@/lib/trace";
 import { publishEvent } from "@/server/realtime/hub";
 import { startTrace } from "@/server/trace";
@@ -35,7 +36,7 @@ import type {
  * Mirrors the known-users service.
  */
 
-const FEATURE = "known-groups";
+const FEATURE = FEATURES["known-groups"];
 
 /** Cap the injected roster so a busy group's context stays bounded. */
 const ROSTER_LIMIT = 50;
@@ -89,7 +90,7 @@ export async function rememberGroupActivity(
     if (params.userId) {
       await recordGroupMembership(db, params.chatId, params.userId);
     }
-    publishEvent("groups");
+    publishEvent(FEATURE.realtimeTopic);
   } catch {
     // Best-effort capture; swallow so message handling continues.
   }
@@ -103,7 +104,7 @@ export async function updateNotes(
   db: DrizzleDb = getDb(),
 ): Promise<KnownGroup> {
   const trace = await startTrace(
-    { feature: FEATURE, action: "update-notes", trigger, inputSummary: `group ${chatId}` },
+    { feature: FEATURE.id, action: "update-notes", trigger, inputSummary: `group ${chatId}` },
     db,
   );
   try {
@@ -111,10 +112,10 @@ export async function updateNotes(
     const record = await setKnownGroupNotes(db, chatId, input.notes);
     if (!record) throw ApiError.notFound("Unknown group");
     await trace.event({ type: "db", message: "notes updated" });
-    publishEvent("groups");
+    publishEvent(FEATURE.realtimeTopic);
     await trace.succeed({
       outputSummary: input.notes ? "notes set" : "notes cleared",
-      relatedIds: { known_groups: [chatId] },
+      relatedIds: { [FEATURE.relatedIdsKey]: [chatId] },
     });
     return toClientGroup(record);
   } catch (err) {

@@ -1,0 +1,82 @@
+import type { RealtimeTopic } from "./realtime";
+
+/**
+ * Central feature registry — the single source of truth tying each product
+ * feature to the identifiers that must stay in lockstep across the codebase:
+ *
+ *  - `id`            the `feature` string recorded on every trace and used to
+ *                    scope the shared Debug view (`/debug?feature=<id>`).
+ *  - `label`         human name shown in the Debug filter and elsewhere.
+ *  - `realtimeTopic` the SSE topic this feature's data pages live-update on
+ *                    (omitted for features that publish no domain events).
+ *  - `relatedIdsKey` the key under `trace.relatedIds` for this feature's rows
+ *                    (omitted for features with no primary row to link).
+ *  - `path`          the feature's dashboard route.
+ *
+ * These identifiers were previously bare string literals duplicated between
+ * each service (the trace *writer*) and its Debug page (the *reader*). Nothing
+ * enforced that they matched, so a rename silently produced an empty Debug
+ * list. Referencing the registry from both ends turns any mismatch into a
+ * compile error. Pure/client-safe (types only) so services, Server Components,
+ * and Client Components can all import it.
+ */
+export interface FeatureDescriptor {
+  id: string;
+  label: string;
+  realtimeTopic?: RealtimeTopic;
+  relatedIdsKey?: string;
+  path?: string;
+}
+
+export const FEATURES = {
+  "bot-messaging": { id: "bot-messaging", label: "Bot messaging" },
+  history: {
+    id: "history",
+    label: "History",
+    realtimeTopic: "history",
+    relatedIdsKey: "chat_messages",
+    path: "/history",
+  },
+  "known-users": {
+    id: "known-users",
+    label: "Users",
+    realtimeTopic: "users",
+    relatedIdsKey: "known_users",
+    path: "/users",
+  },
+  "known-groups": {
+    id: "known-groups",
+    label: "Groups",
+    realtimeTopic: "groups",
+    relatedIdsKey: "known_groups",
+    path: "/groups",
+  },
+  personalities: {
+    id: "personalities",
+    label: "Personalities",
+    relatedIdsKey: "personalities",
+    path: "/personalities",
+  },
+  settings: {
+    id: "settings",
+    label: "Settings",
+    relatedIdsKey: "settings",
+    path: "/settings",
+  },
+} as const satisfies Record<string, FeatureDescriptor>;
+
+/** A registered feature id (the trace `feature` string). */
+export type FeatureId = keyof typeof FEATURES;
+
+/** Every registered feature id, for building filter option lists. */
+export const FEATURE_IDS = Object.keys(FEATURES) as FeatureId[];
+
+/** Human label for a feature id — falls back to the raw id for unknowns. */
+export function featureLabel(id: string): string {
+  return (FEATURES as Record<string, FeatureDescriptor>)[id]?.label ?? id;
+}
+
+/** The shared Debug view pre-filtered to a single feature's traces. */
+export function featureDebugHref(id: FeatureId): string {
+  return `/debug?feature=${encodeURIComponent(FEATURES[id].id)}`;
+}

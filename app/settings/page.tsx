@@ -11,6 +11,7 @@ import {
   EmptyState,
   PageHeader,
 } from "@/components/ui";
+import { featureDebugHref } from "@/lib/features";
 import { getSettings, listAvailableModels } from "@/features/settings/server/service";
 import type { Settings } from "@/features/settings/server/schema";
 import { listUsers } from "@/features/known-users/server/service";
@@ -47,7 +48,7 @@ export default async function SettingsPage() {
         title="Settings"
         actions={
           <Button asChild variant="outline" size="sm">
-            <Link href="/settings/debug">
+            <Link href={featureDebugHref("settings")}>
               <Bug className="h-4 w-4" aria-hidden />
               Debug
             </Link>

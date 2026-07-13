@@ -3,6 +3,7 @@ import Link from "next/link";
 
 import { Button, EmptyState, PageHeader } from "@/components/ui";
 import { LiveIndicator } from "@/components/realtime/LiveIndicator";
+import { featureDebugHref } from "@/lib/features";
 import { listUsers } from "@/features/known-users/server/service";
 import type { KnownUser } from "@/features/known-users/server/schema";
 import { KnownUsersTable } from "@/features/known-users/ui/KnownUsersTable";
@@ -32,7 +33,7 @@ export default async function UsersPage() {
           <div className="flex items-center gap-2">
             <LiveIndicator topic="users" />
             <Button asChild variant="outline" size="sm">
-              <Link href="/users/debug">
+              <Link href={featureDebugHref("known-users")}>
                 <Bug className="h-4 w-4" aria-hidden />
                 Debug
               </Link>

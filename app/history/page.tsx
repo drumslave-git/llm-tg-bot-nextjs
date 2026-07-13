@@ -3,6 +3,7 @@ import Link from "next/link";
 
 import { Button, EmptyState, PageHeader } from "@/components/ui";
 import { LiveIndicator } from "@/components/realtime/LiveIndicator";
+import { featureDebugHref } from "@/lib/features";
 import { getHistoryOverview } from "@/features/history/server/service";
 import type { ChatSummaryView } from "@/features/history/server/schema";
 import { ChatSummaryList } from "@/features/history/ui/ChatSummaryList";
@@ -32,7 +33,7 @@ export default async function HistoryPage() {
           <div className="flex items-center gap-2">
             <LiveIndicator topic="history" />
             <Button asChild variant="outline" size="sm">
-              <Link href="/history/debug">
+              <Link href={featureDebugHref("history")}>
                 <Bug className="h-4 w-4" aria-hidden />
                 Debug
               </Link>

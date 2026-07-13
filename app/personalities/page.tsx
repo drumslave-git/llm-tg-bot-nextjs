@@ -2,6 +2,7 @@ import { Bug, Database } from "lucide-react";
 import Link from "next/link";
 
 import { Button, EmptyState, PageHeader } from "@/components/ui";
+import { featureDebugHref } from "@/lib/features";
 import {
   getPersonalitiesView,
   type PersonalitiesView,
@@ -31,7 +32,7 @@ export default async function PersonalitiesPage() {
         description="Named personas for the bot. The active one is composed into the base system prompt on every reply."
         actions={
           <Button asChild variant="outline" size="sm">
-            <Link href="/personalities/debug">
+            <Link href={featureDebugHref("personalities")}>
               <Bug className="h-4 w-4" aria-hidden />
               Debug
             </Link>

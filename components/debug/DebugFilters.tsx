@@ -3,15 +3,29 @@
 import { useRouter } from "next/navigation";
 
 import { Label, Select } from "@/components/ui";
+import { FEATURE_IDS, featureLabel } from "@/lib/features";
 import { traceStatusSchema, type TraceStatus } from "@/lib/trace";
 
 const STATUSES = traceStatusSchema.options;
 
 /**
+ * Merge the registered features with any feature ids that appear in the data
+ * (future/unregistered features still show up) plus the active selection, then
+ * order by label. Listing every registered feature — not only those that have
+ * recorded a trace yet — means a feature is always selectable, so an empty list
+ * reads as "no traces yet" rather than "this feature does not exist".
+ */
+function featureOptions(dataFeatures: string[], selected?: string): string[] {
+  const ids = new Set<string>([...FEATURE_IDS, ...dataFeatures]);
+  if (selected) ids.add(selected);
+  return [...ids].sort((a, b) => featureLabel(a).localeCompare(featureLabel(b)));
+}
+
+/**
  * Debug list filters (Client Component). Pushes the selected feature/status into
  * the URL so the Server Component page re-reads with the filter and the view is
  * shareable/refresh-safe. Pagination resets on any filter change. When `features`
- * is omitted the feature dropdown is hidden (feature-scoped Debug pages).
+ * is omitted the feature dropdown is hidden.
  */
 export function DebugFilters({
   basePath,
@@ -46,9 +60,9 @@ export function DebugFilters({
             className="min-w-40"
           >
             <option value="">All features</option>
-            {features.map((f) => (
+            {featureOptions(features, feature).map((f) => (
               <option key={f} value={f}>
-                {f}
+                {featureLabel(f)}
               </option>
             ))}
           </Select>

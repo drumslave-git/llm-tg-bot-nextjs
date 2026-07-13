@@ -4,6 +4,7 @@ import type { DrizzleDb } from "@/db/drizzle";
 import { getDb } from "@/db/drizzle";
 import { getChatParticipantIds } from "@/features/history/server/repository";
 import { ApiError } from "@/lib/api-error";
+import { FEATURES } from "@/lib/features";
 import type { TraceTrigger } from "@/lib/trace";
 import { publishEvent } from "@/server/realtime/hub";
 import { startTrace } from "@/server/trace";
@@ -25,7 +26,7 @@ import { updateAliasesSchema, type KnownUser, type UpdateAliases } from "./schem
  * upsert (not traced); editing aliases is an operator action (traced).
  */
 
-const FEATURE = "known-users";
+const FEATURE = FEATURES["known-users"];
 
 /** A known user record is already client-safe (no secrets). */
 function toClient(record: KnownUserRecord): KnownUser {
@@ -54,7 +55,7 @@ export async function rememberUser(
 ): Promise<void> {
   try {
     await upsertKnownUser(db, profile);
-    publishEvent("users");
+    publishEvent(FEATURE.realtimeTopic);
   } catch {
     // Best-effort capture; swallow so message handling continues.
   }
@@ -95,7 +96,7 @@ export async function addAliasByReference(
   db: DrizzleDb = getDb(),
 ): Promise<AddAliasByReferenceResult> {
   const trace = await startTrace(
-    { feature: FEATURE, action: "add-aliases", trigger, inputSummary: params.reference },
+    { feature: FEATURE.id, action: "add-aliases", trigger, inputSummary: params.reference },
     db,
   );
   try {
@@ -127,24 +128,28 @@ export async function addAliasByReference(
       .filter((a) => a && !known.has(a.toLowerCase()));
 
     if (toAdd.length === 0) {
-      await trace.skip("nothing new to add", { relatedIds: { known_users: [user.userId] } });
+      await trace.skip("nothing new to add", {
+        relatedIds: { [FEATURE.relatedIdsKey]: [user.userId] },
+      });
       return { status: "noop", user: toClient(user) };
     }
 
     const parsed = updateAliasesSchema.safeParse({ aliases: [...user.aliases, ...toAdd] });
     if (!parsed.success) {
       const reason = parsed.error.issues[0]?.message ?? "Invalid aliases";
-      await trace.skip(`rejected: ${reason}`, { relatedIds: { known_users: [user.userId] } });
+      await trace.skip(`rejected: ${reason}`, {
+        relatedIds: { [FEATURE.relatedIdsKey]: [user.userId] },
+      });
       return { status: "invalid", reason };
     }
 
     const record = await setKnownUserAliases(db, user.userId, parsed.data.aliases);
     if (!record) throw ApiError.notFound("Unknown user");
     await trace.event({ type: "db", message: "aliases updated", data: { aliases: parsed.data.aliases } });
-    publishEvent("users");
+    publishEvent(FEATURE.realtimeTopic);
     await trace.succeed({
       outputSummary: `+${toAdd.length} alias(es) for ${user.userId}`,
-      relatedIds: { known_users: [user.userId] },
+      relatedIds: { [FEATURE.relatedIdsKey]: [user.userId] },
     });
     return { status: "updated", user: toClient(record), added: toAdd };
   } catch (err) {
@@ -161,7 +166,7 @@ export async function updateAliases(
   db: DrizzleDb = getDb(),
 ): Promise<KnownUser> {
   const trace = await startTrace(
-    { feature: FEATURE, action: "update-aliases", trigger, inputSummary: `user ${userId}` },
+    { feature: FEATURE.id, action: "update-aliases", trigger, inputSummary: `user ${userId}` },
     db,
   );
   try {
@@ -169,10 +174,10 @@ export async function updateAliases(
     const record = await setKnownUserAliases(db, userId, input.aliases);
     if (!record) throw ApiError.notFound("Unknown user");
     await trace.event({ type: "db", message: "aliases updated" });
-    publishEvent("users");
+    publishEvent(FEATURE.realtimeTopic);
     await trace.succeed({
       outputSummary: `${input.aliases.length} alias(es)`,
-      relatedIds: { known_users: [userId] },
+      relatedIds: { [FEATURE.relatedIdsKey]: [userId] },
     });
     return toClient(record);
   } catch (err) {

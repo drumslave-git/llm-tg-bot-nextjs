@@ -4,6 +4,7 @@ import type { Message } from "@grammyjs/types";
 
 import type { DrizzleDb } from "@/db/drizzle";
 import { getDb } from "@/db/drizzle";
+import { FEATURES } from "@/lib/features";
 import type { ChatMessage, ChatUsage } from "@/server/llm/client";
 import { startTrace } from "@/server/trace";
 import { checkAddressed, type AddressSource, type BotIdentity } from "./addressing";
@@ -21,7 +22,7 @@ import { formatReply } from "./reply";
  * chatter returns an `ignored` outcome without writing a trace (avoids noise).
  */
 
-const FEATURE = "bot-messaging";
+const FEATURE = FEATURES["bot-messaging"];
 
 const ERROR_REPLY = "Sorry — I couldn't generate a reply just now. Please try again.";
 
@@ -154,7 +155,7 @@ export async function handleIncomingMessage(
   if (maintenance.blocked) {
     const trace = await startTrace(
       {
-        feature: FEATURE,
+        feature: FEATURE.id,
         action: "reply",
         trigger: {
           kind: "telegram",
@@ -197,7 +198,7 @@ export async function handleIncomingMessage(
   try {
     const trace = await startTrace(
       {
-        feature: FEATURE,
+        feature: FEATURE.id,
         action: "reply",
         trigger: {
           kind: "telegram",
