@@ -1,7 +1,10 @@
-import { Wrench } from "lucide-react";
+import { Bug, Wrench } from "lucide-react";
+import Link from "next/link";
 
 import {
+  Button,
   Card,
+  CardAction,
   CardContent,
   CardDescription,
   CardHeader,
@@ -39,10 +42,20 @@ export function ToolsManager({ tools }: { tools: ToolView[] }) {
       {[...byFeature.entries()].map(([feature, featureTools]) => (
         <Card key={feature}>
           <CardHeader>
-            <CardTitle className="capitalize">{feature}</CardTitle>
-            <CardDescription>
-              {featureTools.length} tool{featureTools.length === 1 ? "" : "s"}
-            </CardDescription>
+            <div>
+              <CardTitle className="capitalize">{feature}</CardTitle>
+              <CardDescription>
+                {featureTools.length} tool{featureTools.length === 1 ? "" : "s"}
+              </CardDescription>
+            </div>
+            <CardAction>
+              <Button asChild variant="outline" size="sm">
+                <Link href={`/debug?feature=mcp-tools-${encodeURIComponent(feature)}`}>
+                  <Bug className="h-4 w-4" aria-hidden />
+                  Debug
+                </Link>
+              </Button>
+            </CardAction>
           </CardHeader>
           <CardContent className="divide-y divide-border">
             {featureTools.map((tool) => (

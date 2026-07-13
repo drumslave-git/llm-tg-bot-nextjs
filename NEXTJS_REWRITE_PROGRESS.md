@@ -24,6 +24,33 @@ Next: **Priority 6 — Visit/read link MCP tool** (fetch/read a URL with SSRF pr
 
 ### Session log
 
+- 2026-07-13 (follow-up): **Per-tool trace scopes + change-gated passive capture**
+  (user request, building on the registry work). (1) **Every MCP tool call now runs
+  inside its own trace**, scoped to `mcp-tools-<owning-feature>` (e.g.
+  `mcp-tools-history`, `mcp-tools-known-users`, `mcp-tools-web-search`) with the
+  tool name as the trace action. Implemented as a single wrapper `tracedToolCall`
+  (`server/mcp/tool-trace.ts`) around the one choke point `BotMcpRegistry.callTool`,
+  so all current/future tools get a scope automatically. Best-effort at the
+  `startTrace` boundary — a trace-backend failure never blocks a tool call (the
+  reply trace still records the call inline). Added `tryGetToolContext()` (non-
+  throwing) for the chatId/correlation. The three scopes are registered in
+  `lib/features.ts` (labels "History tools"/"User tools"/"Web search tool"); the
+  Tools dashboard gained a per-group **Debug** link → `/debug?feature=mcp-tools-*`.
+  (2) **Passive user/group capture now records a trace only when data actually
+  changes** — a newly seen user/group, a profile-field change, or a newly seen
+  group member. Identical re-sightings stay untraced (they fire on every message);
+  `updatedAt`/`last_seen_at` are still bumped so ordering/roster are unaffected.
+  `rememberUser` reads the prior row and traces `capture-user`/`update-profile`;
+  `rememberGroupActivity` traces `capture-group`/`update-profile`/`member-joined`
+  (co-occurring changes fold into one trace with per-change events). New repo helper
+  `groupMembershipExists`. **Tests:** extended known-users + known-groups
+  integration suites (change-gating assertions; fixed a now-stale exact-count
+  assertion in the groups notes test) and added `server/mcp/tool-trace.integration.test.ts`
+  (success / isError-result / thrown-error scopes). Verified live: `/tools` shows
+  per-group Debug links, `/debug` lists all tool scopes with clean labels, no
+  console errors. Checks: lint ✓, typecheck ✓, test ✓ 135/135, test:integration ✓
+  73/73. Remaining: legacy `mcp-tools` trace rows in the DB are still orphaned
+  (no code writes that feature now) — left for a separate cleanup decision.
 - 2026-07-13 (follow-up): **Trace feature-id consistency — central registry +
   Debug consolidation** (user request: "make traces consistent and keep them that
   way"). Root issue: each feature's `feature` string was a bare literal duplicated

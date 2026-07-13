@@ -45,6 +45,25 @@ describe("rememberUser", () => {
       aliases: ["Boss"],
     });
   });
+
+  it("traces the capture only when it adds or changes data, not on re-sightings", async () => {
+    const profile = { userId: "7", username: "sam", firstName: "Sam", lastName: null };
+
+    // First sighting → one capture trace.
+    await rememberUser(profile, ctx.db);
+    // Identical re-sighting → no new trace.
+    await rememberUser(profile, ctx.db);
+    // Changed profile → an update-profile trace.
+    await rememberUser({ ...profile, lastName: "Vine" }, ctx.db);
+
+    const { traces } = await listTraces(ctx.db, { feature: "known-users" });
+    const captures = traces.filter((t) => t.action === "capture-user");
+    const updates = traces.filter((t) => t.action === "update-profile");
+    expect(captures).toHaveLength(1);
+    expect(updates).toHaveLength(1);
+    expect(captures[0].status).toBe("success");
+    expect(captures[0].relatedIds).toMatchObject({ known_users: ["7"] });
+  });
 });
 
 describe("listUsers", () => {

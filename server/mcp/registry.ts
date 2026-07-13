@@ -6,6 +6,7 @@ import type { ChatCompletionFunctionTool } from "openai/resources/chat/completio
 
 import { InProcessTransport } from "./in-process-transport";
 import { mcpToolToOpenAi, toToolCallResult, type McpListedTool } from "./openai-tools";
+import { tracedToolCall } from "./tool-trace";
 import type { McpToolCallResult } from "./tool-result";
 
 /**
@@ -84,10 +85,16 @@ export class BotMcpRegistry {
     return tools.map((tool) => mcpToolToOpenAi(tool as McpListedTool));
   }
 
-  /** Call a registered tool by name. */
+  /**
+   * Call a registered tool by name, wrapped in its own `mcp-tools-<owner>` trace
+   * so every tool has an independent Debug scope.
+   */
   async callTool(name: string, args: Record<string, unknown>): Promise<McpToolCallResult> {
     const client = await this.ensureConnected();
-    const result = await client.callTool({ name, arguments: args });
-    return toToolCallResult(result);
+    const owningFeature = this.toolFeatures.get(name) ?? "unknown";
+    return tracedToolCall(owningFeature, name, args, async () => {
+      const result = await client.callTool({ name, arguments: args });
+      return toToolCallResult(result);
+    });
   }
 }

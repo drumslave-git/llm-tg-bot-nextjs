@@ -60,6 +60,30 @@ describe("rememberGroupActivity", () => {
     expect(members.map((m) => m.userId)).toEqual(["1"]);
   });
 
+  it("traces only actual changes: new group, new member, profile change — not re-sightings", async () => {
+    await seedUser({ userId: "1", username: "ann", firstName: "Ann", lastName: null });
+    await seedUser({ userId: "2", username: "bo", firstName: "Bo", lastName: null });
+    const G = { chatId: "-9", title: "Team", type: "group" as const };
+
+    // New group + first member (folded into one capture trace).
+    await rememberGroupActivity({ ...G, userId: "1" }, ctx.db);
+    // Identical re-sighting from the same member → nothing new.
+    await rememberGroupActivity({ ...G, userId: "1" }, ctx.db);
+    // A second member joins the existing, unchanged group.
+    await rememberGroupActivity({ ...G, userId: "2" }, ctx.db);
+    // The group title changes (member 2 already known).
+    await rememberGroupActivity({ ...G, title: "Team 2", userId: "2" }, ctx.db);
+
+    const { traces } = await listTraces(ctx.db, { feature: "known-groups" });
+    expect(traces.map((t) => t.action).sort()).toEqual([
+      "capture-group",
+      "member-joined",
+      "update-profile",
+    ]);
+    expect(traces.every((t) => t.status === "success")).toBe(true);
+    expect(traces.every((t) => t.relatedIds?.known_groups?.[0] === "-9")).toBe(true);
+  });
+
   it("records membership only for the group the user spoke in", async () => {
     await seedUser({ userId: "1", username: "ann", firstName: "Ann", lastName: null });
     await rememberGroupActivity({ chatId: "-1", title: "A", type: "group", userId: "1" }, ctx.db);
@@ -113,8 +137,9 @@ describe("updateNotes", () => {
     expect(cleared.notes).toBeNull();
 
     const { traces } = await listTraces(ctx.db, { feature: "known-groups" });
-    expect(traces).toHaveLength(2);
-    expect(traces.every((t) => t.action === "update-notes" && t.status === "success")).toBe(true);
+    const notesTraces = traces.filter((t) => t.action === "update-notes");
+    expect(notesTraces).toHaveLength(2);
+    expect(notesTraces.every((t) => t.status === "success")).toBe(true);
   });
 
   it("fails for an unknown group and records an error trace", async () => {

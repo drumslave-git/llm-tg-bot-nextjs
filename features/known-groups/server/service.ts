@@ -12,6 +12,7 @@ import { formatGroupContext } from "../format";
 import {
   getGroupMembers,
   getKnownGroup,
+  groupMembershipExists,
   listKnownGroups,
   recordGroupMembership,
   setKnownGroupNotes,
@@ -82,6 +83,11 @@ export async function rememberGroupActivity(
   db: DrizzleDb = getDb(),
 ): Promise<void> {
   try {
+    const before = await getKnownGroup(db, params.chatId);
+    const memberExisted =
+      params.userId != null
+        ? await groupMembershipExists(db, params.chatId, params.userId)
+        : true;
     await upsertKnownGroup(db, {
       chatId: params.chatId,
       title: params.title,
@@ -91,9 +97,79 @@ export async function rememberGroupActivity(
       await recordGroupMembership(db, params.chatId, params.userId);
     }
     publishEvent(FEATURE.realtimeTopic);
+    await traceGroupCapture(before, memberExisted, params, db);
   } catch {
     // Best-effort capture; swallow so message handling continues.
   }
+}
+
+/** Whether the freshly captured group profile differs from the stored one. */
+function groupProfileChanged(before: KnownGroupRecord, params: TelegramGroupProfile): boolean {
+  return before.title !== params.title || before.type !== params.type;
+}
+
+/**
+ * Record a trace for a passive group capture only when it actually changed data: a
+ * newly seen group, a group profile change, or a newly seen member. Identical
+ * re-sightings are intentionally untraced (they happen on every group message).
+ * The upserts still refresh `updatedAt`/`last_seen_at` regardless, so ordering and
+ * the roster stay current.
+ */
+async function traceGroupCapture(
+  before: KnownGroupRecord | null,
+  memberExisted: boolean,
+  params: TelegramGroupProfile & { userId: string | null },
+  db: DrizzleDb,
+): Promise<void> {
+  const groupAdded = !before;
+  const groupChanged = before ? groupProfileChanged(before, params) : false;
+  const newMember = params.userId != null && !memberExisted;
+  if (!groupAdded && !groupChanged && !newMember) return;
+
+  const label = params.title ?? params.chatId;
+  const after = { chatId: params.chatId, title: params.title, type: params.type };
+  const action = groupAdded ? "capture-group" : groupChanged ? "update-profile" : "member-joined";
+  const trace = await startTrace(
+    {
+      feature: FEATURE.id,
+      action,
+      trigger: { kind: "telegram", actor: params.userId ?? params.chatId },
+      inputSummary: label,
+    },
+    db,
+  );
+  if (groupAdded) {
+    await trace.event({
+      type: "db",
+      level: "success",
+      message: "new group captured",
+      data: { profile: after },
+    });
+  } else if (groupChanged) {
+    await trace.event({
+      type: "db",
+      level: "success",
+      message: "group profile updated",
+      data: { before, after },
+    });
+  }
+  if (newMember) {
+    await trace.event({
+      type: "db",
+      level: "success",
+      message: "new member seen",
+      data: { userId: params.userId },
+    });
+  }
+  const summary = groupAdded
+    ? `captured ${label}`
+    : groupChanged
+      ? `profile updated for ${label}`
+      : `new member in ${label}`;
+  await trace.succeed({
+    outputSummary: summary,
+    relatedIds: { [FEATURE.relatedIdsKey]: [params.chatId] },
+  });
 }
 
 /** Replace a group's operator notes, recorded as a trace. */

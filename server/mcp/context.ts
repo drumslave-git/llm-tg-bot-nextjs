@@ -32,3 +32,12 @@ export function getToolContext(): McpToolContext {
   }
   return context;
 }
+
+/**
+ * The active tool context, or null when none is bound. For cross-cutting infra
+ * (e.g. tool-call trace recording) that runs around every call and should degrade
+ * gracefully rather than throw when a call happens outside a turn (e.g. in tests).
+ */
+export function tryGetToolContext(): McpToolContext | null {
+  return storage.getStore() ?? null;
+}

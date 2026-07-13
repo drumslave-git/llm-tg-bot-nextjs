@@ -1,6 +1,6 @@
 import "server-only";
 
-import { desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 
 import type { DrizzleDb } from "@/db/drizzle";
 import { groupMembers, knownGroups, knownUsers, type KnownGroupRow } from "@/db/schema";
@@ -153,6 +153,18 @@ export async function recordGroupMembership(
       target: [groupMembers.chatId, groupMembers.userId],
       set: { lastSeenAt: now },
     });
+}
+
+/** Whether a user is already recorded as a member of a group. */
+export async function groupMembershipExists(
+  db: DrizzleDb,
+  chatId: string,
+  userId: string,
+): Promise<boolean> {
+  const row = await db.query.groupMembers.findFirst({
+    where: and(eq(groupMembers.chatId, chatId), eq(groupMembers.userId, userId)),
+  });
+  return row != null;
 }
 
 /**

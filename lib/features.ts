@@ -63,6 +63,23 @@ export const FEATURES = {
     relatedIdsKey: "settings",
     path: "/settings",
   },
+
+  // Per-tool trace scopes. Every MCP tool call is recorded under
+  // `mcp-tools-<owning-feature>` (see `server/mcp/tool-trace.ts`), so each tool
+  // group has its own Debug scope. The id must equal `mcp-tools-${owner}` where
+  // `owner` is the feature string passed to `registry.registerTools` in
+  // `server/mcp/runtime.ts`.
+  "mcp-tools-history": { id: "mcp-tools-history", label: "History tools", path: "/tools" },
+  "mcp-tools-known-users": {
+    id: "mcp-tools-known-users",
+    label: "User tools",
+    path: "/tools",
+  },
+  "mcp-tools-web-search": {
+    id: "mcp-tools-web-search",
+    label: "Web search tool",
+    path: "/tools",
+  },
 } as const satisfies Record<string, FeatureDescriptor>;
 
 /** A registered feature id (the trace `feature` string). */

@@ -44,18 +44,66 @@ export async function getUser(userId: string, db: DrizzleDb = getDb()): Promise<
   return record ? toClient(record) : null;
 }
 
+/** Whether the freshly captured Telegram profile differs from the stored one. */
+function userProfileChanged(before: KnownUserRecord, profile: TelegramUserProfile): boolean {
+  return (
+    before.username !== profile.username ||
+    before.firstName !== profile.firstName ||
+    before.lastName !== profile.lastName
+  );
+}
+
+/**
+ * Record a trace for a passive capture only when it actually changed data: a
+ * newly seen user, or a profile-field change on an existing one. Identical
+ * re-sightings are intentionally untraced (they happen on every message). The
+ * upsert still bumps `updatedAt` regardless, so "last seen" ordering is unaffected.
+ */
+async function traceUserCapture(
+  before: KnownUserRecord | null,
+  profile: TelegramUserProfile,
+  db: DrizzleDb,
+): Promise<void> {
+  if (before && !userProfileChanged(before, profile)) return;
+  const added = !before;
+
+  const label = profile.username ? `@${profile.username}` : profile.userId;
+  const trace = await startTrace(
+    {
+      feature: FEATURE.id,
+      action: added ? "capture-user" : "update-profile",
+      trigger: { kind: "telegram", actor: profile.userId },
+      inputSummary: label,
+    },
+    db,
+  );
+  await trace.event({
+    type: "db",
+    level: "success",
+    message: added ? "new user captured" : "profile updated",
+    data: added ? { profile } : { before, after: profile },
+  });
+  await trace.succeed({
+    outputSummary: added ? `captured ${label}` : `profile updated for ${label}`,
+    relatedIds: { [FEATURE.relatedIdsKey]: [profile.userId] },
+  });
+}
+
 /**
  * Server-only: remember (upsert) a Telegram user who messaged the bot. Refreshes
- * the profile fields, preserves operator-curated aliases. Never throws into the
- * message path — a capture failure must not drop the reply.
+ * the profile fields, preserves operator-curated aliases. A trace is recorded only
+ * when the capture actually adds or changes data (see {@link traceUserCapture}).
+ * Never throws into the message path — a capture failure must not drop the reply.
  */
 export async function rememberUser(
   profile: TelegramUserProfile,
   db: DrizzleDb = getDb(),
 ): Promise<void> {
   try {
+    const before = await getKnownUser(db, profile.userId);
     await upsertKnownUser(db, profile);
     publishEvent(FEATURE.realtimeTopic);
+    await traceUserCapture(before, profile, db);
   } catch {
     // Best-effort capture; swallow so message handling continues.
   }
