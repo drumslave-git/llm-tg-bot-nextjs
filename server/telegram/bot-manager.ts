@@ -20,7 +20,7 @@ import {
   recordAssistantMessage,
   recordIncomingMessage,
 } from "@/features/history/server/service";
-import { rememberUser } from "@/features/known-users/server/service";
+import { getUserContext, rememberUser } from "@/features/known-users/server/service";
 import {
   getGroupContext,
   rememberGroupActivity,
@@ -98,6 +98,7 @@ function buildDeps(
   const chatId = String(ctx.chat!.id);
   const isGroup = ctx.chat!.type !== "private";
   const currentMessageId = ctx.message!.message_id;
+  const senderId = ctx.from?.id != null ? String(ctx.from.id) : null;
 
   return {
     bot,
@@ -119,11 +120,18 @@ function buildDeps(
         excludeTelegramMessageId: currentMessageId,
       });
     },
-    // Groups only: inject the known-participant roster. Best-effort — a lookup
-    // failure resolves null rather than dropping the reply.
-    loadGroupContext: isGroup
-      ? () => getGroupContext(chatId).catch(() => null)
-      : undefined,
+    // Inject the chat's identity context: in a group the known-participant
+    // roster, in a private chat who the bot is talking to (so the model can
+    // address them and has a reference name for the alias tool). Best-effort — a
+    // lookup failure resolves null rather than dropping the reply.
+    loadChatContext: isGroup
+      ? () =>
+          getGroupContext(chatId)
+            .then((c) => (c ? { content: c.content, data: { memberCount: c.memberCount } } : null))
+            .catch(() => null)
+      : senderId != null
+        ? () => getUserContext(senderId).catch(() => null)
+        : undefined,
     async recordReply(input) {
       await recordAssistantMessage({
         chatId,

@@ -132,18 +132,18 @@ describe("handleIncomingMessage", () => {
     expect(loaded.data).toEqual({ messageCount: 2 });
   });
 
-  it("injects group context as a system message after the base prompt (groups only)", async () => {
+  it("injects chat context as a system message after the base prompt", async () => {
     const priorTurns = [{ role: "user", content: "Ann: earlier" }];
     const d = deps({
-      loadGroupContext: vi
+      loadChatContext: vi
         .fn()
-        .mockResolvedValue({ content: "Known participants:\n- Ann", memberCount: 1 }),
+        .mockResolvedValue({ content: "Known participants:\n- Ann", data: { memberCount: 1 } }),
       loadHistory: vi.fn().mockResolvedValue({ messages: priorTurns, count: 1 }),
     });
     await handleIncomingMessage(incoming({ text: "who is ann?" }), d);
 
     const messages = (d.generateReply as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    // system prompt, group-context system message, prior turn, current message.
+    // system prompt, chat-context system message, prior turn, current message.
     expect(messages.map((m: { role: string }) => m.role)).toEqual([
       "system",
       "system",
@@ -154,29 +154,39 @@ describe("handleIncomingMessage", () => {
     expect(messages[2]).toEqual(priorTurns[0]);
     expect(messages[3]).toEqual({ role: "user", content: "who is ann?" });
 
-    // The roster size is recorded as a step, between system prompt and history.
+    // The context is recorded as a step, between system prompt and history.
     const events = recorder.event.mock.calls.map((c) => c[0]);
     expect(events.map((e) => e.message)).toEqual([
       "addressing check",
       "system prompt composed",
-      "group context loaded",
+      "chat context loaded",
       "history window loaded",
       "request",
       "response",
       "send message",
     ]);
-    const loaded = events.find((e) => e.message === "group context loaded");
+    const loaded = events.find((e) => e.message === "chat context loaded");
     expect(loaded.data).toEqual({ memberCount: 1 });
   });
 
-  it("omits the group-context step when the loader resolves null", async () => {
-    const d = deps({ loadGroupContext: vi.fn().mockResolvedValue(null) });
+  it("omits the chat-context step when the loader resolves null", async () => {
+    const d = deps({ loadChatContext: vi.fn().mockResolvedValue(null) });
     await handleIncomingMessage(incoming({ text: "hi" }), d);
     const messages = (d.generateReply as ReturnType<typeof vi.fn>).mock.calls[0][0];
     // No extra system message when there is nothing to inject.
     expect(messages).toHaveLength(2);
     const events = recorder.event.mock.calls.map((c) => c[0]);
-    expect(events.some((e) => e.message === "group context loaded")).toBe(false);
+    expect(events.some((e) => e.message === "chat context loaded")).toBe(false);
+  });
+
+  it("records an empty data object for the chat-context step when the loader omits data", async () => {
+    const d = deps({
+      loadChatContext: vi.fn().mockResolvedValue({ content: "You are chatting with Bob." }),
+    });
+    await handleIncomingMessage(incoming({ text: "hi" }), d);
+    const events = recorder.event.mock.calls.map((c) => c[0]);
+    const loaded = events.find((e) => e.message === "chat context loaded");
+    expect(loaded.data).toEqual({});
   });
 
   it("uses the base system prompt when no personality is configured", async () => {

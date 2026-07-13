@@ -19,3 +19,26 @@ export function formatKnownUserLabel(user: KnownUserLabelParts): string {
   if (user.username) return `@${user.username}`;
   return `User ${user.userId}`;
 }
+
+/** The person on the other side of a private chat, reduced to label + aliases. */
+export interface UserContextParts {
+  label: string;
+  aliases: string[];
+}
+
+/**
+ * Build the identity block injected as a system message for a private (one-on-one)
+ * reply: who the bot is talking to and the other names they go by. The parallel of
+ * {@link import("../known-groups/format").formatGroupContext} for DMs — it also
+ * gives the model a concrete reference name to pass to the `update_user_aliases`
+ * tool, so it records new nicknames instead of only claiming it did.
+ */
+export function formatUserContext(parts: UserContextParts): string {
+  const also =
+    parts.aliases.length > 0 ? ` They are also known as: ${parts.aliases.join(", ")}.` : "";
+  return [
+    `You are in a private, one-on-one Telegram chat with ${parts.label}.${also}`,
+    "When they tell you another name or nickname they go by, record it with the " +
+      `update_user_aliases tool, referencing them as "${parts.label}" — do not merely say you saved it.`,
+  ].join("\n");
+}

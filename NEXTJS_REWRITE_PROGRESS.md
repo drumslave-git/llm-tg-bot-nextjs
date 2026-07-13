@@ -178,14 +178,16 @@ Next: **Priority 6 — Visit/read link MCP tool** (fetch/read a URL with SSRF pr
     `updateNotes` (traced)/`getGroupContext` — roster capped at 50), ui
     (`KnownGroupsList`, `GroupMembersCard`, client `GroupNotesEditor`).
   - **Runtime + injection:** `bot-manager.onMessage` calls `rememberGroupActivity`
-    for group/supergroup chats (after `rememberUser`, so the membership FK holds);
-    `buildDeps` provides a groups-only `loadGroupContext` (best-effort — a lookup
-    failure resolves null, never drops the reply). `bot-messaging/service.ts`
-    gained an optional `loadGroupContext` dep: when it returns non-null it records
-    a **`group context loaded`** step and injects the roster as a second `system`
-    message after the (cache-stable) base prompt, before the history window
-    (`[systemBase, groupRoster?, ...history, current]`). Private-chat flow is
-    byte-unchanged (no loader provided).
+    for group/supergroup chats (after `rememberUser`, so the membership FK holds).
+    `bot-messaging/service.ts` exposes a single optional **`loadChatContext`** dep
+    (best-effort — a lookup failure resolves null, never drops the reply): when it
+    returns non-null it records a **`chat context loaded`** step and injects the
+    context as a second `system` message after the (cache-stable) base prompt,
+    before the history window (`[systemBase, chatContext?, ...history, current]`).
+    `buildDeps` wires it per chat type — in a group to `getGroupContext` (roster),
+    in a private chat to `getUserContext` (the DM identity block, see known-users
+    below). Superseded the earlier groups-only `loadGroupContext`/`group context
+    loaded` shape (renamed 2026-07-13).
   - **Routes/pages/nav:** `GET /api/groups`, `PATCH /api/groups/[id]` (notes);
     `/groups` (list), `/groups/[chatId]` (notes editor + members, `notFound` on
     unknown id), `/groups/debug` (shared `TraceExplorer`, notes-edit traces). Nav
@@ -1083,6 +1085,31 @@ No blockers recorded.
 - Confirm v1 scope before implementation.
 - Do not copy MVP modules by default.
 - Keep shared patterns ahead of feature-specific code.
+
+### Fix: model claimed a tool action it did not take (2026-07-13)
+
+- **Symptom:** in a private chat the bot replied "Записав" (recorded) to a user
+  giving nicknames without ever calling `update_user_aliases`
+  (trace `890953a2…`: no `external_call` event; reasoning declined the tool
+  because it had no name to reference the DM sender by). The `search_web` path was
+  fine — trace `16f7d441…` shows a real tool call + grounded answer.
+- **Root causes:** (1) private chats injected no sender identity, so the
+  identity-scoped `update_user_aliases` tool had no reference name and was
+  effectively uncallable; (2) nothing in the base prompt forbade claiming an
+  un-taken tool action.
+- **Fix:** (1) `bot-messaging/prompt.ts` base prompt gained a **Tools and honesty**
+  section (never claim you searched/looked up/saved/recorded unless you actually
+  called that tool this turn and it succeeded; don't fabricate results). (2) DM
+  identity injection: new pure `formatUserContext` + `getUserContext`
+  (known-users), wired through the generalized `loadChatContext` dep (see
+  known-groups injection note above) so private replies get a `[systemBase,
+  userIdentity, …]` shape naming who the bot is talking to and giving a concrete
+  reference name for the alias tool.
+- **Proof:** `npm run lint` clean, `npm run typecheck` clean, `npm run test`
+  **140 unit** pass (bot-messaging `service.test.ts` updated to `loadChatContext`
+  /`chat context loaded` + a data-omitted case; new known-users `format.test.ts`
+  covering `formatUserContext`/`formatKnownUserLabel`). Not yet verified live
+  against a real Telegram DM.
 
 ### Current state (2026-07-12)
 

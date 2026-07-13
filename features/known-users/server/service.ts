@@ -8,6 +8,7 @@ import { FEATURES } from "@/lib/features";
 import type { TraceTrigger } from "@/lib/trace";
 import { publishEvent } from "@/server/realtime/hub";
 import { startTrace } from "@/server/trace";
+import { formatKnownUserLabel, formatUserContext } from "../format";
 import { matchUsersByReference } from "../match";
 import {
   getKnownUser,
@@ -42,6 +43,30 @@ export async function listUsers(db: DrizzleDb = getDb()): Promise<KnownUser[]> {
 export async function getUser(userId: string, db: DrizzleDb = getDb()): Promise<KnownUser | null> {
   const record = await getKnownUser(db, userId);
   return record ? toClient(record) : null;
+}
+
+/** The identity block injected into a private-chat reply (parallel of GroupContext). */
+export interface UserContext {
+  content: string;
+  /** Trace payload for the "chat context loaded" step. */
+  data: { userId: string; aliasCount: number };
+}
+
+/**
+ * Server-only: build the private-chat identity block for a reply — who the bot is
+ * talking to and their known aliases — so the model can address them and has a
+ * concrete reference name for the `update_user_aliases` tool. The DM parallel of
+ * {@link import("@/features/known-groups/server/service").getGroupContext}. Returns
+ * null when the user is not yet known (nothing useful to inject).
+ */
+export async function getUserContext(
+  userId: string,
+  db: DrizzleDb = getDb(),
+): Promise<UserContext | null> {
+  const user = await getKnownUser(db, userId);
+  if (!user) return null;
+  const content = formatUserContext({ label: formatKnownUserLabel(user), aliases: user.aliases });
+  return { content, data: { userId, aliasCount: user.aliases.length } };
 }
 
 /** Whether the freshly captured Telegram profile differs from the stored one. */
