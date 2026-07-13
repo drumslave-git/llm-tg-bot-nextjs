@@ -9,7 +9,7 @@ import type { ChatMessage, ChatUsage } from "@/server/llm/client";
 import { startTrace } from "@/server/trace";
 import { checkAddressed, type AddressSource, type BotIdentity } from "./addressing";
 import { checkMaintenance, isOwner, type BotPolicy } from "./policy";
-import { buildSystemPrompt, hasPersonality } from "./prompt";
+import { buildAddressingHint, buildSystemPrompt, hasPersonality } from "./prompt";
 import { formatReply } from "./reply";
 
 /**
@@ -95,6 +95,17 @@ export interface BotMessagingDeps {
    * step. Best-effort — must never fail the reply.
    */
   loadChatContext?: () => Promise<{ content: string; data?: Record<string, unknown> } | null>;
+  /**
+   * Render the current message in transcript-line format (`[#<id>] <sender> …`),
+   * with its reply target resolved against the history mirror. `senderLabel`
+   * feeds the group addressing hint; `data` is recorded verbatim on the trace
+   * step. Best-effort — resolves null (raw text is used) rather than failing.
+   */
+  loadCurrentTurn?: () => Promise<{
+    content: string;
+    senderLabel: string | null;
+    data?: Record<string, unknown>;
+  } | null>;
   /** Persist the delivered assistant reply into the history mirror (best-effort). */
   recordReply: (input: {
     content: string;
@@ -249,8 +260,27 @@ export async function handleIncomingMessage(
         }
       }
 
-      // 3. Load the current-day conversation window and inject it as prior turns
-      // between the (cache-stable) system prompt and the current message.
+      // 2c. Current turn — the message being answered, rendered in the same
+      // transcript-line format as history (id anchor, sender label, resolved
+      // reply target). Falls back to the raw text when no loader is wired.
+      const currentTurn = deps.loadCurrentTurn ? await deps.loadCurrentTurn() : null;
+      // Group addressing hint: who is asking and how they addressed the bot, so
+      // the model separates the requester from the people being talked about.
+      const addressingHint = buildAddressingHint({
+        senderLabel: currentTurn?.senderLabel ?? null,
+        source: decision.source ?? "",
+      });
+      if (currentTurn) {
+        await trace.event({
+          type: "step",
+          message: "current turn composed",
+          data: { ...(currentTurn.data ?? { content: currentTurn.content }), addressingHint },
+        });
+      }
+
+      // 3. Load the recent-history window (last 24 hours) and inject it as one
+      // transcript message between the (cache-stable) system prompt and the
+      // current message.
       const history = await deps.loadHistory();
       await trace.event({
         type: "step",
@@ -261,8 +291,9 @@ export async function handleIncomingMessage(
       const messages: ChatMessage[] = [
         { role: "system", content: systemPrompt },
         ...(chatContext ? [{ role: "system" as const, content: chatContext.content }] : []),
+        ...(addressingHint ? [{ role: "system" as const, content: addressingHint }] : []),
         ...history.messages,
-        { role: "user", content: text },
+        { role: "user", content: currentTurn?.content ?? text },
       ];
       // 4. LLM request — full request body (recorded before the call so the
       // response step's elapsed time reflects real provider latency).

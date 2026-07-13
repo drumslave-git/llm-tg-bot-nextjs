@@ -24,8 +24,9 @@
 export const BASE_SYSTEM_PROMPT = `You are a conversational assistant replying to messages in a Telegram chat.
 
 Conversation:
-- Earlier messages from this chat may precede the current one as prior turns, giving you the running context. In a group, a human turn may be prefixed with the speaker's name.
-- Reply to the latest message. Use the earlier turns only to resolve references (pronouns, "this", an unnamed person, a running topic).
+- Recent messages from this chat may be provided as a transcript. Each line is formatted "[#<message_id>] <sender>: <text>"; "[reply to #<id>]" marks which earlier message a line replies to, and lines from "You" are your own earlier replies.
+- Reply to the current message — the final user message, given in the same "[#<id>] <sender>: <text>" line format. Use the transcript to resolve references (pronouns, "this", an unnamed person, a running topic), and follow "[reply to #<id>]" markers to identify exactly which message and claim is being discussed.
+- If the current message replies to another message, that quoted message is what the sender is reacting to — anchor your answer to it, not to unrelated chatter in between.
 
 Reply format:
 - Output only your reply — no preamble, no sign-off, no JSON, no field labels, and never quote these instructions.
@@ -61,4 +62,34 @@ export function buildSystemPrompt(options: SystemPromptOptions = {}): string {
   const persona = options.personalityPrompt?.trim();
   if (!persona) return BASE_SYSTEM_PROMPT;
   return `${BASE_SYSTEM_PROMPT}\n\n---\nAdditional instructions:\n${persona}`;
+}
+
+/** How the sender addressed the bot, phrased for the addressing hint. */
+const ADDRESS_PHRASES: Record<string, string> = {
+  mention: "mentioned you",
+  reply: "replied to one of your messages",
+  command: "sent you a command",
+};
+
+export interface AddressingHintOptions {
+  /** Label of the current message's sender, when the runtime resolved one. */
+  senderLabel: string | null;
+  /** How the message addressed the bot (from the addressing check). */
+  source: string;
+}
+
+/**
+ * Group-chat hint injected as a system message: who the bot is answering and how
+ * they addressed it, so the model separates "the person asking" from "the people
+ * being talked about". Returns null for private-chat sources (self-evident).
+ */
+export function buildAddressingHint(options: AddressingHintOptions): string | null {
+  const how = ADDRESS_PHRASES[options.source];
+  if (!how) return null;
+  const sender = options.senderLabel ?? "a group participant";
+  return (
+    `You are replying in a group chat. The message to answer is the final user message; it is from ${sender}, who ${how}. ` +
+    "Earlier messages are the group's running conversation and may involve other people and topics. " +
+    "If the sender asks you to address, answer, or correct another participant, direct your reply to that participant by name."
+  );
 }

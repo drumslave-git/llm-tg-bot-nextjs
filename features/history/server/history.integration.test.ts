@@ -4,9 +4,15 @@ import { upsertKnownUser } from "@/features/known-users/server/repository";
 import { startTrace } from "@/server/trace";
 import { listTraces } from "@/server/trace/repository";
 import { startTestDb, type TestDb } from "@/test/db";
-import { getChatMessagesInRange, searchChatMessages } from "./repository";
+import { TRANSCRIPT_PREAMBLE } from "./format";
+import {
+  getChatMessagesByTelegramIds,
+  getChatMessagesInRange,
+  searchChatMessages,
+} from "./repository";
 import {
   applyMessageEdit,
+  composeCurrentTurn,
   getChatHistory,
   getConversationWindow,
   getHistoryOverview,
@@ -33,6 +39,8 @@ const trigger = { kind: "telegram" } as const;
 const TODAY = new Date("2026-07-12T12:00:00.000Z");
 const EARLIER_TODAY = new Date("2026-07-12T09:00:00.000Z");
 const YESTERDAY = new Date("2026-07-11T23:00:00.000Z");
+/** More than 24 hours before TODAY — outside the rolling history window. */
+const BEYOND_WINDOW = new Date("2026-07-11T09:00:00.000Z");
 
 describe("recordIncomingMessage", () => {
   it("stores a message and is idempotent on (chatId, telegramMessageId)", async () => {
@@ -120,17 +128,17 @@ describe("getChatHistory trace links", () => {
 });
 
 describe("getConversationWindow", () => {
-  it("returns only the current day's messages, oldest first, excluding the current turn", async () => {
+  it("returns the last 24 hours as one transcript message, excluding the current turn", async () => {
     await recordIncomingMessage(
-      { chatId: "5", telegramMessageId: 1, userId: "100", content: "yesterday", sentAt: YESTERDAY },
+      { chatId: "5", telegramMessageId: 1, userId: "100", content: "too old", sentAt: BEYOND_WINDOW },
       ctx.db,
     );
     await recordIncomingMessage(
-      { chatId: "5", telegramMessageId: 2, userId: "100", content: "earlier today", sentAt: EARLIER_TODAY },
+      { chatId: "5", telegramMessageId: 2, userId: "100", content: "yesterday evening", sentAt: YESTERDAY },
       ctx.db,
     );
     await recordAssistantMessage(
-      { chatId: "5", telegramMessageId: 3, content: "a reply", sentAt: EARLIER_TODAY },
+      { chatId: "5", telegramMessageId: 3, content: "a reply", replyToMessageId: 2, sentAt: EARLIER_TODAY },
       ctx.db,
     );
     await recordIncomingMessage(
@@ -139,17 +147,27 @@ describe("getConversationWindow", () => {
     );
 
     const window = await getConversationWindow(
-      { chatId: "5", isGroup: false, excludeTelegramMessageId: 4, now: TODAY },
+      { chatId: "5", botLabel: "You (@MyBot)", excludeTelegramMessageId: 4, now: TODAY },
       ctx.db,
     );
     expect(window.count).toBe(2);
     expect(window.messages).toEqual([
-      { role: "user", content: "earlier today" },
-      { role: "assistant", content: "a reply" },
+      {
+        role: "user",
+        content:
+          `${TRANSCRIPT_PREAMBLE}\n\n` +
+          "[#2] User 100: yesterday evening\n" +
+          "[#3] You (@MyBot) [reply to #2]: a reply",
+      },
     ]);
   });
 
-  it("prefixes group user turns with the known-user label", async () => {
+  it("returns no messages when the window is empty", async () => {
+    const window = await getConversationWindow({ chatId: "5", now: TODAY }, ctx.db);
+    expect(window).toEqual({ messages: [], count: 0 });
+  });
+
+  it("labels user turns with the known-user label", async () => {
     await upsertKnownUser(ctx.db, {
       userId: "100",
       username: "alice",
@@ -161,11 +179,109 @@ describe("getConversationWindow", () => {
       ctx.db,
     );
 
-    const window = await getConversationWindow(
-      { chatId: "-100", isGroup: true, now: TODAY },
+    const window = await getConversationWindow({ chatId: "-100", now: TODAY }, ctx.db);
+    expect(window.messages).toHaveLength(1);
+    expect(window.messages[0].content).toContain("[#1] Alice (@alice): hi all");
+  });
+});
+
+describe("composeCurrentTurn", () => {
+  it("renders a plain message as an anchored transcript line", async () => {
+    const turn = await composeCurrentTurn(
+      {
+        chatId: "-100",
+        telegramMessageId: 7,
+        senderLabel: "Bob (@bob)",
+        content: "@bot what do you think?",
+      },
       ctx.db,
     );
-    expect(window.messages).toEqual([{ role: "user", content: "Alice (@alice): hi all" }]);
+    expect(turn.content).toBe("[#7] Bob (@bob): @bot what do you think?");
+    expect(turn.senderLabel).toBe("Bob (@bob)");
+    expect(turn.data.replyTo).toBeNull();
+  });
+
+  it("anchors the reply target by id when it is stored in the mirror", async () => {
+    await recordIncomingMessage(
+      { chatId: "-100", telegramMessageId: 5, userId: "100", content: "the sky is green", sentAt: EARLIER_TODAY },
+      ctx.db,
+    );
+    const turn = await composeCurrentTurn(
+      {
+        chatId: "-100",
+        telegramMessageId: 8,
+        senderLabel: "Bob (@bob)",
+        content: "@bot tell him he is wrong",
+        replyTo: { telegramMessageId: 5, senderLabel: "Alice (@alice)", text: "the sky is green" },
+      },
+      ctx.db,
+    );
+    expect(turn.content).toBe("[#8] Bob (@bob) [reply to #5]: @bot tell him he is wrong");
+    expect(turn.data.replyTo).toEqual({ telegramMessageId: 5, resolved: "anchor" });
+  });
+
+  it("inlines the quoted sender and full text when the target is not stored", async () => {
+    const turn = await composeCurrentTurn(
+      {
+        chatId: "-100",
+        telegramMessageId: 9,
+        senderLabel: "Bob (@bob)",
+        content: "@bot is that true?",
+        replyTo: { telegramMessageId: 999, senderLabel: "Alice (@alice)", text: "the sky is green" },
+      },
+      ctx.db,
+    );
+    expect(turn.content).toBe(
+      '[#9] Bob (@bob) [reply to Alice (@alice): "the sky is green"]: @bot is that true?',
+    );
+    expect(turn.data.replyTo).toEqual({ telegramMessageId: 999, resolved: "inline" });
+  });
+
+  it("carries a partial quote on a stored reply target", async () => {
+    await recordIncomingMessage(
+      { chatId: "-100", telegramMessageId: 5, userId: "100", content: "long rant. the sky is green. more rant", sentAt: EARLIER_TODAY },
+      ctx.db,
+    );
+    const turn = await composeCurrentTurn(
+      {
+        chatId: "-100",
+        telegramMessageId: 10,
+        senderLabel: "Bob (@bob)",
+        content: "@bot debunk this",
+        replyTo: {
+          telegramMessageId: 5,
+          senderLabel: "Alice (@alice)",
+          text: "long rant. the sky is green. more rant",
+          quote: "the sky is green",
+        },
+      },
+      ctx.db,
+    );
+    expect(turn.content).toBe(
+      '[#10] Bob (@bob) [reply to #5, quoting: "the sky is green"]: @bot debunk this',
+    );
+  });
+});
+
+describe("getChatMessagesByTelegramIds", () => {
+  it("returns matching non-deleted messages oldest first, scoped to the chat", async () => {
+    await recordIncomingMessage(
+      { chatId: "5", telegramMessageId: 1, userId: "100", content: "first", sentAt: EARLIER_TODAY },
+      ctx.db,
+    );
+    await recordIncomingMessage(
+      { chatId: "5", telegramMessageId: 2, userId: "100", content: "second", sentAt: TODAY },
+      ctx.db,
+    );
+    // Same Telegram id in another chat must never leak in.
+    await recordIncomingMessage(
+      { chatId: "9", telegramMessageId: 1, userId: "200", content: "other chat", sentAt: TODAY },
+      ctx.db,
+    );
+
+    const hits = await getChatMessagesByTelegramIds(ctx.db, "5", [2, 1, 999]);
+    expect(hits.map((h) => h.content)).toEqual(["first", "second"]);
+    expect(await getChatMessagesByTelegramIds(ctx.db, "5", [])).toEqual([]);
   });
 });
 

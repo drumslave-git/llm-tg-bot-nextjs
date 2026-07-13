@@ -1,48 +1,123 @@
-import type { ChatMessage } from "@/server/llm/client";
 import type { ChatMessageRecord } from "./repository";
 
 /**
- * Pure helpers for turning stored history rows into LLM prior turns and for the
- * "current day" window boundary. No DB or secrets, so they are unit-testable in
- * isolation.
+ * Pure helpers for rendering stored history rows as a conversation transcript
+ * and for the rolling recent-history window boundary. No DB or secrets, so they
+ * are unit-testable in isolation.
  *
- * History is injected as structured prior turns (real `user`/`assistant`
- * messages placed between the system prompt and the current message), which
- * keeps the system prompt byte-stable across turns (cache-friendly) and matches
- * the idiomatic chat-completions shape. In a group chat, each human turn is
- * prefixed with the sender's label so speaker identity survives the flattening
- * into a single `user` role.
+ * History is injected as ONE user message containing a transcript, where every
+ * line is anchored by its Telegram message id: `[#<id>] <sender>: <text>`. A
+ * reply is marked with `[reply to #<id>]` (when the target is stored and can be
+ * dereferenced) or with the quoted text inline (when it is not). The anchors let
+ * the model follow reply chains precisely — who answered whom about what — and
+ * dereference off-window targets via the history MCP tools.
+ *
+ * Known limitation (out of scope for now): forum-topic threads
+ * (`message_thread_id`) are not stored, so a forum supergroup's topics are
+ * interleaved into a single transcript.
  */
 
-const DAY_MS = 24 * 60 * 60 * 1000;
+const HOUR_MS = 60 * 60 * 1000;
 
-/**
- * Start of the UTC day containing `now`. The recent-history window is scoped to
- * "today" by this boundary. UTC is used for a deterministic, timezone-free
- * definition of "day"; a per-operator timezone can be layered on later.
- */
-export function startOfUtcDay(now: Date): Date {
-  return new Date(Math.floor(now.getTime() / DAY_MS) * DAY_MS);
+/** Rolling window size for the auto-injected recent history. */
+export const HISTORY_WINDOW_MS = 24 * HOUR_MS;
+
+/** Start of the rolling recent-history window: 24 hours before `now`. */
+export function historyWindowStart(now: Date): Date {
+  return new Date(now.getTime() - HISTORY_WINDOW_MS);
+}
+
+/** Fallback speaker label when a sender cannot be resolved to a known user. */
+export function fallbackSpeakerLabel(userId: string | null): string {
+  return userId ? `User ${userId}` : "User";
 }
 
 /**
- * Render one stored row as an LLM prior turn. Assistant rows become `assistant`
- * messages; everything else becomes a `user` message. In a group, a resolved
- * speaker label (from `speakerLabels`, keyed by Telegram user id) is prefixed to
- * human turns as `Label: content`; private chats and assistant turns are left
- * unprefixed.
+ * How a message's reply target is referenced in a transcript line:
+ * - `anchor` — the target is stored in history, referenced as `#<id>` (the model
+ *   can read it in the transcript or fetch it by id with the history tools). An
+ *   optional partial `quote` (Telegram's quote feature) narrows the reference.
+ * - `inline` — the target is not stored, so its sender and full text (never
+ *   trimmed) are inlined; `text` is null when the target had no textual content.
  */
-export function toPriorTurn(
-  record: ChatMessageRecord,
-  options: { isGroup: boolean; speakerLabels?: ReadonlyMap<string, string> },
-): ChatMessage {
-  if (record.role === "assistant") {
-    return { role: "assistant", content: record.content };
+export type ReplyRef =
+  | { kind: "anchor"; telegramMessageId: number; quote?: string | null }
+  | { kind: "inline"; label: string | null; text: string | null };
+
+/** Render a reply reference as its `[reply to …]` marker. */
+export function renderReplyRef(ref: ReplyRef): string {
+  if (ref.kind === "anchor") {
+    const quote = ref.quote?.trim() ? `, quoting: "${ref.quote}"` : "";
+    return `[reply to #${ref.telegramMessageId}${quote}]`;
   }
+  const who = ref.label ? ` ${ref.label}` : "";
+  if (ref.text == null || ref.text === "") {
+    return `[reply to${who} (content not available)]`;
+  }
+  return `[reply to${who}: "${ref.text}"]`;
+}
+
+/** Parts of one transcript line. */
+export interface TranscriptLineParts {
+  telegramMessageId: number;
+  /** Speaker label — a known-user label, or the bot label for its own replies. */
+  label: string;
+  replyRef?: ReplyRef | null;
+  content: string;
+}
+
+/** Render one transcript line: `[#<id>] <sender> [reply to …]: <text>`. */
+export function renderTranscriptLine(parts: TranscriptLineParts): string {
+  const reply = parts.replyRef ? ` ${renderReplyRef(parts.replyRef)}` : "";
+  return `[#${parts.telegramMessageId}] ${parts.label}${reply}: ${parts.content}`;
+}
+
+export interface TranscriptOptions {
+  /** Resolved labels for human senders, keyed by Telegram user id. */
+  speakerLabels?: ReadonlyMap<string, string>;
+  /** Label for the bot's own (assistant) rows, e.g. `You (@MyBot)`. */
+  botLabel?: string;
+}
+
+/** Render one stored row as a transcript line. */
+export function toTranscriptLine(record: ChatMessageRecord, options: TranscriptOptions): string {
   const label =
-    options.isGroup && record.userId ? options.speakerLabels?.get(record.userId) : undefined;
-  const content = label ? `${label}: ${record.content}` : record.content;
-  return { role: "user", content };
+    record.role === "assistant"
+      ? (options.botLabel ?? "You")
+      : ((record.userId ? options.speakerLabels?.get(record.userId) : undefined) ??
+        fallbackSpeakerLabel(record.userId));
+  const replyRef: ReplyRef | null =
+    record.replyToMessageId != null
+      ? { kind: "anchor", telegramMessageId: record.replyToMessageId }
+      : null;
+  return renderTranscriptLine({
+    telegramMessageId: record.telegramMessageId,
+    label,
+    replyRef,
+    content: record.content,
+  });
+}
+
+/**
+ * Preamble explaining the transcript format to the model. Kept byte-stable so
+ * the transcript message stays cache-friendly at its start.
+ */
+export const TRANSCRIPT_PREAMBLE =
+  'Recent messages in this chat (last 24 hours), oldest first. Each line is "[#<message_id>] <sender>: <text>"; ' +
+  '"[reply to #<id>]" marks a reply to an earlier message. Lines from "You" are your own earlier replies. ' +
+  "To read a message referenced by #<id> but not shown here, fetch it by id with the history tools.";
+
+/**
+ * Render a full recent-history transcript (preamble + one line per stored row).
+ * Returns null when there are no rows, so the caller can skip the message.
+ */
+export function renderTranscript(
+  records: readonly ChatMessageRecord[],
+  options: TranscriptOptions,
+): string | null {
+  if (records.length === 0) return null;
+  const lines = records.map((record) => toTranscriptLine(record, options));
+  return `${TRANSCRIPT_PREAMBLE}\n\n${lines.join("\n")}`;
 }
 
 /** Distinct non-null sender ids across a set of rows (for batch label lookup). */

@@ -10,9 +10,17 @@ import type { TraceTrigger } from "@/lib/trace";
 import { publishEvent } from "@/server/realtime/hub";
 import { startTrace } from "@/server/trace";
 import { getLatestTraceIdsByCorrelation } from "@/server/trace/repository";
-import { collectUserIds, startOfUtcDay, toPriorTurn } from "./format";
+import {
+  collectUserIds,
+  fallbackSpeakerLabel,
+  historyWindowStart,
+  renderTranscript,
+  renderTranscriptLine,
+  type ReplyRef,
+} from "./format";
 import {
   appendChatMessage,
+  getChatMessageByTelegramId,
   getChatMessages,
   getChatMessagesSince,
   listChatSummaries,
@@ -33,9 +41,10 @@ import {
  *
  * The runtime records every human message (passively, even un-addressed group
  * chatter) and every delivered reply, so `chat_messages` becomes a 1:1 mirror of
- * the conversation. For each reply the service assembles the current-day window
- * as structured prior turns. Passive capture is high-volume and intentionally
- * untraced (the mirror itself is the record); mutating edits are traced.
+ * the conversation. For each reply the service assembles the last 24 hours as an
+ * id-anchored transcript (one user message) and renders the current turn in the
+ * same format. Passive capture is high-volume and intentionally untraced (the
+ * mirror itself is the record); mutating edits are traced.
  */
 
 const FEATURE = FEATURES["history"];
@@ -171,39 +180,114 @@ export async function applyMessageEdit(
   }
 }
 
-/** The current-day conversation window as structured prior turns. */
+/**
+ * The recent-history window for a reply: zero or one `user` message holding the
+ * id-anchored transcript. `count` is the number of transcript rows (for tracing).
+ */
 export interface ConversationWindow {
   messages: ChatMessage[];
   count: number;
 }
 
+/** Resolve known-user labels for every sender in a set of rows. */
+async function resolveSpeakerLabels(
+  db: DrizzleDb,
+  records: readonly ChatMessageRecord[],
+): Promise<Map<string, string>> {
+  const userIds = collectUserIds(records);
+  if (userIds.length === 0) return new Map();
+  const users = await getKnownUsersByIds(db, userIds);
+  return new Map(users.map((u) => [u.userId, formatKnownUserLabel(u)]));
+}
+
 /**
- * Build the recent-history window for a reply: the current day's messages in the
- * chat (excluding the current turn), rendered as prior `user`/`assistant` turns.
- * In a group, human turns are labelled with the sender's known-user name.
+ * Build the recent-history window for a reply: the chat's messages from the last
+ * 24 hours (excluding the current turn), rendered as one id-anchored transcript
+ * in a single `user` message. Every human turn is labelled with the sender's
+ * known-user name; the bot's own rows use `botLabel`.
  */
 export async function getConversationWindow(
-  params: { chatId: string; isGroup: boolean; excludeTelegramMessageId?: number; now?: Date },
+  params: { chatId: string; botLabel?: string; excludeTelegramMessageId?: number; now?: Date },
   db: DrizzleDb = getDb(),
 ): Promise<ConversationWindow> {
-  const since = startOfUtcDay(params.now ?? new Date());
+  const since = historyWindowStart(params.now ?? new Date());
   const records = await getChatMessagesSince(db, params.chatId, since, {
     excludeTelegramMessageId: params.excludeTelegramMessageId,
   });
 
-  let speakerLabels: Map<string, string> | undefined;
-  if (params.isGroup) {
-    const userIds = collectUserIds(records);
-    if (userIds.length > 0) {
-      const users = await getKnownUsersByIds(db, userIds);
-      speakerLabels = new Map(users.map((u) => [u.userId, formatKnownUserLabel(u)]));
-    }
-  }
+  const speakerLabels = await resolveSpeakerLabels(db, records);
+  const transcript = renderTranscript(records, { speakerLabels, botLabel: params.botLabel });
+  return {
+    messages: transcript ? [{ role: "user", content: transcript }] : [],
+    count: records.length,
+  };
+}
 
-  const messages = records.map((record) =>
-    toPriorTurn(record, { isGroup: params.isGroup, speakerLabels }),
-  );
-  return { messages, count: messages.length };
+/** The reply target of the current turn, as extracted from the Telegram update. */
+export interface CurrentTurnReplyTo {
+  telegramMessageId: number;
+  /** Sender label resolved by the runtime from the quoted message's `from`. */
+  senderLabel: string | null;
+  /** The quoted message's text/caption, or null when it had none. */
+  text: string | null;
+  /** Telegram partial-quote text, when the user quoted a specific fragment. */
+  quote?: string | null;
+}
+
+/** The current turn rendered in transcript format, plus data for the trace. */
+export interface ComposedCurrentTurn {
+  content: string;
+  senderLabel: string | null;
+  data: Record<string, unknown>;
+}
+
+/**
+ * Render the message being answered as a transcript line, resolving its reply
+ * target against the mirror: a stored target becomes a `[reply to #<id>]` anchor
+ * (dereferenceable via the history tools even when outside the injected window);
+ * an unstored one gets its sender and full text inlined, never trimmed.
+ */
+export async function composeCurrentTurn(
+  params: {
+    chatId: string;
+    telegramMessageId: number;
+    senderLabel: string | null;
+    content: string;
+    replyTo?: CurrentTurnReplyTo | null;
+  },
+  db: DrizzleDb = getDb(),
+): Promise<ComposedCurrentTurn> {
+  let replyRef: ReplyRef | null = null;
+  if (params.replyTo) {
+    const stored = await getChatMessageByTelegramId(
+      db,
+      params.chatId,
+      params.replyTo.telegramMessageId,
+    );
+    replyRef = stored
+      ? {
+          kind: "anchor",
+          telegramMessageId: params.replyTo.telegramMessageId,
+          quote: params.replyTo.quote ?? null,
+        }
+      : { kind: "inline", label: params.replyTo.senderLabel, text: params.replyTo.text };
+  }
+  const content = renderTranscriptLine({
+    telegramMessageId: params.telegramMessageId,
+    label: params.senderLabel ?? fallbackSpeakerLabel(null),
+    replyRef,
+    content: params.content,
+  });
+  return {
+    content,
+    senderLabel: params.senderLabel,
+    data: {
+      line: content,
+      replyTo: params.replyTo
+        ? { telegramMessageId: params.replyTo.telegramMessageId, resolved: replyRef?.kind ?? null }
+        : null,
+    },
+  };
 }
 
 /** Per-chat rollups for the History dashboard. */

@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { BASE_SYSTEM_PROMPT, buildSystemPrompt, hasPersonality } from "./prompt";
+import {
+  BASE_SYSTEM_PROMPT,
+  buildAddressingHint,
+  buildSystemPrompt,
+  hasPersonality,
+} from "./prompt";
 
 describe("buildSystemPrompt", () => {
   it("returns the base prompt alone when no personality is given", () => {
@@ -19,6 +24,34 @@ describe("buildSystemPrompt", () => {
   it("preserves internal formatting of the personality prompt", () => {
     const persona = "Line one.\nLine two.";
     expect(buildSystemPrompt({ personalityPrompt: persona })).toContain(persona);
+  });
+});
+
+describe("buildAddressingHint", () => {
+  it("names the sender and how they addressed the bot", () => {
+    const hint = buildAddressingHint({ senderLabel: "Bob (@bob)", source: "mention" });
+    expect(hint).toContain("from Bob (@bob), who mentioned you");
+    expect(hint).toContain("group chat");
+  });
+
+  it("phrases each group address source", () => {
+    expect(buildAddressingHint({ senderLabel: "A", source: "reply" })).toContain(
+      "replied to one of your messages",
+    );
+    expect(buildAddressingHint({ senderLabel: "A", source: "command" })).toContain(
+      "sent you a command",
+    );
+  });
+
+  it("falls back to a generic sender when the label is unknown", () => {
+    expect(buildAddressingHint({ senderLabel: null, source: "mention" })).toContain(
+      "from a group participant",
+    );
+  });
+
+  it("returns null for private chats and unknown sources", () => {
+    expect(buildAddressingHint({ senderLabel: "A", source: "private" })).toBeNull();
+    expect(buildAddressingHint({ senderLabel: "A", source: "" })).toBeNull();
   });
 });
 

@@ -5,39 +5,65 @@ import { z } from "zod";
 
 import { getDb } from "@/db/drizzle";
 import { getToolContext } from "@/server/mcp/context";
-import { getChatMessagesInRange, searchChatMessages, type ChatMessageRecord } from "./repository";
+import {
+  getChatMessagesByTelegramIds,
+  getChatMessagesInRange,
+  searchChatMessages,
+  type ChatMessageRecord,
+} from "./repository";
 
 /**
- * History exposed as MCP tools — deeper-than-today lookups the model can request
- * when the current-day window (already injected into every reply) is not enough.
- * The chat is bound per turn via the tool context, so a tool only ever reads the
- * current conversation's messages; the model does not pass (and cannot pick) a
- * chat id.
+ * History exposed as MCP tools — deeper-than-the-window lookups the model can
+ * request when the recent 24-hour transcript (already injected into every reply)
+ * is not enough. The chat is bound per turn via the tool context, so a tool only
+ * ever reads the current conversation's messages; the model does not pass (and
+ * cannot pick) a chat id.
  */
 
 export const HISTORY_SEARCH_TOOL = "history_search";
 export const HISTORY_GET_IN_RANGE_TOOL = "history_get_in_range";
+export const HISTORY_GET_BY_MESSAGE_IDS_TOOL = "history_get_by_message_ids";
 
-export const HISTORY_TOOL_NAMES = [HISTORY_SEARCH_TOOL, HISTORY_GET_IN_RANGE_TOOL];
+export const HISTORY_TOOL_NAMES = [
+  HISTORY_SEARCH_TOOL,
+  HISTORY_GET_IN_RANGE_TOOL,
+  HISTORY_GET_BY_MESSAGE_IDS_TOOL,
+];
 
 const SEARCH_LIMIT_DEFAULT = 50;
 const SEARCH_LIMIT_MAX = 200;
+const GET_BY_IDS_MAX = 50;
 
 /** Structured payload returned alongside the text transcript. */
 const historyOutputSchema = {
   ok: z.boolean(),
   count: z.number().int().nonnegative(),
-  messages: z.array(z.object({ role: z.string(), content: z.string(), at: z.string() })),
+  messages: z.array(
+    z.object({
+      id: z.number().int(),
+      replyTo: z.number().int().nullable(),
+      role: z.string(),
+      content: z.string(),
+      at: z.string(),
+    }),
+  ),
 };
 
-/** One message rendered as a transcript line. */
+/** One message rendered as an id-anchored transcript line. */
 function formatLine(record: ChatMessageRecord): string {
-  return `[${record.sentAt}] ${record.role}: ${record.content}`;
+  const reply = record.replyToMessageId != null ? ` [reply to #${record.replyToMessageId}]` : "";
+  return `[#${record.telegramMessageId}] [${record.sentAt}] ${record.role}${reply}: ${record.content}`;
 }
 
 /** Build the tool result (text transcript + structured messages) from records. */
 function buildResult(records: ChatMessageRecord[]) {
-  const messages = records.map((r) => ({ role: r.role, content: r.content, at: r.sentAt }));
+  const messages = records.map((r) => ({
+    id: r.telegramMessageId,
+    replyTo: r.replyToMessageId,
+    role: r.role,
+    content: r.content,
+    at: r.sentAt,
+  }));
   const transcript =
     records.length === 0 ? "(no matching messages)" : records.map(formatLine).join("\n");
   return {
@@ -63,9 +89,9 @@ export function registerHistoryMcpTools(server: McpServer): void {
       title: "Search conversation history",
       description:
         "Search this conversation's full stored history for messages containing the given " +
-        "text (case-insensitive). Use it to recall things said before today, since only " +
-        "today's messages are provided automatically. Pass one query string, or several to " +
-        "search multiple phrasings at once.",
+        "text (case-insensitive). Use it to recall things said earlier, since only the last " +
+        "24 hours of messages are provided automatically. Pass one query string, or several " +
+        "to search multiple phrasings at once.",
       inputSchema: {
         query: z
           .union([z.string().min(1), z.array(z.string().min(1)).min(1)])
@@ -134,6 +160,37 @@ export function registerHistoryMcpTools(server: McpServer): void {
       }
       const { chatId } = getToolContext();
       const records = await getChatMessagesInRange(getDb(), chatId, fromDate, toDate);
+      return buildResult(records);
+    },
+  );
+
+  server.registerTool(
+    HISTORY_GET_BY_MESSAGE_IDS_TOOL,
+    {
+      title: "Get messages by their ids",
+      description:
+        "Fetch specific messages from this conversation by their Telegram message ids. Use it " +
+        "to read a message referenced as #<id> in the transcript (for example a reply target " +
+        "marked [reply to #<id>]) whose content is not shown. Ids not found are omitted from " +
+        "the result.",
+      inputSchema: {
+        ids: z
+          .array(z.number().int().positive())
+          .min(1)
+          .max(GET_BY_IDS_MAX)
+          .describe(`Telegram message ids to fetch (max ${GET_BY_IDS_MAX})`),
+      },
+      outputSchema: historyOutputSchema,
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async ({ ids }) => {
+      const { chatId } = getToolContext();
+      const records = await getChatMessagesByTelegramIds(getDb(), chatId, ids);
       return buildResult(records);
     },
   );

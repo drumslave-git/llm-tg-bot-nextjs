@@ -16,10 +16,12 @@ import {
 } from "@/features/bot-messaging/server/service";
 import {
   applyMessageEdit,
+  composeCurrentTurn,
   getConversationWindow,
   recordAssistantMessage,
   recordIncomingMessage,
 } from "@/features/history/server/service";
+import { formatKnownUserLabel } from "@/features/known-users/format";
 import { getUserContext, rememberUser } from "@/features/known-users/server/service";
 import {
   getGroupContext,
@@ -88,6 +90,21 @@ function errorMessage(err: unknown): string {
 /** Telegram expires a chat action after ~5s; refresh just under that. */
 const TYPING_REFRESH_MS = 4_500;
 
+/** Human label for a raw Telegram user, matching the known-user label shape. */
+function labelForTelegramUser(user: {
+  id: number;
+  first_name?: string;
+  last_name?: string;
+  username?: string;
+}): string {
+  return formatKnownUserLabel({
+    firstName: user.first_name ?? null,
+    lastName: user.last_name ?? null,
+    username: user.username ?? null,
+    userId: String(user.id),
+  });
+}
+
 /** Build the per-message collaborators the bot-messaging service needs. */
 function buildDeps(
   ctx: Context,
@@ -99,6 +116,7 @@ function buildDeps(
   const isGroup = ctx.chat!.type !== "private";
   const currentMessageId = ctx.message!.message_id;
   const senderId = ctx.from?.id != null ? String(ctx.from.id) : null;
+  const botLabel = `You (@${bot.username})`;
 
   return {
     bot,
@@ -116,9 +134,36 @@ function buildDeps(
     loadHistory() {
       return getConversationWindow({
         chatId,
-        isGroup,
+        botLabel,
         excludeTelegramMessageId: currentMessageId,
       });
+    },
+    // Render the current message as a transcript line: id anchor, sender label,
+    // and its reply target resolved against the mirror (an anchor when stored,
+    // the quoted sender + full text inlined when not). Best-effort — a failure
+    // falls back to the raw text rather than dropping the reply.
+    loadCurrentTurn: () => {
+      const message = ctx.message!;
+      const from = ctx.from;
+      const replyTo = message.reply_to_message;
+      return composeCurrentTurn({
+        chatId,
+        telegramMessageId: currentMessageId,
+        senderLabel: from && !from.is_bot ? labelForTelegramUser(from) : null,
+        content: message.text ?? message.caption ?? "",
+        replyTo: replyTo
+          ? {
+              telegramMessageId: replyTo.message_id,
+              senderLabel: replyTo.from
+                ? replyTo.from.id === bot.id
+                  ? botLabel
+                  : labelForTelegramUser(replyTo.from)
+                : null,
+              text: replyTo.text ?? replyTo.caption ?? null,
+              quote: message.quote?.text ?? null,
+            }
+          : null,
+      }).catch(() => null);
     },
     // Inject the chat's identity context: in a group the known-participant
     // roster, in a private chat who the bot is talking to (so the model can

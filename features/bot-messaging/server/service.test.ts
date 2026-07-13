@@ -132,6 +132,75 @@ describe("handleIncomingMessage", () => {
     expect(loaded.data).toEqual({ messageCount: 2 });
   });
 
+  it("uses the composed current turn as the final user message and traces it", async () => {
+    const d = deps({
+      loadCurrentTurn: vi.fn().mockResolvedValue({
+        content: "[#7] Bob (@bob): hello there",
+        senderLabel: "Bob (@bob)",
+        data: { line: "[#7] Bob (@bob): hello there", replyTo: null },
+      }),
+    });
+    await handleIncomingMessage(incoming({ text: "hello there" }), d);
+
+    const messages = (d.generateReply as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(messages.at(-1)).toEqual({ role: "user", content: "[#7] Bob (@bob): hello there" });
+
+    const events = recorder.event.mock.calls.map((c) => c[0]);
+    const composed = events.find((e) => e.message === "current turn composed");
+    expect(composed.data).toEqual({
+      line: "[#7] Bob (@bob): hello there",
+      replyTo: null,
+      // Private chat → no group addressing hint.
+      addressingHint: null,
+    });
+  });
+
+  it("falls back to the raw text when the current-turn loader resolves null", async () => {
+    const d = deps({ loadCurrentTurn: vi.fn().mockResolvedValue(null) });
+    await handleIncomingMessage(incoming({ text: "plain" }), d);
+    const messages = (d.generateReply as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(messages.at(-1)).toEqual({ role: "user", content: "plain" });
+    const events = recorder.event.mock.calls.map((c) => c[0]);
+    expect(events.some((e) => e.message === "current turn composed")).toBe(false);
+  });
+
+  it("injects a group addressing hint naming the sender and address source", async () => {
+    // A group message that mentions the bot by @username entity.
+    const m = {
+      message_id: 7,
+      date: 0,
+      chat: { id: 5, type: "group" },
+      text: "@MyBot explain",
+      entities: [{ type: "mention", offset: 0, length: 6 }],
+    } as unknown as Message;
+    const d = deps({
+      loadChatContext: vi.fn().mockResolvedValue({ content: "roster", data: {} }),
+      loadCurrentTurn: vi.fn().mockResolvedValue({
+        content: "[#7] Bob (@bob): @MyBot explain",
+        senderLabel: "Bob (@bob)",
+        data: {},
+      }),
+      loadHistory: vi.fn().mockResolvedValue({ messages: [{ role: "user", content: "t" }], count: 1 }),
+    });
+    await handleIncomingMessage(incoming({ message: m, chatType: "group", text: "@MyBot explain" }), d);
+
+    const messages = (d.generateReply as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    // system prompt, chat context, addressing hint, transcript, current message.
+    expect(messages.map((msg: { role: string }) => msg.role)).toEqual([
+      "system",
+      "system",
+      "system",
+      "user",
+      "user",
+    ]);
+    expect(messages[2].content).toContain("from Bob (@bob), who mentioned you");
+    expect(messages.at(-1)).toEqual({ role: "user", content: "[#7] Bob (@bob): @MyBot explain" });
+
+    const events = recorder.event.mock.calls.map((c) => c[0]);
+    const composed = events.find((e) => e.message === "current turn composed");
+    expect(composed.data.addressingHint).toContain("from Bob (@bob), who mentioned you");
+  });
+
   it("injects chat context as a system message after the base prompt", async () => {
     const priorTurns = [{ role: "user", content: "Ann: earlier" }];
     const d = deps({

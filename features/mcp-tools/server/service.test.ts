@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { HISTORY_GET_IN_RANGE_TOOL, HISTORY_SEARCH_TOOL } from "@/features/history/server/mcp-tools";
+import {
+  HISTORY_GET_BY_MESSAGE_IDS_TOOL,
+  HISTORY_GET_IN_RANGE_TOOL,
+  HISTORY_SEARCH_TOOL,
+} from "@/features/history/server/mcp-tools";
 import { UPDATE_USER_ALIASES_TOOL } from "@/features/known-users/server/mcp-tools";
 import { SEARCH_WEB_TOOL } from "@/features/web-search/server/mcp-tools";
 import { getToolset, getToolsView } from "./service";
@@ -14,6 +18,7 @@ import { getToolset, getToolsView } from "./service";
 const ALL_TOOLS = [
   HISTORY_SEARCH_TOOL,
   HISTORY_GET_IN_RANGE_TOOL,
+  HISTORY_GET_BY_MESSAGE_IDS_TOOL,
   UPDATE_USER_ALIASES_TOOL,
   SEARCH_WEB_TOOL,
 ].sort();

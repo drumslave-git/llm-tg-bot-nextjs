@@ -1,6 +1,6 @@
 import "server-only";
 
-import { and, asc, desc, eq, gte, ilike, isNotNull, isNull, lte, ne, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, ilike, inArray, isNotNull, isNull, lte, ne, sql } from "drizzle-orm";
 
 import type { DrizzleDb } from "@/db/drizzle";
 import { chatMessages, type ChatMessageRow } from "@/db/schema";
@@ -150,6 +150,31 @@ export async function getChatMessagesSince(
     .select()
     .from(chatMessages)
     .where(and(...filters))
+    .orderBy(asc(chatMessages.id));
+  return rows.map(mapRow);
+}
+
+/**
+ * Non-deleted messages in a chat matching the given Telegram message ids, oldest
+ * first. Backs the `history_get_by_message_ids` MCP tool — dereferencing `#<id>`
+ * transcript anchors (e.g. a reply target outside the injected window).
+ */
+export async function getChatMessagesByTelegramIds(
+  db: DrizzleDb,
+  chatId: string,
+  telegramMessageIds: number[],
+): Promise<ChatMessageRecord[]> {
+  if (telegramMessageIds.length === 0) return [];
+  const rows = await db
+    .select()
+    .from(chatMessages)
+    .where(
+      and(
+        eq(chatMessages.chatId, chatId),
+        inArray(chatMessages.telegramMessageId, telegramMessageIds),
+        isNull(chatMessages.deletedAt),
+      ),
+    )
     .orderBy(asc(chatMessages.id));
   return rows.map(mapRow);
 }
