@@ -179,9 +179,14 @@ export async function runToolLoop(params: RunToolLoopParams): Promise<ToolLoopRe
   }
 }
 
-/** Map our chat turns to OpenAI message params (roles/content map 1:1). */
+/**
+ * Map our chat turns to OpenAI message params. Roles map 1:1; content is either
+ * plain text or (for a vision `user` turn) an array of text/image parts, both of
+ * which the SDK's user-message param accepts — the cast bridges our simplified
+ * union to the role-specific param types.
+ */
 function toSeedMessages(messages: ChatMessage[]): ChatCompletionMessageParam[] {
-  return messages.map((m) => ({ role: m.role, content: m.content }));
+  return messages.map((m) => ({ role: m.role, content: m.content }) as ChatCompletionMessageParam);
 }
 
 function mapUsage(usage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | undefined): ChatUsage | undefined {

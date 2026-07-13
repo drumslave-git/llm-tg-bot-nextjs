@@ -5,6 +5,7 @@ import OpenAI, {
   APIConnectionTimeoutError,
   APIError,
 } from "openai";
+import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 
 import { ApiError } from "@/lib/api-error";
 
@@ -23,10 +24,20 @@ export interface LlmConnection {
 const LIST_MODELS_TIMEOUT_MS = 15_000;
 export const CHAT_COMPLETION_TIMEOUT_MS = 120_000;
 
-/** A single chat turn sent to the model. */
+/**
+ * A single content part of a multimodal message. Only `user` turns carry image
+ * parts (a data: URL with base64 JPEG); text parts and plain string content
+ * behave identically to a text-only turn.
+ */
+export type ChatContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } };
+
+/** A single chat turn sent to the model. Content is plain text, or — for a
+ * vision turn — an array of text/image parts. */
 export interface ChatMessage {
   role: "system" | "user" | "assistant";
-  content: string;
+  content: string | ChatContentPart[];
 }
 
 /** Normalized token usage for a completion, when the provider reports it. */
@@ -46,6 +57,33 @@ export interface ChatCompletionResult {
   requestBody: unknown;
   /** Raw response object returned by the endpoint (for Debug bodies). */
   responseBody: unknown;
+}
+
+/**
+ * Replace inline image bytes in a message list with a compact marker for trace
+ * recording. A vision turn carries a `data:image/...;base64,<~1MB>` URL per
+ * image; storing that verbatim in a trace would bloat the row and make the Debug
+ * JSON unreadable. The bytes are not lost — the actual image is persisted in
+ * `message_media` and shown on the Vision page — so here we keep everything the
+ * operator reads (roles, text, structure) and swap each data URL for
+ * `data:<mime>;base64,<N bytes>`. Non-image content is returned unchanged.
+ */
+export function sanitizeMessagesForTrace(messages: ChatMessage[]): ChatMessage[] {
+  return messages.map((message) => {
+    if (typeof message.content === "string") return message;
+    const content = message.content.map((part) => {
+      if (part.type !== "image_url") return part;
+      const url = part.image_url.url;
+      const match = /^data:([^;]+);base64,([\s\S]*)$/.exec(url);
+      if (!match) return part;
+      const [, mime, data] = match;
+      return {
+        type: "image_url" as const,
+        image_url: { url: `data:${mime};base64,<${data.length} bytes>` },
+      };
+    });
+    return { ...message, content };
+  });
 }
 
 /** Normalize any base URL to its OpenAI-compatible `/v1` form. */
@@ -121,7 +159,10 @@ export async function chatCompletion(
   conn: LlmConnection,
   input: { model: string; messages: ChatMessage[]; timeoutMs?: number },
 ): Promise<ChatCompletionResult> {
-  const requestBody = { model: input.model, messages: input.messages };
+  const requestBody = {
+    model: input.model,
+    messages: input.messages as ChatCompletionMessageParam[],
+  };
   const start = Date.now();
   try {
     const completion = await createOpenAiClient(conn).chat.completions.create(requestBody, {

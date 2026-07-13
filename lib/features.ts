@@ -30,6 +30,13 @@ export interface FeatureDescriptor {
 
 export const FEATURES = {
   "bot-messaging": { id: "bot-messaging", label: "Bot messaging" },
+  vision: {
+    id: "vision",
+    label: "Vision",
+    realtimeTopic: "vision",
+    relatedIdsKey: "message_media",
+    path: "/vision",
+  },
   history: {
     id: "history",
     label: "History",

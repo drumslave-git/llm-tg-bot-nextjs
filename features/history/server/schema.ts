@@ -26,6 +26,17 @@ export const recordMessageSchema = z.object({
 });
 export type RecordMessageInput = z.infer<typeof recordMessageSchema>;
 
+/**
+ * A media-bearing message captured into the mirror. Same shape as
+ * {@link recordMessageSchema} but content may be empty (a photo/sticker with no
+ * caption still belongs in the transcript — its image is described separately and
+ * rendered as a media suffix).
+ */
+export const recordMediaMessageSchema = recordMessageSchema.extend({
+  content: z.string().trim().max(MAX_CONTENT_CHARS),
+});
+export type RecordMediaMessageInput = z.infer<typeof recordMediaMessageSchema>;
+
 /** An `edited_message` update rewriting a previously stored row. */
 export const applyEditSchema = z.object({
   chatId,

@@ -77,6 +77,13 @@ export interface TranscriptOptions {
   speakerLabels?: ReadonlyMap<string, string>;
   /** Label for the bot's own (assistant) rows, e.g. `You (@MyBot)`. */
   botLabel?: string;
+  /**
+   * Media suffixes keyed by Telegram message id — how a media message reads as
+   * text (e.g. ` [photo: <description>]`). Appended to the line so a past image
+   * turn carries its description. Built by the caller from vision annotations, so
+   * this module stays free of vision imports.
+   */
+  mediaSuffixes?: ReadonlyMap<number, string>;
 }
 
 /** Render one stored row as a transcript line. */
@@ -90,12 +97,13 @@ export function toTranscriptLine(record: ChatMessageRecord, options: TranscriptO
     record.replyToMessageId != null
       ? { kind: "anchor", telegramMessageId: record.replyToMessageId }
       : null;
-  return renderTranscriptLine({
+  const line = renderTranscriptLine({
     telegramMessageId: record.telegramMessageId,
     label,
     replyRef,
     content: record.content,
   });
+  return line + (options.mediaSuffixes?.get(record.telegramMessageId) ?? "");
 }
 
 /**

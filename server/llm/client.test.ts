@@ -1,6 +1,48 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { toOpenAiBaseUrl } from "./client";
+import { sanitizeMessagesForTrace, toOpenAiBaseUrl, type ChatMessage } from "./client";
+
+describe("sanitizeMessagesForTrace", () => {
+  it("leaves plain-text messages untouched", () => {
+    const messages: ChatMessage[] = [
+      { role: "system", content: "be nice" },
+      { role: "user", content: "hi" },
+    ];
+    expect(sanitizeMessagesForTrace(messages)).toEqual(messages);
+  });
+
+  it("replaces inline image bytes with a compact byte-length marker", () => {
+    const base64 = "A".repeat(2048);
+    const messages: ChatMessage[] = [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "what is this?" },
+          { type: "image_url", image_url: { url: `data:image/jpeg;base64,${base64}` } },
+        ],
+      },
+    ];
+    const [sanitized] = sanitizeMessagesForTrace(messages);
+    expect(sanitized.content).toEqual([
+      { type: "text", text: "what is this?" },
+      { type: "image_url", image_url: { url: "data:image/jpeg;base64,<2048 bytes>" } },
+    ]);
+  });
+
+  it("does not mutate the input", () => {
+    const messages: ChatMessage[] = [
+      {
+        role: "user",
+        content: [{ type: "image_url", image_url: { url: "data:image/png;base64,ABCD" } }],
+      },
+    ];
+    sanitizeMessagesForTrace(messages);
+    expect((messages[0].content as { type: string }[])[0]).toEqual({
+      type: "image_url",
+      image_url: { url: "data:image/png;base64,ABCD" },
+    });
+  });
+});
 
 describe("toOpenAiBaseUrl", () => {
   it("appends /v1 when missing", () => {

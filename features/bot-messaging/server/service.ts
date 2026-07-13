@@ -5,7 +5,8 @@ import type { Message } from "@grammyjs/types";
 import type { DrizzleDb } from "@/db/drizzle";
 import { getDb } from "@/db/drizzle";
 import { FEATURES } from "@/lib/features";
-import type { ChatMessage, ChatUsage } from "@/server/llm/client";
+import type { ChatContentPart, ChatMessage, ChatUsage } from "@/server/llm/client";
+import { sanitizeMessagesForTrace } from "@/server/llm/client";
 import { startTrace } from "@/server/trace";
 import { checkAddressed, type AddressSource, type BotIdentity } from "./addressing";
 import { checkMaintenance, isOwner, type BotPolicy } from "./policy";
@@ -50,6 +51,13 @@ export interface IncomingMessage {
   fromIsBot: boolean;
   /** Extracted user text (message text or media caption). */
   text: string;
+  /**
+   * Whether this turn carries visual media the bot can read (an image on the
+   * message, or on a replied-to message). A media-only message with no caption is
+   * still real content — it must be addressed, answered, and described like any
+   * other message — so it is not treated as empty.
+   */
+  hasVision?: boolean;
 }
 
 /** A delivered Telegram message, as reported back by the runtime. */
@@ -106,6 +114,14 @@ export interface BotMessagingDeps {
     senderLabel: string | null;
     data?: Record<string, unknown>;
   } | null>;
+  /**
+   * Load visual media to attach to the current turn (photo/sticker/etc. on the
+   * message, or on a replied-to message). Returns the image content parts to
+   * splice into the user turn plus an optional note (e.g. "asking about the
+   * photo they replied to"). Null when the turn carries no media. Best-effort —
+   * the reply proceeds text-only if this fails.
+   */
+  loadVision?: () => Promise<{ imageParts: ChatContentPart[]; note?: string } | null>;
   /** Persist the delivered assistant reply into the history mirror (best-effort). */
   recordReply: (input: {
     content: string;
@@ -154,7 +170,9 @@ export async function handleIncomingMessage(
   if (incoming.fromIsBot) return ignored("from_bot");
 
   const text = incoming.text.trim();
-  if (!text) return ignored("no_content");
+  // A media-only message (no caption) still carries content — its image — so it
+  // is processed like any other message rather than ignored as empty.
+  if (!text && !incoming.hasVision) return ignored("no_content");
 
   const decision = checkAddressed(incoming.message, incoming.chatType, deps.bot);
   if (!decision.addressed) return ignored("not_addressed");
@@ -288,19 +306,36 @@ export async function handleIncomingMessage(
         data: { messageCount: history.count },
       });
 
+      // 3b. Vision — attach any image(s) on this turn (or a replied-to image) to
+      // the current user message so the model reads them alongside the text.
+      const userText = currentTurn?.content ?? text;
+      let userContent: string | ChatContentPart[] = userText;
+      const vision = deps.loadVision ? await deps.loadVision() : null;
+      if (vision && vision.imageParts.length > 0) {
+        const promptText = vision.note ? `${userText}\n\n${vision.note}` : userText;
+        userContent = [{ type: "text", text: promptText }, ...vision.imageParts];
+        await trace.event({
+          type: "step",
+          message: "vision media attached",
+          data: { imageCount: vision.imageParts.length, fromReply: Boolean(vision.note) },
+        });
+      }
+
       const messages: ChatMessage[] = [
         { role: "system", content: systemPrompt },
         ...(chatContext ? [{ role: "system" as const, content: chatContext.content }] : []),
         ...(addressingHint ? [{ role: "system" as const, content: addressingHint }] : []),
         ...history.messages,
-        { role: "user", content: currentTurn?.content ?? text },
+        { role: "user", content: userContent },
       ];
       // 4. LLM request — full request body (recorded before the call so the
-      // response step's elapsed time reflects real provider latency).
+      // response step's elapsed time reflects real provider latency). Inline
+      // image bytes are replaced with a compact marker (the real image is on the
+      // Vision page); all readable content is kept verbatim.
       await trace.event({
         type: "llm_request",
         message: "request",
-        data: { messages },
+        data: { messages: sanitizeMessagesForTrace(messages) },
       });
 
       // Record each tool call the generator runs (if any) as it happens, so the

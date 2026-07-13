@@ -1,0 +1,146 @@
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+
+import type { ChatCompletionResult } from "@/server/llm/client";
+import { listTraces } from "@/server/trace/repository";
+import { startTestDb, type TestDb } from "@/test/db";
+
+import {
+  getMediaAnnotations,
+  insertMedia,
+  insertUnavailableMedia,
+  listRecentMedia,
+  markDescribed,
+} from "./repository";
+import { describeAndStore, getMediaAnnotationsForMessages } from "./service";
+
+let ctx: TestDb;
+
+beforeAll(async () => {
+  ctx = await startTestDb();
+});
+
+afterAll(async () => {
+  await ctx?.stop();
+});
+
+beforeEach(async () => {
+  await ctx.truncate();
+});
+
+async function seedPending(over?: { chatId?: string; telegramMessageId?: number }) {
+  return insertMedia(ctx.db, {
+    id: crypto.randomUUID(),
+    chatId: over?.chatId ?? "5",
+    telegramMessageId: over?.telegramMessageId ?? 10,
+    kind: "photo",
+    fileId: "file-1",
+    fileUniqueId: "u1",
+    mimeType: "image/jpeg",
+    dataBase64: "QUJD",
+    visionHint: null,
+  });
+}
+
+function fakeComplete(content: string): ChatCompletionResult {
+  return {
+    content,
+    model: "vision-model",
+    usage: { promptTokens: 10, completionTokens: 20, totalTokens: 30 },
+    latencyMs: 12,
+    requestBody: {},
+    responseBody: {},
+  };
+}
+
+describe("message_media repository", () => {
+  it("inserts a pending row idempotently on (chat, message)", async () => {
+    const first = await seedPending();
+    expect(first?.status).toBe("pending");
+    const second = await seedPending();
+    expect(second).toBeNull(); // conflict → no duplicate
+    expect(await listRecentMedia(ctx.db)).toHaveLength(1);
+  });
+
+  it("records an unavailable placeholder with no bytes", async () => {
+    const row = await insertUnavailableMedia(ctx.db, {
+      id: crypto.randomUUID(),
+      chatId: "5",
+      telegramMessageId: 11,
+      kind: "sticker",
+      fileId: "f",
+      fileUniqueId: null,
+      visionHint: "Sticker emoji: 😀",
+    });
+    expect(row?.status).toBe("unavailable");
+    expect(row?.dataBase64).toBeNull();
+  });
+
+  it("markDescribed stores the description, drops bytes, and won't re-describe", async () => {
+    const pending = await seedPending();
+    const described = await markDescribed(ctx.db, pending!.id, "a red car");
+    expect(described?.status).toBe("described");
+    expect(described?.description).toBe("a red car");
+    expect(described?.dataBase64).toBeNull();
+    expect(described?.describedAt).not.toBeNull();
+    // A second describe is a no-op (row no longer pending).
+    expect(await markDescribed(ctx.db, pending!.id, "different")).toBeNull();
+  });
+
+  it("returns media annotations keyed by telegram message id", async () => {
+    const pending = await seedPending({ telegramMessageId: 20 });
+    await markDescribed(ctx.db, pending!.id, "a cat");
+    await seedPending({ telegramMessageId: 21 });
+    const annotations = await getMediaAnnotations(ctx.db, "5", [20, 21, 99]);
+    expect(annotations.get(20)).toEqual({ kind: "photo", status: "described", description: "a cat" });
+    expect(annotations.get(21)).toEqual({ kind: "photo", status: "pending", description: null });
+    expect(annotations.has(99)).toBe(false);
+  });
+});
+
+describe("describeAndStore", () => {
+  it("describes pending media, drops the bytes, and records a success trace", async () => {
+    await seedPending({ telegramMessageId: 30 });
+    const result = await describeAndStore(
+      { chatId: "5", telegramMessageId: 30 },
+      { complete: async () => fakeComplete("a red car on a street") },
+      ctx.db,
+    );
+    expect(result?.status).toBe("described");
+    expect(result?.description).toBe("a red car on a street");
+
+    const annotations = await getMediaAnnotationsForMessages("5", [30], ctx.db);
+    expect(annotations.get(30)?.description).toBe("a red car on a street");
+
+    const traces = await listTraces(ctx.db, { feature: "vision" });
+    expect(traces.traces[0]?.status).toBe("success");
+  });
+
+  it("skips (no throw) when there is no pending media", async () => {
+    const result = await describeAndStore(
+      { chatId: "5", telegramMessageId: 999 },
+      { complete: async () => fakeComplete("unused") },
+      ctx.db,
+    );
+    expect(result).toBeNull();
+    const traces = await listTraces(ctx.db, { feature: "vision" });
+    expect(traces.traces[0]?.status).toBe("skipped");
+  });
+
+  it("leaves the row pending and fails the trace when the model errors", async () => {
+    await seedPending({ telegramMessageId: 31 });
+    const result = await describeAndStore(
+      { chatId: "5", telegramMessageId: 31 },
+      {
+        complete: async () => {
+          throw new Error("provider down");
+        },
+      },
+      ctx.db,
+    );
+    expect(result).toBeNull();
+    const annotations = await getMediaAnnotationsForMessages("5", [31], ctx.db);
+    expect(annotations.get(31)?.status).toBe("pending");
+    const traces = await listTraces(ctx.db, { feature: "vision" });
+    expect(traces.traces[0]?.status).toBe("error");
+  });
+});

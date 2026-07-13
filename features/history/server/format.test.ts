@@ -115,6 +115,22 @@ describe("toTranscriptLine", () => {
     });
     expect(line).toBe("[#10] Bob [reply to #7]: so wrong");
   });
+
+  it("appends a media suffix for a message that carries an image", () => {
+    const line = toTranscriptLine(record({ content: "look", userId: "100" }), {
+      speakerLabels: new Map([["100", "Alice"]]),
+      mediaSuffixes: new Map([[10, " [photo: a red car]"]]),
+    });
+    expect(line).toBe("[#10] Alice: look [photo: a red car]");
+  });
+
+  it("ignores a media suffix for an unrelated message id", () => {
+    const line = toTranscriptLine(record({ content: "hi", userId: "100" }), {
+      speakerLabels: new Map([["100", "Alice"]]),
+      mediaSuffixes: new Map([[999, " [photo]"]]),
+    });
+    expect(line).toBe("[#10] Alice: hi");
+  });
 });
 
 describe("renderTranscript", () => {

@@ -6,7 +6,9 @@ const nextConfig: NextConfig = {
   output: "standalone",
   // Playwright is a native Node package (spawns a browser binary); never bundle
   // it — leave it as an external `require` resolved from node_modules at runtime.
-  serverExternalPackages: ["playwright"],
+  // Native Node packages that spawn binaries / load native addons must never be
+  // bundled — leave them as runtime `require`s resolved from node_modules.
+  serverExternalPackages: ["playwright", "sharp"],
 };
 
 export default nextConfig;

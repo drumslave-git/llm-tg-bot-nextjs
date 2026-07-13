@@ -30,6 +30,7 @@ import {
 } from "./repository";
 import {
   applyEditSchema,
+  recordMediaMessageSchema,
   recordMessageSchema,
   type ApplyEditInput,
   type ChatMessageWithTrace,
@@ -57,6 +58,8 @@ export interface IncomingHistoryMessage {
   content: string;
   replyToMessageId?: number | null;
   sentAt: Date;
+  /** When true, empty content is allowed (a media message with no caption). */
+  hasMedia?: boolean;
 }
 
 /** Input for capturing a delivered assistant reply. */
@@ -78,7 +81,9 @@ export async function recordIncomingMessage(
   input: IncomingHistoryMessage,
   db: DrizzleDb = getDb(),
 ): Promise<ChatMessageRecord | null> {
-  const parsed = recordMessageSchema.safeParse({ ...input, role: "user" } satisfies RecordMessageInput);
+  // A media message may have no caption; a text message must have content.
+  const schema = input.hasMedia ? recordMediaMessageSchema : recordMessageSchema;
+  const parsed = schema.safeParse({ ...input, role: "user" } satisfies RecordMessageInput);
   if (!parsed.success) return null;
   const record = await appendChatMessage(db, {
     chatId: parsed.data.chatId,
@@ -207,7 +212,19 @@ async function resolveSpeakerLabels(
  * known-user name; the bot's own rows use `botLabel`.
  */
 export async function getConversationWindow(
-  params: { chatId: string; botLabel?: string; excludeTelegramMessageId?: number; now?: Date },
+  params: {
+    chatId: string;
+    botLabel?: string;
+    excludeTelegramMessageId?: number;
+    now?: Date;
+    /**
+     * Resolve media suffixes (e.g. ` [photo: <description>]`) for the window's
+     * message ids, so past image turns read as text. Injected so history stays
+     * decoupled from the vision feature. Best-effort — omit or resolve empty when
+     * there is no media.
+     */
+    loadMediaSuffixes?: (telegramMessageIds: number[]) => Promise<ReadonlyMap<number, string>>;
+  },
   db: DrizzleDb = getDb(),
 ): Promise<ConversationWindow> {
   const since = historyWindowStart(params.now ?? new Date());
@@ -216,7 +233,14 @@ export async function getConversationWindow(
   });
 
   const speakerLabels = await resolveSpeakerLabels(db, records);
-  const transcript = renderTranscript(records, { speakerLabels, botLabel: params.botLabel });
+  const mediaSuffixes = params.loadMediaSuffixes
+    ? await params.loadMediaSuffixes(records.map((r) => r.telegramMessageId)).catch(() => undefined)
+    : undefined;
+  const transcript = renderTranscript(records, {
+    speakerLabels,
+    botLabel: params.botLabel,
+    mediaSuffixes: mediaSuffixes ?? undefined,
+  });
   return {
     messages: transcript ? [{ role: "user", content: transcript }] : [],
     count: records.length,

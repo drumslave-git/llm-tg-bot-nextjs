@@ -1,5 +1,6 @@
 import {
   Bug,
+  Image,
   LayoutDashboard,
   MessageSquare,
   Settings,
@@ -34,6 +35,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { href: "/", label: "Overview", icon: LayoutDashboard },
       { href: "/history", label: "History", icon: MessageSquare },
+      { href: "/vision", label: "Vision", icon: Image },
       { href: "/users", label: "Users", icon: Users },
       { href: "/groups", label: "Groups", icon: UsersRound },
       { href: "/debug", label: "Debug", icon: Bug },

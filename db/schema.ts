@@ -274,6 +274,62 @@ export const chatMessages = pgTable(
 export type ChatMessageRow = typeof chatMessages.$inferSelect;
 export type ChatMessageInsert = typeof chatMessages.$inferInsert;
 
+/**
+ * Visual media attached to a Telegram message (photo, sticker, image document,
+ * animation/video frame). One row per media-bearing message, keyed the same way
+ * as {@link chatMessages} so the two join on `(chat_id, telegram_message_id)`.
+ *
+ * Lifecycle:
+ *  - On ingestion the normalized image is stored as base64 (`data_base64`) with
+ *    `status = 'pending'` — the raw bytes the vision model reads.
+ *  - Once described (immediately for the addressed turn, later via the vision
+ *    backfill job for the rest) the model's text description is written to
+ *    `description`, `data_base64` is cleared, and `status = 'described'`. This
+ *    keeps long-term history token-light: past turns carry a text description,
+ *    not a megabyte of base64.
+ *  - Media that cannot be loaded/decoded is `status = 'unavailable'` (no bytes,
+ *    an operator-visible reason), so it is neither re-attempted nor lost.
+ *
+ * Ids are app-generated UUIDs (entity convention).
+ */
+export const messageMedia = pgTable(
+  "message_media",
+  {
+    id: text("id").primaryKey(),
+    /** Telegram chat id, as a string (matches `chat_messages.chat_id`). */
+    chatId: text("chat_id").notNull(),
+    /** Telegram `message_id` the media is attached to. */
+    telegramMessageId: bigint("telegram_message_id", { mode: "number" }).notNull(),
+    /** Media kind: `photo` | `sticker` | `image_document` | `animation` | `video`. */
+    kind: text("kind").notNull(),
+    /** Telegram `file_id` — lets the backfill job re-download bytes if needed. */
+    fileId: text("file_id").notNull(),
+    /** Telegram `file_unique_id` (stable across bots), or null. */
+    fileUniqueId: text("file_unique_id"),
+    /** Mime hint of the stored image (always `image/jpeg` after normalization). */
+    mimeType: text("mime_type"),
+    /** Normalized JPEG as base64; null once described (bytes dropped) or unavailable. */
+    dataBase64: text("data_base64"),
+    /** Extra hint for the describer (e.g. a sticker's emoji), or null. */
+    visionHint: text("vision_hint"),
+    /** The vision model's text description; null until described. */
+    description: text("description"),
+    /** `pending` (bytes stored, awaiting description) | `described` | `unavailable`. */
+    status: text("status").notNull().default("pending"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    /** Set when a description was produced and the bytes were dropped. */
+    describedAt: timestamp("described_at", { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex("message_media_chat_msg_idx").on(t.chatId, t.telegramMessageId),
+    // Backfill (priority 8) scans for pending rows oldest-first.
+    index("message_media_status_idx").on(t.status, t.createdAt),
+  ],
+);
+
+export type MessageMediaRow = typeof messageMedia.$inferSelect;
+export type MessageMediaInsert = typeof messageMedia.$inferInsert;
+
 export type TraceRow = typeof traces.$inferSelect;
 export type TraceInsert = typeof traces.$inferInsert;
 export type TraceEventRow = typeof traceEvents.$inferSelect;

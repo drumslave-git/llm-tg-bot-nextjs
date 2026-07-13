@@ -70,6 +70,18 @@ describe("handleIncomingMessage", () => {
     expect(d.generateReply).not.toHaveBeenCalled();
   });
 
+  it("processes a caption-less media message (empty text but hasVision) like any other", async () => {
+    const imageParts = [
+      { type: "image_url" as const, image_url: { url: "data:image/jpeg;base64,ABC" } },
+    ];
+    const d = deps({ loadVision: vi.fn().mockResolvedValue({ imageParts }) });
+    const out = await handleIncomingMessage(incoming({ text: "", hasVision: true }), d);
+    expect(out).toEqual({ status: "replied", text: "hi back" });
+    expect(d.generateReply).toHaveBeenCalledOnce();
+    const messages = (d.generateReply as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(messages.at(-1).content).toEqual([{ type: "text", text: "" }, ...imageParts]);
+  });
+
   it("ignores un-addressed group chatter without tracing", async () => {
     const d = deps();
     const m = { message_id: 7, date: 0, chat: { id: 5, type: "group" }, text: "chatter" } as Message;
@@ -104,6 +116,47 @@ describe("handleIncomingMessage", () => {
     // Typing shown while generating, then stopped once the turn settles.
     expect(d.startTyping).toHaveBeenCalledOnce();
     expect(stopTyping).toHaveBeenCalledOnce();
+  });
+
+  it("attaches vision image parts to the current user turn and traces the step", async () => {
+    const imageParts = [
+      { type: "image_url" as const, image_url: { url: "data:image/jpeg;base64,ABC" } },
+    ];
+    const d = deps({
+      loadVision: vi.fn().mockResolvedValue({ imageParts }),
+    });
+    await handleIncomingMessage(incoming({ text: "what is this?" }), d);
+
+    const messages = (d.generateReply as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(messages.at(-1)).toEqual({
+      role: "user",
+      content: [{ type: "text", text: "what is this?" }, ...imageParts],
+    });
+    // The traced request redacts the image bytes.
+    const request = recorder.event.mock.calls
+      .map((c) => c[0])
+      .find((e) => e.type === "llm_request");
+    const tracedUser = request.data.messages.at(-1);
+    expect(tracedUser.content[1].image_url.url).toBe("data:image/jpeg;base64,<3 bytes>");
+    // A vision step records the image count.
+    const step = recorder.event.mock.calls
+      .map((c) => c[0])
+      .find((e) => e.message === "vision media attached");
+    expect(step.data).toEqual({ imageCount: 1, fromReply: false });
+  });
+
+  it("appends the reply note to the text part when media comes from a replied-to image", async () => {
+    const d = deps({
+      loadVision: vi.fn().mockResolvedValue({
+        imageParts: [{ type: "image_url" as const, image_url: { url: "data:image/jpeg;base64,AB" } }],
+        note: "The user is asking about the photo they replied to (shown here).",
+      }),
+    });
+    await handleIncomingMessage(incoming({ text: "explain" }), d);
+    const messages = (d.generateReply as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    const userTurn = messages.at(-1);
+    expect(userTurn.content[0].text).toContain("explain");
+    expect(userTurn.content[0].text).toContain("replied to");
   });
 
   it("injects the loaded history window as prior turns between system and current", async () => {
