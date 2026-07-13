@@ -20,9 +20,9 @@ export const LINK_FETCH_TOOL_NAMES = [READ_PAGE_TOOL];
 
 const READ_PAGE_DESCRIPTION =
   "Read ONE public web page and return its readable text so you can answer from it. " +
-  "Call it when the user shares a URL or asks about the contents of a specific page you do not already have. " +
-  "It reads a single http(s) page; it cannot download files (videos, archives, images) or work through a batch of links. " +
-  "Do NOT use it for general web searches — use search_web for that.";
+  "Use it whenever the user shares a URL, or asks about the content of a specific page whose URL is in the conversation — " +
+  "read the page instead of answering about it from memory. " +
+  "It reads a single http(s) page; it cannot download files (videos, archives, images) or read more than one link at a time.";
 
 /** Structured payload returned alongside the text result. */
 const readPageOutputSchema = {

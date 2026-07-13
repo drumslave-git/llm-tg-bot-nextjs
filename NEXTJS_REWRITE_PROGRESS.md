@@ -26,6 +26,39 @@ Next: **Priority 7 — Bot messaging: vision** (receive image/sticker/media and 
 
 ### Session log
 
+- 2026-07-13 (Priority 6 follow-up): **read_page usage + prompt/tool-description
+  discipline** (user observed, from three live reply traces at ~15:53, that a shared
+  Steam link was answered from memory and a "last update?" question triggered
+  `search_web` — no `read_page`). **Root cause was mechanical:** those traces
+  predate the tool's registration — at 15:53 the running poller's boot-time MCP
+  registry singleton had only history + `search_web` + `update_user_aliases`, so
+  `read_page` was uncallable (it appears on `/tools` now, after a restart).
+  **Architecture correction (user directive):** the system prompt must **not list
+  or describe tools** (no hardcoded tool enumeration), **each tool self-describes**
+  via its own MCP description, and **tool descriptions must be atomic** — never
+  reference another tool by name. Applied:
+  - `bot-messaging/prompt.ts`: replaced the "Tools and honesty" section (which
+    enumerated example tools) with a tool-agnostic **"Honesty"** section (do not
+    claim an action you did not take this turn); the base prompt no longer names any
+    tool. Doc comment updated to state the tool-agnostic rule.
+  - `read_page` description now owns its own usage guidance ("read a shared/linked
+    page instead of answering from memory") and **no longer mentions `search_web`**;
+    `search_web` description reverted to its atomic form (**no `read_page`
+    reference**).
+  - Same anti-pattern fixed in the **DM identity context**: `known-users`
+    `formatUserContext` was injecting a system message that named the
+    `update_user_aliases` tool and gave usage guidance. It is now **identity facts
+    only** (who + aliases); the "record a newly mentioned nickname, don't just claim
+    you did" guidance moved into the `update_user_aliases` tool description (also
+    covers self-reported nicknames now). `format.test.ts` updated to assert the
+    context is tool-agnostic.
+  - Checks: lint ✓, typecheck ✓, unit 175 ✓. **Takes effect only after a
+    bot/dev-server restart** (base prompt via the service + tool descriptions via
+    the registry are bound in the boot-time singleton) — retest a shared link
+    afterward. (For the "last update?" case, `search_web` was arguably fine — the
+    Steam *store* page doesn't list patch dates — so the real win is grounding
+    replies about a shared page in its actual content instead of memory.)
+
 - 2026-07-13: **Priority 6 — Visit/read link MCP tool (done).** A Playwright-backed
   `read_page` MCP tool exposed through the shared `server/mcp` registry.
   - **Decision (user, AskUserQuestion):** fetch engine = **Playwright / MVP parity**

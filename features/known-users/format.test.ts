@@ -23,13 +23,13 @@ describe("formatKnownUserLabel", () => {
 });
 
 describe("formatUserContext", () => {
-  it("names who the bot is talking to and points at the alias tool", () => {
+  it("names who the bot is talking to, with identity facts only (no tool references)", () => {
     const block = formatUserContext({ label: "George (@drumslave)", aliases: [] });
     expect(block).toContain("private, one-on-one Telegram chat with George (@drumslave).");
     // No aliases → no "also known as" clause.
     expect(block).not.toContain("also known as");
-    // The tool reference uses the same label so the model can call it.
-    expect(block).toContain('update_user_aliases tool, referencing them as "George (@drumslave)"');
+    // Identity context stays tool-agnostic — the prompt must not name tools.
+    expect(block).not.toContain("update_user_aliases");
   });
 
   it("lists known aliases when present", () => {

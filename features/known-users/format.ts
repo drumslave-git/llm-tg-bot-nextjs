@@ -29,16 +29,13 @@ export interface UserContextParts {
 /**
  * Build the identity block injected as a system message for a private (one-on-one)
  * reply: who the bot is talking to and the other names they go by. The parallel of
- * {@link import("../known-groups/format").formatGroupContext} for DMs — it also
- * gives the model a concrete reference name to pass to the `update_user_aliases`
- * tool, so it records new nicknames instead of only claiming it did.
+ * {@link import("../known-groups/format").formatGroupContext} for DMs — pure
+ * identity facts only. How to act on a newly mentioned nickname lives in the
+ * `update_user_aliases` tool's own description, not here (the prompt/context stays
+ * tool-agnostic).
  */
 export function formatUserContext(parts: UserContextParts): string {
   const also =
     parts.aliases.length > 0 ? ` They are also known as: ${parts.aliases.join(", ")}.` : "";
-  return [
-    `You are in a private, one-on-one Telegram chat with ${parts.label}.${also}`,
-    "When they tell you another name or nickname they go by, record it with the " +
-      `update_user_aliases tool, referencing them as "${parts.label}" — do not merely say you saved it.`,
-  ].join("\n");
+  return `You are in a private, one-on-one Telegram chat with ${parts.label}.${also}`;
 }
