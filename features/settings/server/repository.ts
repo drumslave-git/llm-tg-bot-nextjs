@@ -23,6 +23,7 @@ export interface SettingsRecord {
   model: string | null;
   activePersonalityId: string | null;
   telegramBotToken: string | null;
+  tavilyApiKey: string | null;
   ownerUsername: string | null;
   ownerUserId: string | null;
   maintenanceModeEnabled: boolean;
@@ -36,6 +37,7 @@ export interface SettingsPatch {
   model?: string | null;
   activePersonalityId?: string | null;
   telegramBotToken?: string | null;
+  tavilyApiKey?: string | null;
   ownerUsername?: string | null;
   ownerUserId?: string | null;
   maintenanceModeEnabled?: boolean;
@@ -48,6 +50,7 @@ function mapRow(row: SettingsRow): SettingsRecord {
     model: row.model,
     activePersonalityId: row.activePersonalityId,
     telegramBotToken: row.telegramBotToken,
+    tavilyApiKey: row.tavilyApiKey,
     ownerUsername: row.ownerUsername,
     ownerUserId: row.ownerUserId,
     maintenanceModeEnabled: row.maintenanceModeEnabled,

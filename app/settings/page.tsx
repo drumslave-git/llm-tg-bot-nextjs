@@ -45,7 +45,6 @@ export default async function SettingsPage() {
     <>
       <PageHeader
         title="Settings"
-        description="Connect an LLM endpoint, set the Telegram token, and control owner access."
         actions={
           <Button asChild variant="outline" size="sm">
             <Link href="/settings/debug">

@@ -36,4 +36,5 @@ export {
   TableHeaderCell,
   TableRow,
 } from "./Table";
+export { Tabs, type TabItem } from "./Tabs";
 export { Textarea } from "./Textarea";

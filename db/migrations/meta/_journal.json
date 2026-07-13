@@ -57,6 +57,13 @@
       "when": 1783884394963,
       "tag": "0007_normal_leper_queen",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1783940168423,
+      "tag": "0008_lush_bloodstorm",
+      "breakpoints": true
     }
   ]
 }

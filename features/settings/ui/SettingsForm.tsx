@@ -4,17 +4,19 @@ import { Check, Plug, Save } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useState } from "react";
 
-import { Badge, Button, Field, Input, Select, Switch } from "@/components/ui";
+import { Badge, Button, Field, Input, Select, Switch, Tabs, type TabItem } from "@/components/ui";
 import { formatKnownUserLabel } from "@/features/known-users/format";
 import type { KnownUser } from "@/features/known-users/server/schema";
 import type { ApiErrorBody } from "@/lib/api-error";
 import type { Settings } from "../server/schema";
 
 /**
- * LLM connection editor. Client Component: enter the OpenAI-compatible endpoint
- * (and optional API key), test the connection to load the endpoint's models,
- * then pick the model and save. The API key is write-only — it is shown as
- * "configured" but its value never leaves the server.
+ * Bot settings editor. Client Component with two tabs: **Core** (the LLM
+ * connection + model, Telegram token, owner, and maintenance mode — without which
+ * the bot cannot run) and **Integrations** (optional feature keys like Tavily for
+ * web search). One Save button below the tabs persists every changed field
+ * regardless of the active tab. Secret keys are write-only — shown as
+ * "configured" but their values never leave the server.
  */
 
 type Conn =
@@ -56,6 +58,8 @@ export function SettingsForm({
   const [apiKeyDirty, setApiKeyDirty] = useState(false);
   const [botToken, setBotToken] = useState("");
   const [botTokenDirty, setBotTokenDirty] = useState(false);
+  const [tavilyKey, setTavilyKey] = useState("");
+  const [tavilyKeyDirty, setTavilyKeyDirty] = useState(false);
   const [ownerUserId, setOwnerUserId] = useState(initial.ownerUserId ?? "");
   const [maintenanceMode, setMaintenanceMode] = useState(initial.maintenanceModeEnabled);
   const [model, setModel] = useState(initial.model ?? "");
@@ -102,6 +106,7 @@ export function SettingsForm({
     };
     if (apiKeyDirty) patch.apiKey = apiKey.trim() === "" ? null : apiKey.trim();
     if (botTokenDirty) patch.telegramBotToken = botToken.trim() === "" ? null : botToken.trim();
+    if (tavilyKeyDirty) patch.tavilyApiKey = tavilyKey.trim() === "" ? null : tavilyKey.trim();
     if (ownerUserId !== (initial.ownerUserId ?? "")) {
       patch.ownerUserId = ownerUserId === "" ? null : ownerUserId;
     }
@@ -124,6 +129,8 @@ export function SettingsForm({
       setApiKey("");
       setBotTokenDirty(false);
       setBotToken("");
+      setTavilyKeyDirty(false);
+      setTavilyKey("");
       setOwnerUserId(data.ownerUserId ?? "");
       setMaintenanceMode(data.maintenanceModeEnabled);
       setSave({ kind: "saved" });
@@ -137,8 +144,8 @@ export function SettingsForm({
   const connected = conn.kind === "connected";
   const canPickModel = models.length > 0;
 
-  return (
-    <form onSubmit={onTest} className="space-y-5">
+  const coreTab = (
+    <div className="space-y-5">
       <Field
         id="llmBaseUrl"
         label="OpenAI-compatible API URL"
@@ -294,6 +301,50 @@ export function SettingsForm({
           </div>
         )}
       </Field>
+    </div>
+  );
+
+  const integrationsTab = (
+    <div className="space-y-5">
+      <p className="text-sm text-muted">
+        Optional integrations that unlock extra tools. The bot runs without these.
+      </p>
+
+      <Field
+        id="tavilyApiKey"
+        label="Tavily API key"
+        hint="Enables the web-search tool. Stored securely; never shown again."
+      >
+        {({ id, describedBy }) => (
+          <Input
+            id={id}
+            aria-describedby={describedBy}
+            type="password"
+            autoComplete="off"
+            value={tavilyKey}
+            onChange={(e) => {
+              setTavilyKey(e.target.value);
+              setTavilyKeyDirty(true);
+            }}
+            placeholder={
+              initial.webSearchConfigured && !tavilyKeyDirty
+                ? "•••••••• (configured)"
+                : "tvly-…"
+            }
+          />
+        )}
+      </Field>
+    </div>
+  );
+
+  const tabs: TabItem[] = [
+    { id: "core", label: "Core", content: coreTab },
+    { id: "integrations", label: "Integrations", content: integrationsTab },
+  ];
+
+  return (
+    <form onSubmit={onTest} className="space-y-6">
+      <Tabs tabs={tabs} />
 
       <div className="flex items-center gap-3 border-t border-border pt-4">
         <Button

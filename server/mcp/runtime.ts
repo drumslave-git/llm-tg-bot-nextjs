@@ -8,6 +8,10 @@ import {
   KNOWN_USERS_TOOL_NAMES,
   registerKnownUsersMcpTools,
 } from "@/features/known-users/server/mcp-tools";
+import {
+  registerWebSearchMcpTools,
+  WEB_SEARCH_TOOL_NAMES,
+} from "@/features/web-search/server/mcp-tools";
 import { BotMcpRegistry } from "./registry";
 
 /**
@@ -38,6 +42,7 @@ async function build(): Promise<BotMcpRegistry> {
   const registry = new BotMcpRegistry();
   registry.registerTools("history", registerHistoryMcpTools, HISTORY_TOOL_NAMES);
   registry.registerTools("known-users", registerKnownUsersMcpTools, KNOWN_USERS_TOOL_NAMES);
+  registry.registerTools("web-search", registerWebSearchMcpTools, WEB_SEARCH_TOOL_NAMES);
   await registry.finishRegistration();
   return registry;
 }

@@ -4,7 +4,13 @@ import { upsertKnownUser } from "@/features/known-users/server/repository";
 import { listTraces } from "@/server/trace/repository";
 import { startTestDb, type TestDb } from "@/test/db";
 import { getSettingsRecord } from "./repository";
-import { getBotPolicy, getSettings, getTelegramBotToken, updateSettings } from "./service";
+import {
+  getBotPolicy,
+  getSettings,
+  getTelegramBotToken,
+  getWebSearchApiKey,
+  updateSettings,
+} from "./service";
 
 /** Seed a known user so the owner can be chosen by id. */
 async function seedUser(ctx: TestDb, userId: string, username: string | null) {
@@ -34,6 +40,7 @@ describe("getSettings", () => {
       model: null,
       apiKeyConfigured: false,
       telegramBotTokenConfigured: false,
+      webSearchConfigured: false,
       ownerUsername: null,
       ownerUserId: null,
       maintenanceModeEnabled: false,
@@ -83,8 +90,24 @@ describe("updateSettings", () => {
     expect(await getTelegramBotToken(ctx.db)).toBeNull();
   });
 
-  it("redacts the API key from recorded trace data", async () => {
-    await updateSettings({ apiKey: "sk-secret-456", model: "m" }, trigger, ctx.db);
+  it("stores the Tavily API key as a masked, server-only secret", async () => {
+    const set = await updateSettings({ tavilyApiKey: "tvly-secret" }, trigger, ctx.db);
+    expect(set.webSearchConfigured).toBe(true);
+    expect(JSON.stringify(set)).not.toContain("tvly-secret");
+    // Retrievable server-side for the web-search tool, never via the client shape.
+    expect(await getWebSearchApiKey(ctx.db)).toBe("tvly-secret");
+
+    const cleared = await updateSettings({ tavilyApiKey: "" }, trigger, ctx.db);
+    expect(cleared.webSearchConfigured).toBe(false);
+    expect(await getWebSearchApiKey(ctx.db)).toBeNull();
+  });
+
+  it("redacts secrets from recorded trace data", async () => {
+    await updateSettings(
+      { apiKey: "sk-secret-456", tavilyApiKey: "tvly-secret-456", model: "m" },
+      trigger,
+      ctx.db,
+    );
 
     const { traces } = await listTraces(ctx.db, { feature: "settings" });
     expect(traces).toHaveLength(1);
@@ -92,7 +115,9 @@ describe("updateSettings", () => {
     expect(traces[0].status).toBe("success");
 
     const events = await ctx.db.execute("SELECT data FROM trace_events");
-    expect(JSON.stringify(events.rows)).not.toContain("sk-secret-456");
+    const json = JSON.stringify(events.rows);
+    expect(json).not.toContain("sk-secret-456");
+    expect(json).not.toContain("tvly-secret-456");
   });
 
   it("keeps a single row across many updates", async () => {

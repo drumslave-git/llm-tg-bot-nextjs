@@ -27,6 +27,8 @@ export const settingsSchema = z.object({
   apiKeyConfigured: z.boolean(),
   /** Whether a Telegram bot token is stored (the value itself is never exposed). */
   telegramBotTokenConfigured: z.boolean(),
+  /** Whether a Tavily API key is stored, enabling the web-search tool (value never exposed). */
+  webSearchConfigured: z.boolean(),
   /** Owner's numeric user id (chosen from known users), or null when unset. */
   ownerUserId: z.string().nullable(),
   /** Owner's @username, denormalized from the chosen known user (display only). */
@@ -50,6 +52,7 @@ export const updateSettingsSchema = z
     model: model.nullable(),
     apiKey: apiKey.nullable(),
     telegramBotToken: botToken.nullable(),
+    tavilyApiKey: apiKey.nullable(),
     ownerUserId: ownerUserId.nullable(),
     maintenanceModeEnabled: z.boolean(),
   })

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { HISTORY_GET_IN_RANGE_TOOL, HISTORY_SEARCH_TOOL } from "@/features/history/server/mcp-tools";
 import { UPDATE_USER_ALIASES_TOOL } from "@/features/known-users/server/mcp-tools";
+import { SEARCH_WEB_TOOL } from "@/features/web-search/server/mcp-tools";
 import { getToolset, getToolsView } from "./service";
 
 /**
@@ -14,6 +15,7 @@ const ALL_TOOLS = [
   HISTORY_SEARCH_TOOL,
   HISTORY_GET_IN_RANGE_TOOL,
   UPDATE_USER_ALIASES_TOOL,
+  SEARCH_WEB_TOOL,
 ].sort();
 
 describe("getToolsView", () => {
@@ -23,6 +25,7 @@ describe("getToolsView", () => {
     const featureOf = (name: string) => view.tools.find((t) => t.name === name)?.feature;
     expect(featureOf(HISTORY_SEARCH_TOOL)).toBe("history");
     expect(featureOf(UPDATE_USER_ALIASES_TOOL)).toBe("known-users");
+    expect(featureOf(SEARCH_WEB_TOOL)).toBe("web-search");
     expect(view.tools.every((t) => t.description.length > 0)).toBe(true);
   });
 });

@@ -35,6 +35,7 @@ function toClientSettings(record: SettingsRecord | null): Settings {
     model: record?.model ?? null,
     apiKeyConfigured: Boolean(record?.llmApiKey),
     telegramBotTokenConfigured: Boolean(record?.telegramBotToken),
+    webSearchConfigured: Boolean(record?.tavilyApiKey),
     ownerUsername: record?.ownerUsername ?? null,
     ownerUserId: record?.ownerUserId ?? null,
     maintenanceModeEnabled: record?.maintenanceModeEnabled ?? false,
@@ -72,6 +73,15 @@ export async function listAvailableModels(db: DrizzleDb = getDb()): Promise<stri
  */
 export async function getTelegramBotToken(db: DrizzleDb = getDb()): Promise<string | null> {
   return (await getSettingsRecord(db))?.telegramBotToken ?? null;
+}
+
+/**
+ * Server-only: the stored Tavily API key, or null when unset. Read at call time
+ * by the web-search MCP tool so a key change takes effect without re-registering.
+ * Never exposed through an API or to clients.
+ */
+export async function getWebSearchApiKey(db: DrizzleDb = getDb()): Promise<string | null> {
+  return (await getSettingsRecord(db))?.tavilyApiKey ?? null;
 }
 
 /**
@@ -124,6 +134,9 @@ function toPatch(input: UpdateSettings): SettingsPatch {
   if (input.telegramBotToken !== undefined) {
     patch.telegramBotToken = input.telegramBotToken === "" ? null : input.telegramBotToken;
   }
+  if (input.tavilyApiKey !== undefined) {
+    patch.tavilyApiKey = input.tavilyApiKey === "" ? null : input.tavilyApiKey;
+  }
   if (input.maintenanceModeEnabled !== undefined) {
     patch.maintenanceModeEnabled = input.maintenanceModeEnabled;
   }
@@ -147,10 +160,11 @@ async function ownerPatch(
 
 /** Redact secrets before they reach trace storage. */
 function redact(input: UpdateSettings): Record<string, unknown> {
-  const { apiKey, telegramBotToken, ...rest } = input;
+  const { apiKey, telegramBotToken, tavilyApiKey, ...rest } = input;
   const out: Record<string, unknown> = { ...rest };
   if (apiKey !== undefined) out.apiKey = "«redacted»";
   if (telegramBotToken !== undefined) out.telegramBotToken = "«redacted»";
+  if (tavilyApiKey !== undefined) out.tavilyApiKey = "«redacted»";
   return out;
 }
 

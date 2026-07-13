@@ -97,6 +97,8 @@ export const settings = pgTable(
     }),
     /** Telegram Bot API token (from @BotFather). Secret — never returned in plaintext. */
     telegramBotToken: text("telegram_bot_token"),
+    /** Tavily API key for the web-search MCP tool. Secret — never returned in plaintext. */
+    tavilyApiKey: text("tavily_api_key"),
     /** Bot owner's Telegram @username (normalized: lowercase, no leading `@`). */
     ownerUsername: text("owner_username"),
     /**
