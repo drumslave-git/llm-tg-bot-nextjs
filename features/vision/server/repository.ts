@@ -23,6 +23,8 @@ export interface MediaRecord {
   fileUniqueId: string | null;
   mimeType: string | null;
   dataBase64: string | null;
+  /** Video/GIF frames (base64, chronological); null for a single still image. */
+  frames: string[] | null;
   visionHint: string | null;
   description: string | null;
   status: MediaStatus;
@@ -40,6 +42,8 @@ export interface InsertMedia {
   fileUniqueId?: string | null;
   mimeType?: string | null;
   dataBase64: string;
+  /** Video/GIF frame sequence (base64, chronological). Omit for a still image. */
+  frames?: string[] | null;
   visionHint?: string | null;
 }
 
@@ -53,6 +57,7 @@ function mapRow(row: MessageMediaRow): MediaRecord {
     fileUniqueId: row.fileUniqueId,
     mimeType: row.mimeType,
     dataBase64: row.dataBase64,
+    frames: row.framesBase64 ?? null,
     visionHint: row.visionHint,
     description: row.description,
     status: row.status as MediaStatus,
@@ -78,6 +83,7 @@ export async function insertMedia(db: DrizzleDb, values: InsertMedia): Promise<M
       fileUniqueId: values.fileUniqueId ?? null,
       mimeType: values.mimeType ?? "image/jpeg",
       dataBase64: values.dataBase64,
+      framesBase64: values.frames ?? null,
       visionHint: values.visionHint ?? null,
       status: "pending",
     })
@@ -148,7 +154,13 @@ export async function markDescribed(
 ): Promise<MediaRecord | null> {
   const [row] = await db
     .update(messageMedia)
-    .set({ description, dataBase64: null, status: "described", describedAt: new Date() })
+    .set({
+      description,
+      dataBase64: null,
+      framesBase64: null,
+      status: "described",
+      describedAt: new Date(),
+    })
     .where(and(eq(messageMedia.id, id), eq(messageMedia.status, "pending")))
     .returning();
   return row ? mapRow(row) : null;

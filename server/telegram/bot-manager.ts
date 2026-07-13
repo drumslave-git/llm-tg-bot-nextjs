@@ -29,7 +29,7 @@ import {
 } from "@/features/known-groups/server/service";
 import { getToolset } from "@/features/mcp-tools/server/service";
 import { findReplyMediaMessage, messageHasVisionMedia } from "@/features/vision/detect";
-import { mediaKindLabel, renderMediaSuffix, toImagePart } from "@/features/vision/format";
+import { mediaKindLabel, renderMediaSuffix, toVisionParts } from "@/features/vision/format";
 import {
   describeAndStore,
   getMediaAnnotationsForMessages,
@@ -309,7 +309,12 @@ async function onMessage(ctx: Context): Promise<void> {
           message,
         }).catch(() => null);
         if (ingested && ingested.images.length > 0) {
-          visionAttachment = { imageParts: ingested.images.map(toImagePart) };
+          // A video/GIF becomes an ordered, labelled frame sequence; the note
+          // explains the frames are one clip in order.
+          visionAttachment = {
+            imageParts: toVisionParts(ingested.images),
+            note: ingested.note ?? undefined,
+          };
           currentMediaIngested = true;
         }
       } else if (replyMedia) {
@@ -317,9 +322,10 @@ async function onMessage(ctx: Context): Promise<void> {
           () => null,
         );
         if (loaded && loaded.images.length > 0) {
+          const base = `The user is asking about the ${mediaKindLabel(loaded.kind)} they replied to (shown here).`;
           visionAttachment = {
-            imageParts: loaded.images.map(toImagePart),
-            note: `The user is asking about the ${mediaKindLabel(loaded.kind)} they replied to (shown here).`,
+            imageParts: toVisionParts(loaded.images),
+            note: loaded.note ? `${base} ${loaded.note}` : base,
           };
         }
       }

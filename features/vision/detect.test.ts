@@ -20,7 +20,15 @@ describe("detectMessageMedia", () => {
         ],
       }),
     );
-    expect(detected).toEqual({ kind: "photo", fileId: "big", fileUniqueId: "b", visionHint: null });
+    expect(detected).toEqual({
+      kind: "photo",
+      fileId: "big",
+      fileUniqueId: "b",
+      visionHint: null,
+      isVideo: false,
+      thumbnailFileId: null,
+      durationSec: null,
+    });
   });
 
   it("decodes a static sticker directly and hints its emoji/pack", () => {
@@ -72,10 +80,13 @@ describe("detectMessageMedia", () => {
       fileId: "doc",
       fileUniqueId: "d",
       visionHint: null,
+      isVideo: false,
+      thumbnailFileId: null,
+      durationSec: null,
     });
   });
 
-  it("decodes a real image/gif animation directly", () => {
+  it("samples frames from an image/gif animation (points at the real file)", () => {
     const detected = detectMessageMedia(
       msg({
         animation: {
@@ -85,13 +96,22 @@ describe("detectMessageMedia", () => {
           height: 240,
           duration: 2,
           mime_type: "image/gif",
+          thumbnail: { file_id: "gthumb", file_unique_id: "gt", width: 90, height: 60 },
         },
       }),
     );
-    expect(detected).toEqual({ kind: "animation", fileId: "gif", fileUniqueId: "g", visionHint: null });
+    expect(detected).toEqual({
+      kind: "animation",
+      fileId: "gif",
+      fileUniqueId: "g",
+      visionHint: null,
+      isVideo: true,
+      thumbnailFileId: "gthumb",
+      durationSec: 2,
+    });
   });
 
-  it("uses the frame thumbnail for an mp4 video", () => {
+  it("samples frames from an mp4 video, keeping the thumbnail as a fallback", () => {
     const detected = detectMessageMedia(
       msg({
         video: {
@@ -105,7 +125,35 @@ describe("detectMessageMedia", () => {
         },
       }),
     );
-    expect(detected).toEqual({ kind: "video", fileId: "frame", fileUniqueId: "f", visionHint: null });
+    expect(detected).toEqual({
+      kind: "video",
+      fileId: "vid",
+      fileUniqueId: "v",
+      visionHint: null,
+      isVideo: true,
+      thumbnailFileId: "frame",
+      durationSec: 5,
+    });
+  });
+
+  it("treats a video document (mime video/*) as frame-sampled video", () => {
+    const detected = detectMessageMedia(
+      msg({
+        document: {
+          file_id: "vdoc",
+          file_unique_id: "vd",
+          mime_type: "video/mp4",
+          thumbnail: { file_id: "vdthumb", file_unique_id: "vdt", width: 90, height: 60 },
+        },
+      }),
+    );
+    expect(detected).toMatchObject({
+      kind: "video",
+      fileId: "vdoc",
+      isVideo: true,
+      thumbnailFileId: "vdthumb",
+      durationSec: null,
+    });
   });
 
   it("ignores a non-image document (e.g. a PDF)", () => {

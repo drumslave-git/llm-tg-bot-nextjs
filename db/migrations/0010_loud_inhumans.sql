@@ -1,0 +1,1 @@
+ALTER TABLE "message_media" ADD COLUMN "frames_base64" jsonb;

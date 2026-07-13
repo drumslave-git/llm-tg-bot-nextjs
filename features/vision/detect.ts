@@ -4,13 +4,15 @@ import type { DetectedMedia, MediaKind } from "./types";
 
 /**
  * Pure detection of vision-capable media on a Telegram message. Decides *what*
- * file to download and how to hint the describer — the actual download lives in
- * the server-only telegram-files module. Client-safe (only `@grammyjs/types`,
+ * file to read and how to hint the describer — the actual download and frame
+ * extraction live in the server-only modules. Client-safe (only `@grammyjs/types`,
  * which are types).
  *
- * Precedence mirrors the MVP: a real image (photo / image document / gif) is
- * decoded directly; animations, videos, and animated/video stickers are read
- * from Telegram's single-frame JPEG thumbnail (the file itself is not an image).
+ * Precedence mirrors the MVP, with one change: a video/GIF (`animation`/`video`,
+ * which Telegram delivers as mp4) now points at the **actual media file** so the
+ * server can sample frames with ffmpeg. Telegram's single-frame thumbnail is kept
+ * as a fallback for when frame extraction is unavailable. Photos, image documents,
+ * and static stickers are still decoded directly as still images.
  */
 
 /** A short describe hint for a sticker: its emoji and pack name when present. */
@@ -21,23 +23,21 @@ function stickerHint(sticker: Sticker): string | null {
   return parts.length > 0 ? parts.join(". ") : null;
 }
 
-/** Thumbnail file id of a document that is really a video/gif (not a PDF etc.). */
-function videoLikeDocumentThumbId(document: Document): string | undefined {
-  if (!document.thumbnail) return undefined;
+/** True for a document that is really a video/gif (not a PDF etc.). */
+function isVideoLikeDocument(document: Document): boolean {
   const mime = document.mime_type ?? "";
-  if (mime.startsWith("video/") || mime === "image/gif") return document.thumbnail.file_id;
-  return undefined;
+  return mime.startsWith("video/") || mime === "image/gif";
 }
 
 /**
  * The vision-capable media on a message, or null when there is none. Returns the
- * concrete `file_id` to download (already resolved to a thumbnail for non-image
- * media) plus a describe hint for stickers.
+ * concrete `file_id` to read plus, for video/GIF media, the flag + thumbnail +
+ * duration the server needs to sample frames.
  */
 export function detectMessageMedia(message: Message): DetectedMedia | null {
   if (message.photo?.length) {
     const photo = message.photo[message.photo.length - 1];
-    return payload("photo", photo.file_id, photo.file_unique_id, null);
+    return image("photo", photo.file_id, photo.file_unique_id, null);
   }
 
   if (message.sticker) {
@@ -48,44 +48,61 @@ export function detectMessageMedia(message: Message): DetectedMedia | null {
     const fileId = animated ? sticker.thumbnail?.file_id : sticker.file_id;
     const fileUniqueId = animated ? sticker.thumbnail?.file_unique_id : sticker.file_unique_id;
     if (!fileId) return null;
-    return payload("sticker", fileId, fileUniqueId ?? null, stickerHint(sticker));
+    return image("sticker", fileId, fileUniqueId ?? null, stickerHint(sticker));
   }
 
-  if (message.document?.mime_type?.startsWith("image/")) {
+  if (message.document?.mime_type?.startsWith("image/") && message.document.mime_type !== "image/gif") {
     const doc = message.document;
-    return payload("image_document", doc.file_id, doc.file_unique_id, null);
+    return image("image_document", doc.file_id, doc.file_unique_id, null);
   }
 
   const animated = message.animation ?? message.video;
   if (animated) {
     const kind: MediaKind = message.animation ? "animation" : "video";
-    // A true image/gif animation decodes directly; anything else uses the frame.
-    if (animated.mime_type === "image/gif") {
-      return payload(kind, animated.file_id, animated.file_unique_id, null);
-    }
-    if (animated.thumbnail) {
-      return payload(kind, animated.thumbnail.file_id, animated.thumbnail.file_unique_id, null);
-    }
-    return null;
+    return video(kind, animated.file_id, animated.file_unique_id, {
+      thumbnailFileId: animated.thumbnail?.file_id ?? null,
+      durationSec: animated.duration ?? null,
+    });
   }
 
-  if (message.document) {
-    const thumbId = videoLikeDocumentThumbId(message.document);
-    if (thumbId) {
-      return payload("video", thumbId, message.document.thumbnail?.file_unique_id ?? null, null);
-    }
+  if (message.document && isVideoLikeDocument(message.document)) {
+    const doc = message.document;
+    const kind: MediaKind = doc.mime_type === "image/gif" ? "animation" : "video";
+    return video(kind, doc.file_id, doc.file_unique_id, {
+      thumbnailFileId: doc.thumbnail?.file_id ?? null,
+      durationSec: null,
+    });
   }
 
   return null;
 }
 
-function payload(
+/** A still image: decoded directly, no frame extraction. */
+function image(
   kind: MediaKind,
   fileId: string,
   fileUniqueId: string | null,
   visionHint: string | null,
 ): DetectedMedia {
-  return { kind, fileId, fileUniqueId, visionHint };
+  return { kind, fileId, fileUniqueId, visionHint, isVideo: false, thumbnailFileId: null, durationSec: null };
+}
+
+/** A video/GIF: the server samples frames from `fileId` (thumbnail as fallback). */
+function video(
+  kind: MediaKind,
+  fileId: string,
+  fileUniqueId: string | null,
+  opts: { thumbnailFileId: string | null; durationSec: number | null },
+): DetectedMedia {
+  return {
+    kind,
+    fileId,
+    fileUniqueId,
+    visionHint: null,
+    isVideo: true,
+    thumbnailFileId: opts.thumbnailFileId,
+    durationSec: opts.durationSec,
+  };
 }
 
 /** Whether a message carries any vision-capable media. */

@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { buildVisionContent, mediaKindLabel, renderMediaSuffix, toImagePart } from "./format";
+import {
+  buildVisionContent,
+  frameSequenceHint,
+  mediaKindLabel,
+  renderMediaSuffix,
+  toImagePart,
+  toVisionParts,
+} from "./format";
 import type { MediaAnnotation } from "./types";
 
 describe("mediaKindLabel", () => {
@@ -37,17 +44,50 @@ describe("toImagePart / buildVisionContent", () => {
     });
   });
 
-  it("puts the text first, then one part per image", () => {
-    const content = buildVisionContent("what is this?", [
-      { base64: "A", mimeHint: "image/jpeg" },
-      { base64: "B", mimeHint: "image/jpeg" },
-    ]);
+  it("puts the text first, then the image part for a single image", () => {
+    const content = buildVisionContent("what is this?", [{ base64: "A", mimeHint: "image/jpeg" }]);
     expect(content[0]).toEqual({ type: "text", text: "what is this?" });
-    expect(content).toHaveLength(3);
+    expect(content).toHaveLength(2);
+    expect(content[1]).toEqual({ type: "image_url", image_url: { url: "data:image/jpeg;base64,A" } });
   });
 
   it("stands in a default instruction when there is no text", () => {
     const content = buildVisionContent("   ", [{ base64: "A", mimeHint: "image/jpeg" }]);
     expect(content[0]).toEqual({ type: "text", text: "Respond to this image." });
+  });
+});
+
+describe("toVisionParts (ordered frame sequence)", () => {
+  it("returns a single unlabeled image part for one image", () => {
+    const parts = toVisionParts([{ base64: "A", mimeHint: "image/jpeg" }]);
+    expect(parts).toEqual([{ type: "image_url", image_url: { url: "data:image/jpeg;base64,A" } }]);
+  });
+
+  it("labels and interleaves each frame for a sequence", () => {
+    const parts = toVisionParts([
+      { base64: "A", mimeHint: "image/jpeg" },
+      { base64: "B", mimeHint: "image/jpeg" },
+      { base64: "C", mimeHint: "image/jpeg" },
+    ]);
+    // [Frame 1 of 3:, imgA, Frame 2 of 3:, imgB, Frame 3 of 3:, imgC]
+    expect(parts).toHaveLength(6);
+    expect(parts[0]).toEqual({ type: "text", text: "Frame 1 of 3:" });
+    expect(parts[1]).toEqual({ type: "image_url", image_url: { url: "data:image/jpeg;base64,A" } });
+    expect(parts[4]).toEqual({ type: "text", text: "Frame 3 of 3:" });
+  });
+});
+
+describe("frameSequenceHint", () => {
+  it("describes a single frame plainly", () => {
+    expect(frameSequenceHint("video", 1)).toContain("still frame");
+    expect(frameSequenceHint("animation", 1)).toContain("GIF");
+  });
+
+  it("tells the model a multi-frame set is one ordered clip, not separate images", () => {
+    const hint = frameSequenceHint("video", 10);
+    expect(hint).toContain("10 images");
+    expect(hint).toContain("chronological order");
+    expect(hint).toMatch(/NOT|not separate/);
+    expect(frameSequenceHint("animation", 4)).toContain("GIF");
   });
 });

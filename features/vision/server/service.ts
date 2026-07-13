@@ -10,8 +10,10 @@ import { publishEvent } from "@/server/realtime/hub";
 import { startTrace } from "@/server/trace";
 
 import { detectMessageMedia } from "../detect";
-import type { ImagePayload, MediaAnnotation, MediaKind, MediaView } from "../types";
+import { frameSequenceHint } from "../format";
+import type { DetectedMedia, ImagePayload, MediaAnnotation, MediaKind, MediaView } from "../types";
 import { buildDescribeMessages } from "./describe";
+import { VIDEO_FRAME_COUNT, extractVideoFrames } from "./frames";
 import { normalizeImageForChat } from "./normalize";
 import {
   countPendingMedia,
@@ -53,6 +55,69 @@ async function loadImage(token: string, fileId: string): Promise<ImagePayload | 
 }
 
 /**
+ * The loadable image(s) for a detected media, plus the describe `hint` stored on
+ * the row and the reply `note` shown to the model this turn. A still image is one
+ * image; a video/GIF is the ordered sequence of frames sampled with ffmpeg (the
+ * Telegram single-frame thumbnail is the fallback when extraction is
+ * unavailable). Best-effort — resolves null when nothing can be read.
+ */
+interface LoadedMedia {
+  images: ImagePayload[];
+  /** Stored on the row + fed to the describe pass (sticker emoji / frame-sequence note). */
+  hint: string | null;
+  /** Injected into the current reply turn so the model reads it in context (video/GIF only). */
+  note: string | null;
+}
+
+/** Sample a video/GIF into an ordered sequence of normalized frames, or null on failure. */
+async function loadVideoFrames(
+  token: string,
+  detected: DetectedMedia,
+): Promise<LoadedMedia | null> {
+  const raw = await downloadTelegramFile(token, detected.fileId);
+  if (!raw) return null;
+  const input = Buffer.from(raw.base64, "base64");
+  const frames = await extractVideoFrames(input, {
+    count: VIDEO_FRAME_COUNT,
+    durationSec: detected.durationSec,
+  });
+  if (frames.length === 0) return null;
+  // Normalize each frame to a bounded JPEG so it is sent full-resolution.
+  const images = await Promise.all(
+    frames.map((frame) => normalizeImageForChat(frame.toString("base64"))),
+  );
+  const kind = detected.kind === "animation" ? "animation" : "video";
+  const hint = frameSequenceHint(kind, images.length);
+  return { images, hint, note: hint };
+}
+
+/** Resolve a detected media to loadable images + hints. Best-effort — null on failure. */
+async function loadDetectedMedia(
+  token: string,
+  detected: DetectedMedia,
+): Promise<LoadedMedia | null> {
+  if (!detected.isVideo) {
+    const image = await loadImage(token, detected.fileId);
+    return image ? { images: [image], hint: detected.visionHint, note: null } : null;
+  }
+
+  // Video/GIF: sample frames with ffmpeg; on any failure fall back to the
+  // Telegram single-frame thumbnail so the media is still recognized.
+  const sequence = await loadVideoFrames(token, detected).catch(() => null);
+  if (sequence) return sequence;
+
+  if (detected.thumbnailFileId) {
+    const thumb = await loadImage(token, detected.thumbnailFileId);
+    if (thumb) {
+      const kind = detected.kind === "animation" ? "animation" : "video";
+      const hint = frameSequenceHint(kind, 1);
+      return { images: [thumb], hint, note: hint };
+    }
+  }
+  return null;
+}
+
+/**
  * Ingest media on an incoming message: download, normalize, and store a pending
  * row. Returns the normalized image(s) for immediate use in the reply pass and
  * the stored record (or null when the message has no media). Best-effort:
@@ -62,12 +127,12 @@ async function loadImage(token: string, fileId: string): Promise<ImagePayload | 
 export async function ingestMessageMedia(
   params: { token: string; chatId: string; telegramMessageId: number; message: Message },
   db: DrizzleDb = getDb(),
-): Promise<{ images: ImagePayload[]; kind: MediaKind } | null> {
+): Promise<{ images: ImagePayload[]; kind: MediaKind; note: string | null } | null> {
   const detected = detectMessageMedia(params.message);
   if (!detected) return null;
 
-  const image = await loadImage(params.token, detected.fileId);
-  if (!image) {
+  const loaded = await loadDetectedMedia(params.token, detected);
+  if (!loaded) {
     await insertUnavailableMedia(db, {
       id: crypto.randomUUID(),
       chatId: params.chatId,
@@ -81,6 +146,9 @@ export async function ingestMessageMedia(
     return null;
   }
 
+  // A still image stores its single base64; a video/GIF stores the whole frame
+  // sequence (with the first frame in `data_base64` for the dashboard preview).
+  const isSequence = loaded.images.length > 1;
   await insertMedia(db, {
     id: crypto.randomUUID(),
     chatId: params.chatId,
@@ -88,13 +156,14 @@ export async function ingestMessageMedia(
     kind: detected.kind,
     fileId: detected.fileId,
     fileUniqueId: detected.fileUniqueId,
-    mimeType: image.mimeHint,
-    dataBase64: image.base64,
-    visionHint: detected.visionHint,
+    mimeType: loaded.images[0].mimeHint,
+    dataBase64: loaded.images[0].base64,
+    frames: isSequence ? loaded.images.map((image) => image.base64) : null,
+    visionHint: loaded.hint,
   }).catch(() => null);
   publishEvent(FEATURE.realtimeTopic);
 
-  return { images: [image], kind: detected.kind };
+  return { images: loaded.images, kind: detected.kind, note: loaded.note };
 }
 
 /**
@@ -106,19 +175,34 @@ export async function ingestMessageMedia(
 export async function loadReplyTargetImages(
   params: { token: string; chatId: string; message: Message },
   db: DrizzleDb = getDb(),
-): Promise<{ images: ImagePayload[]; kind: MediaKind } | null> {
+): Promise<{ images: ImagePayload[]; kind: MediaKind; note: string | null } | null> {
   const detected = detectMessageMedia(params.message);
   if (!detected) return null;
 
+  // Reuse the stored image(s) — a photo, or a video's full frame sequence — when
+  // present, so a reply to old media needs no re-download or re-extraction.
   const stored = await getMediaByMessage(db, params.chatId, params.message.message_id).catch(
     () => null,
   );
-  if (stored?.dataBase64) {
-    return { images: [{ base64: stored.dataBase64, mimeHint: stored.mimeType ?? "image/jpeg" }], kind: detected.kind };
+  const storedImages = storedMediaImages(stored);
+  if (storedImages) {
+    return { images: storedImages, kind: detected.kind, note: stored?.visionHint ?? null };
   }
 
-  const image = await loadImage(params.token, detected.fileId);
-  return image ? { images: [image], kind: detected.kind } : null;
+  const loaded = await loadDetectedMedia(params.token, detected);
+  return loaded ? { images: loaded.images, kind: detected.kind, note: loaded.note } : null;
+}
+
+/** The stored image sequence for a media row (frames for a video, else the single image). */
+function storedMediaImages(media: MediaRecord | null): ImagePayload[] | null {
+  if (!media) return null;
+  if (media.frames && media.frames.length > 0) {
+    return media.frames.map((base64) => ({ base64, mimeHint: "image/jpeg" }));
+  }
+  if (media.dataBase64) {
+    return [{ base64: media.dataBase64, mimeHint: media.mimeType ?? "image/jpeg" }];
+  }
+  return null;
 }
 
 /** Collaborators for the describe pass; injected so it is unit-testable. */
@@ -152,14 +236,14 @@ export async function describeAndStore(
   );
   try {
     const media = await getMediaByMessage(db, params.chatId, params.telegramMessageId);
-    if (!media || media.status !== "pending" || !media.dataBase64) {
+    const images = media?.status === "pending" ? storedMediaImages(media) : null;
+    if (!media || !images) {
       await trace.skip("no pending media to describe");
       return null;
     }
 
-    const images: ImagePayload[] = [
-      { base64: media.dataBase64, mimeHint: media.mimeType ?? "image/jpeg" },
-    ];
+    // A video/GIF describes from its ordered frame sequence; a still image from
+    // its single frame. The hint tells the model the frames are one clip in order.
     const messages = buildDescribeMessages(images, media.visionHint);
     await trace.event({
       type: "llm_request",

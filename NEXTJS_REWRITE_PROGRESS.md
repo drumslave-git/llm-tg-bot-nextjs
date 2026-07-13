@@ -15,7 +15,7 @@ Status values:
 Status: in-progress
 Owner: agent/2026-07-13
 Last updated: 2026-07-13
-Proof: `npm run lint` ✓, `npm run typecheck` ✓, `npm run test` ✓ (208 unit), `npm run test:integration` ✓ (93, real Postgres via Testcontainers). `npm run build` not run this session — a dev server is live on 3200 and a production build would clobber it (see the Priority 6 log entry). **Priority 2 — system & personality prompts (done):** the base system prompt is a fixed code constant (`BASE_SYSTEM_PROMPT` in `features/bot-messaging/server/prompt.ts`); the operator manages personas as a **full personalities CRUD feature** (user decision — corrected from an initial single-field approach). A `personalities` table (migration `0005`: id/name/prompt/timestamps) + `settings.active_personality_id` (FK, `on delete set null`). New `features/personalities/*` (repository/schema/service/ui) with a **`/personalities` page** (create/edit/delete + set-active) and **`/personalities/debug`**; routes `GET/POST /api/personalities`, `PATCH/DELETE /api/personalities/[id]`, `PUT /api/personalities/active`; every mutation traced. Composition (`buildSystemPrompt`/`hasPersonality`, pure) is unchanged: base alone, or base + `---\nAdditional instructions:\n<persona>`; the bot-messaging service records a **`system prompt composed`** step (`personalityApplied` + full composed prompt) between `addressing check` and `request`; the runtime injects the **active** personality's prompt via `getActivePersonalityPrompt()`. Verified live: created a persona on `/personalities`, set it active (Active badge + `activeId` via API), deleted it (list emptied and active auto-cleared via the FK), all four mutations traced `success` on `/personalities/debug`; no console errors. **Known users + owner-by-dropdown**: a `known_users` table (migration `0004`) capturing everyone who messages the bot, a `/users` page with inline alias editing, and the owner is now chosen from a **dropdown of known users** (id stored directly — the earlier lazy @username→id resolution is removed). **Maintenance mode + owner checks** built and verified live (a pure `bot-messaging/policy.ts`; blocked-but-addressed messages traced as skipped). The **shared Debug UI** is now built and verified live — the last feature-contract gap for both `settings` and priority-1 `bot-messaging`. A global `/debug` page (filter by feature/status, pagination, "Download all") plus a shared `/debug/[id]` detail view (metadata panel, error panel, ordered event timeline with LLM usage, per-trace JSON download) and a feature-scoped `/settings/debug`. Backed by `server/trace/service.ts` (list/detail/bundle) over the existing recorder/repository, thin `app/api/traces/**` handlers, and reusable `components/debug/*`. Verified live against the running dev server on real recorded traces: list renders 11 traces; a bot reply detail shows LLM usage (`prompt 38 · completion 184 · total 222 · 5741ms`); an error trace shows the error panel + timeline; `/settings/debug` shows only settings traces; single + filtered bundle downloads return the `llm-tg-bot/trace-bundle@1` envelope with attachment headers; no console errors.
+Proof: `npm run lint` ✓, `npm run typecheck` ✓, `npm run test` ✓ (213 unit), `npm run test:integration` ✓ (94, real Postgres via Testcontainers). `npm run build` not run this session — a dev server is live on 3200 and a production build would clobber it (see the Priority 6 log entry). **Priority 2 — system & personality prompts (done):** the base system prompt is a fixed code constant (`BASE_SYSTEM_PROMPT` in `features/bot-messaging/server/prompt.ts`); the operator manages personas as a **full personalities CRUD feature** (user decision — corrected from an initial single-field approach). A `personalities` table (migration `0005`: id/name/prompt/timestamps) + `settings.active_personality_id` (FK, `on delete set null`). New `features/personalities/*` (repository/schema/service/ui) with a **`/personalities` page** (create/edit/delete + set-active) and **`/personalities/debug`**; routes `GET/POST /api/personalities`, `PATCH/DELETE /api/personalities/[id]`, `PUT /api/personalities/active`; every mutation traced. Composition (`buildSystemPrompt`/`hasPersonality`, pure) is unchanged: base alone, or base + `---\nAdditional instructions:\n<persona>`; the bot-messaging service records a **`system prompt composed`** step (`personalityApplied` + full composed prompt) between `addressing check` and `request`; the runtime injects the **active** personality's prompt via `getActivePersonalityPrompt()`. Verified live: created a persona on `/personalities`, set it active (Active badge + `activeId` via API), deleted it (list emptied and active auto-cleared via the FK), all four mutations traced `success` on `/personalities/debug`; no console errors. **Known users + owner-by-dropdown**: a `known_users` table (migration `0004`) capturing everyone who messages the bot, a `/users` page with inline alias editing, and the owner is now chosen from a **dropdown of known users** (id stored directly — the earlier lazy @username→id resolution is removed). **Maintenance mode + owner checks** built and verified live (a pure `bot-messaging/policy.ts`; blocked-but-addressed messages traced as skipped). The **shared Debug UI** is now built and verified live — the last feature-contract gap for both `settings` and priority-1 `bot-messaging`. A global `/debug` page (filter by feature/status, pagination, "Download all") plus a shared `/debug/[id]` detail view (metadata panel, error panel, ordered event timeline with LLM usage, per-trace JSON download) and a feature-scoped `/settings/debug`. Backed by `server/trace/service.ts` (list/detail/bundle) over the existing recorder/repository, thin `app/api/traces/**` handlers, and reusable `components/debug/*`. Verified live against the running dev server on real recorded traces: list renders 11 traces; a bot reply detail shows LLM usage (`prompt 38 · completion 184 · total 222 · 5741ms`); an error trace shows the error panel + timeline; `/settings/debug` shows only settings traces; single + filtered bundle downloads return the `llm-tg-bot/trace-bundle@1` envelope with attachment headers; no console errors.
 Realtime: the dashboard now updates **live over SSE** (user decision — not polling/WebSockets). Shared layer: in-process `server/realtime/hub.ts` pub/sub, `GET /api/events` SSE stream, `useLiveRefresh`/`LiveIndicator` client; the trace recorder publishes on create/settle. Verified live: with the page untouched, a newly recorded `test-connection` trace appeared at the top of `/debug` on its own; the `/api/events` stream stays open (200); no console errors. Debug rows are now fully clickable (stretched link) — clicking any cell opens the trace.
 **Priority 3 — History feature (done):** a **1:1 conversation mirror** (`chat_messages`, migration `0006`) capturing every human message and every bot reply with full metadata (chat id, Telegram message id, sender id, reply-to pointer, content, sent/edited/deleted timestamps). New `features/history/*` (repository/schema/format/service/ui). Messages are captured **passively** on every incoming message (even un-addressed group chatter) in `bot-manager.onMessage`; the delivered reply is mirrored via a `recordReply` dep. Per reply, `getConversationWindow` loads the **current UTC day's** messages and injects them as **structured prior turns** (`user`/`assistant`) between the cache-stable system prompt and the current message — the bot-messaging service records a `history window loaded` step. In groups, human turns are prefixed with the sender's known-user label. **Edits** are mirrored (`bot.on("edited_message")` → `applyMessageEdit`, traced). **Deletes:** the Telegram Bot API delivers no deletion update for ordinary chats, so user-initiated deletes cannot be mirrored — a `deleted_at` column exists to represent deletions we *can* know about (bot's own / Business-connection events) and the constraint is recorded in Decision Notes. Pages: `/history` (chat list), `/history/[chatId]` (full mirror with edited/deleted badges), `/history/debug` (shared `TraceExplorer`, edit traces). Verified live: seeded two chats → `/history` lists both (most-recent first, correct counts), `/history/777` shows the metadata mirror incl. reply pointer + an `edited` badge, `/history/debug` renders; no console errors; dev DB left clean. Base system prompt gained a short Conversation section (history-awareness).
 **Priority 4 — MCP tools basic support (done):** tools use the **real MCP SDK** (`@modelcontextprotocol/sdk`, in-process — user decision, MVP parity): one shared `McpServer` with per-feature tool registrars, linked to a `Client` over an in-process transport pair (`server/mcp/*`: `in-process-transport`, `registry` `BotMcpRegistry`, `openai-tools` conversion, `context` per-turn `AsyncLocalStorage` chat binding, `runtime` `globalThis` singleton). A **bounded, stall-guarded tool-call loop** (`server/llm/tool-loop.ts` — pure `runToolLoop` core + `chatCompletionWithTools`) appends tool results to the same `messages` array the history window feeds, so a reply that needs no tool is still a single cache-friendly inference. The **first history MCP tools** ship (user decision): `history_search` + `history_get_in_range` (`features/history/server/mcp-tools.ts`) — deeper-than-today lookups scoped to the current chat via the tool context (the model never passes a chat id). **All registered tools are always available** — there is **no per-tool on/off** (user decision, follow-up 8): the runtime always offers every registered tool via `getToolset()`. The **`/tools` page** is a read-only registry listing (grouped by feature); `GET /api/tools`. Tool **calls** are recorded as full `external_call` events on the bot-messaging **reply** trace (args + result), so they show in `/debug` — the MCP-tools feature owns no traces of its own, so it has no dedicated Debug page. Verified via the test suite (the `getToolsView`/`getToolset` unit test drives the real in-process registry end to end) + typecheck/build; an earlier live check confirmed the page renders and traces record before the on/off mechanism was removed. The remaining feature-1..4 gate is an operator-run live LLM+token round-trip.
@@ -29,6 +29,105 @@ Realtime: the dashboard now updates **live over SSE** (user decision — not pol
 Next: **Priority 9 — Mood feature** (mood/personality state + injection into replies, dashboard controls, debug traces) — builds on the personalities table (priority 2) and, for any mood-cooldown background work, reuses the shared in-process idle-scheduler model established here. The shared feature-1..8 gate is an operator-run live test with a real bot token + a dev-server restart (do not create credentials).
 
 ### Session log
+
+- 2026-07-14 (Priority 7 follow-up): **Video/GIF frames sent as an ordered
+  sequence of separate images, replacing the contact-sheet montage** (user: "it
+  have to be sequence of images, model have to vision in order and also be
+  explained that they are not detached random images - but sequence"; also settled
+  earlier this session: always 10 frames, evenly across the whole clip).
+  - **Change:** dropped the single tiled contact-sheet image. Each sampled frame is
+    now normalized on its own and the model receives them as **separate, ordered,
+    labelled images**. `format.ts` gained `toVisionParts` (interleaves
+    `Frame k of n:` text parts before each image for length > 1; a single image is
+    unlabelled) and `frameSequenceHint` (explicit "these are consecutive frames of
+    one clip in chronological order — NOT separate/unrelated images"); moved off
+    `frames.ts` (`composeContactSheet`/`contactSheetHint` and the montage constants
+    removed). `buildVisionContent` now routes through `toVisionParts`, so both the
+    describe pass and (via `bot-manager` → `toVisionParts`) the live reply turn get
+    the labelled sequence + preface.
+  - **Storage (migration `0010`):** new `message_media.frames_base64 jsonb` holding
+    the chronological frame array; `data_base64` keeps the first frame for the
+    `/vision` preview. `insertMedia`/`markDescribed`/`mapRow` + `MediaRecord`/
+    `InsertMedia` updated; a shared `storedMediaImages` rebuilds the `ImagePayload[]`
+    sequence for `describeAndStore` and `loadReplyTargetImages` (frames when present,
+    else the single image). Both byte fields dropped on describe.
+  - **Service:** `loadVideoContactSheet` → `loadVideoFrames` (normalizes every frame,
+    returns the full `ImagePayload[]` sequence + the sequence hint). Thumbnail
+    fallback unchanged (one frame). Cost accepted: up to 10 image inputs per clip.
+  - **Tests:** `format.test.ts` gained `toVisionParts` (single vs interleaved-labelled)
+    + `frameSequenceHint` cases and an updated single-image `buildVisionContent`
+    assertion; deleted `frames.test.ts` (its montage/contact-sheet-hint targets are
+    gone). Vision integration gained a **video-sequence** case: a row with
+    `frames:["F1","F2","F3"]` → `describeAndStore` sends 3 separate image parts with
+    a `Frame 1 of 3:` label and drops both `data_base64` and `frames_base64` on
+    success. → **213 unit**, vision integration **8** (+ backfill 7).
+  - **Verified live** (dev server on 3200, migration `0010` applied): `/vision` still
+    renders (Backfill card + gallery); typecheck/lint clean. **Not verified live:** a
+    real Telegram video → 10-image sequence → reply — operator gate (bot token +
+    poller restart). An older row still shows its pre-change montage description text
+    (historical data); new videos use the sequence.
+  - Checks: lint ✓, typecheck ✓, unit 213 ✓, vision + backfill integration ✓ (15).
+    `db:generate`/`db:migrate` ✓ (`0010_loud_inhumans`). `build` not run (dev server
+    live — `dont-clobber-running-dev-server`).
+
+- 2026-07-13 (Priority 7 follow-up): **Gifs and videos now read via ffmpeg frame
+  sampling (contact sheet), not the Telegram thumbnail** (user: "vision has to also
+  cover gifs and vids — first frame", then: "system ffmpeg, and lets make it
+  extract max 10 frames per media (depends on the length), not only 1").
+  - **Problem:** Telegram delivers gifs and videos as **mp4**, which sharp cannot
+    decode, so the previous code fed the model Telegram's low-res single-frame
+    **thumbnail** — not the actual content, and never multi-frame.
+  - **Decisions (user):** system `ffmpeg` binary (over bundled `ffmpeg-static` /
+    WASM); sample **up to 10 frames scaled by length**, not just one. Recorded in
+    Decision Notes.
+  - **Design:** frames are sampled **evenly across the whole clip** with ffmpeg
+    (`fps=count/duration` → one frame per equal slice, not the opening frames),
+    `frameCountForDuration` ≈ 1 frame / **10s** clamped 1–10 (a 70s clip → 7 frames
+    ~10s apart; a long clip → 10 frames across its full length), and tiled into
+    **one labelled contact-sheet image** (sharp grid, ≤5 cols, 1024px longest edge)
+    — so the whole
+    vision pipeline stays single-image (no schema change; storage/preview/describe/
+    backfill unchanged) and costs one image input per clip. A `contactSheetHint`
+    tells the model (describe pass + live reply `note`) that it's ordered frames.
+    Telegram's thumbnail is the **fallback** when ffmpeg is unavailable/fails.
+  - **New** `features/vision/server/frames.ts` (`frameCountForDuration`,
+    `extractVideoFrames` — temp-dir + spawn `ffmpeg`, 60s timeout, always cleans up;
+    `composeContactSheet` — square-cell sharp grid; `contactSheetHint`;
+    `CONTACT_SHEET_MAX_DIMENSION`). **Changed:** `detect.ts` — video/animation (and
+    video documents) now point at the **real media file** with `isVideo` +
+    `thumbnailFileId` + `durationSec` (new `DetectedMedia` fields), dropping the
+    thumbnail-as-primary and the `image/gif`-direct special case (all video/GIF go
+    through ffmpeg); `service.ts` — new shared `loadDetectedMedia`/
+    `loadVideoContactSheet` used by both `ingestMessageMedia` and
+    `loadReplyTargetImages` (both now also return a `note`); `bot-manager.ts` passes
+    the contact-sheet note into the reply turn. Uniform single-image storage: a clip
+    stores its sheet in `data_base64` like a photo, so backfill re-describes with no
+    re-download.
+  - **Tests:** unit `frames.test.ts` (+7: frame-count scaling/clamp, hint wording
+    single vs sequence, montage geometry 1/4/6 frames via real sharp),
+    `detect.test.ts` updated + `video document` case (+8 net) → **216 unit**. The
+    real ffmpeg path (generate a 9s testsrc video → sample 3 frames → compose a
+    valid JPEG sheet) was verified with a throwaway probe test, then removed to keep
+    the unit suite ffmpeg-independent/fast.
+  - **Verified live** (dev server on 3200): `/vision` still renders (Backfill card +
+    gallery), no console errors, after the service refactor. **Not verified live:** a
+    real Telegram video/gif → contact sheet → reply — needs a real bot token + a
+    poller restart (boot-bound singleton), same operator gate.
+  - **Follow-up (sampling policy, user):** "not the first frames — take them from
+    parts", then "always 10 frames". The `fps=count/duration` extraction already
+    spread frames across the whole clip; the count is now a flat
+    `VIDEO_FRAME_COUNT = 10` (dropped the duration-scaled `frameCountForDuration`).
+    Added an **ffprobe duration fallback** in `extractVideoFrames` so a clip with no
+    Telegram-provided duration (video document) is still spread across its full
+    length rather than grabbing the leading frames. Verified with a throwaway probe
+    (70s testsrc → 10 frames both with a supplied duration and via the ffprobe
+    fallback), then removed.
+  - **Docker (done):** the runner stage `apk add --no-cache ffmpeg` (verified
+    `ffmpeg 8.1.2` installs on `node:22-alpine`; the package also provides ffprobe).
+    sharp ships its own musl libvips binary via npm. Playwright's Chromium remains
+    the separate deferred Phase-11 native-dep item.
+  - Checks: lint ✓ (0 warnings), typecheck ✓, unit 214 ✓, vision + backfill
+    integration ✓ (14). `build` not run (dev server live — `dont-clobber-running-dev-server`).
 
 - 2026-07-13: **Priority 8 — Vision backfill background job (done).** Background
   captioning of the media rows left `status='pending'` (unaddressed / group
@@ -1352,6 +1451,7 @@ writing `docs/decisions/*.md`. This table is the lightweight record.
 | Vision media persistence (priority 7) | done | user | **Persist media now, as base64.** On ingestion every media message's normalized JPEG is stored in `message_media` (`data_base64`, `status=pending`). Media **on the answered message** is described immediately and **resaved replacing the base64 with the text description** (`status=described`, bytes dropped) — keeps long-term history token-light. **Other media** (unaddressed/group chatter) stays `pending` for the **backfill job (priority 8)**. `VISION_MAX_DIMENSION=768` is a code constant, not a setting. |
 | Vision describe timing (priority 7) | done | user | The answered turn's image is read by the **main reply pass** (immediate recognition, no separate call for the answer), then a **separate describe pass** captions it to text for history and drops the bytes. The MVP deferred ALL captioning to an idle backfill scheduler; here the current turn is captioned immediately so the next turn's transcript carries a description. |
 | Image bytes in traces (priority 7) | done | agent | Inline base64 image data URLs are **redacted in trace bodies** (`sanitizeMessagesForTrace` → `data:<mime>;base64,<N bytes>`) — a deliberate exception to the full-raw-bodies rule (memory `debug-show-full-raw-bodies`) for binary blobs: a ~1 MB base64 per image would bloat the trace jsonb and make the Debug JSON unreadable. The actual image is shown on the `/vision` page (better UX than a base64 wall). All readable content (roles, text, structure) is kept verbatim. |
+| Video/GIF frame sampling (priority 7 follow-up) | done | user | Gifs and videos (Telegram delivers both as mp4, which sharp can't decode) are read by sampling frames with the **system `ffmpeg` binary** (chosen over bundled `ffmpeg-static` / WASM — smallest image; `apk add --no-cache ffmpeg` in the Docker runner stage, **done**). **Always 10 frames**, sampled **evenly across the whole clip, not the opening frames** (ffmpeg `fps=count/duration`; when Telegram gives no duration — a video sent as a document — it is **probed with ffprobe** so frames still span the full clip). **The frames are sent to the model as an ordered sequence of separate full-resolution images, NOT a contact-sheet montage** (user: "sequence of images, model has to vision in order and be told they are a sequence, not detached random images" — the montage approach was tried and replaced). Each frame is normalized individually; `format.toVisionParts` interleaves `Frame k of n:` labels before each image and `format.frameSequenceHint` prefaces them with an explicit "these are consecutive frames of one clip in chronological order, not separate images" instruction (used in both the live reply turn and the describe pass). Storage: `message_media.frames_base64 jsonb` (migration `0010`) holds the frame array (`data_base64` keeps the first frame for the `/vision` preview); both are dropped on describe. Telegram's single-frame thumbnail is the **fallback** when ffmpeg is unavailable/fails. Frames are extracted at ingestion, so backfill re-describes from the stored sequence with no re-download. Cost accepted: up to 10 image inputs per clip. |
 | Background job operating model | done | user | **In-process scheduler started from `instrumentation.ts`**, same lifecycle as the existing bot-manager / MCP registry / Playwright / realtime-hub `globalThis` singletons — chosen over external cron→Route Handler, a separate worker, or on-demand-only. Rationale: single self-hosted container that already runs an in-process poller; a scheduler in the same process needs no new deploy unit, secret, or external cron, and is consistent with the recorded polling decision. Trade-off accepted (this is the required sign-off for an in-process scheduler): won't survive a move to multi-replica without change; isolated behind a shared scheduler primitive so a later move to a worker/cron is contained. DB-backed **locking** via a Postgres advisory lock (`server/jobs/lock.ts`) guards cross-process overlap (e.g. redeploy); **idempotency** is the existing per-row `status='pending'` gating (`describeAndStore` skips non-pending). **Trigger = idle-debounced (MVP parity):** a debounce timer (re)armed on bot activity, aborting the running batch when live traffic resumes so backfill never competes with a live reply. Debounce is a code constant, not a setting (matches `VISION_MAX_DIMENSION`). Establishes the shared model for priorities 8–13 (mood cooldown, scheduled tasks, memory extraction, browser-agent queue). |
 
 ## Blockers

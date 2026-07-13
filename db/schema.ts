@@ -310,6 +310,13 @@ export const messageMedia = pgTable(
     mimeType: text("mime_type"),
     /** Normalized JPEG as base64; null once described (bytes dropped) or unavailable. */
     dataBase64: text("data_base64"),
+    /**
+     * For a video/GIF: the normalized JPEG frames sampled from the clip, in
+     * chronological order, as base64 — sent to the model as an ordered image
+     * sequence. Null for a single still image (uses `data_base64`) and dropped
+     * once described. `data_base64` holds the first frame for the dashboard preview.
+     */
+    framesBase64: jsonb("frames_base64").$type<string[]>(),
     /** Extra hint for the describer (e.g. a sticker's emoji), or null. */
     visionHint: text("vision_hint"),
     /** The vision model's text description; null until described. */

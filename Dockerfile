@@ -29,6 +29,11 @@ ENV PORT=3200
 # Standalone server binds to HOSTNAME; use 0.0.0.0 so it is reachable in-container.
 ENV HOSTNAME=0.0.0.0
 
+# System ffmpeg: the vision feature samples video/GIF frames with it at runtime
+# (features/vision/server/frames.ts). sharp ships its own musl libvips binary via
+# npm, so only ffmpeg needs a system package here.
+RUN apk add --no-cache ffmpeg
+
 # Self-contained app server: only traced runtime deps, no full node_modules.
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static

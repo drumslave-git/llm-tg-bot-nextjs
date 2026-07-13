@@ -21,10 +21,27 @@ export interface ImagePayload {
  */
 export interface DetectedMedia {
   kind: MediaKind;
+  /**
+   * The concrete file to read. For a photo/sticker/image document this is the
+   * image itself; for a video/GIF (`animation`/`video`) it is the actual media
+   * file, from which frames are sampled with ffmpeg.
+   */
   fileId: string;
   fileUniqueId: string | null;
   /** A sticker's emoji / pack hint, folded into the describe prompt. */
   visionHint: string | null;
+  /**
+   * Whether `fileId` points at a video/GIF that must be frame-sampled (ffmpeg)
+   * rather than decoded as a still image.
+   */
+  isVideo: boolean;
+  /**
+   * Telegram's single-frame JPEG thumbnail, used as a fallback when frame
+   * extraction is unavailable/fails. Null when the message carries no thumbnail.
+   */
+  thumbnailFileId: string | null;
+  /** Media duration in seconds (video/animation), for scaling the frame count. */
+  durationSec: number | null;
 }
 
 /**

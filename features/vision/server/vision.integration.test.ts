@@ -115,6 +115,46 @@ describe("describeAndStore", () => {
     expect(traces.traces[0]?.status).toBe("success");
   });
 
+  it("describes a video from its ordered frame sequence, then drops all frames", async () => {
+    await insertMedia(ctx.db, {
+      id: crypto.randomUUID(),
+      chatId: "5",
+      telegramMessageId: 40,
+      kind: "video",
+      fileId: "vid-40",
+      fileUniqueId: "vu40",
+      mimeType: "image/jpeg",
+      dataBase64: "F1", // first frame, for the dashboard preview
+      frames: ["F1", "F2", "F3"],
+      visionHint: "The next 3 images are consecutive frames from the user's video…",
+    });
+
+    let seen: unknown = null;
+    const result = await describeAndStore(
+      { chatId: "5", telegramMessageId: 40 },
+      {
+        complete: async (messages) => {
+          seen = messages;
+          return fakeComplete("a man lighting his beard on fire across the clip");
+        },
+      },
+      ctx.db,
+    );
+
+    // The describe request carried all three frames as separate, ordered images.
+    const messages = seen as Array<{ role: string; content: unknown }>;
+    const userTurn = messages.find((m) => m.role === "user");
+    const parts = userTurn?.content as Array<{ type: string; text?: string }>;
+    const imageParts = parts.filter((p) => p.type === "image_url");
+    expect(imageParts).toHaveLength(3);
+    expect(parts.some((p) => p.type === "text" && p.text === "Frame 1 of 3:")).toBe(true);
+
+    // Bytes dropped on success: no single frame and no frame array remain.
+    expect(result?.status).toBe("described");
+    expect(result?.dataBase64).toBeNull();
+    expect(result?.frames).toBeNull();
+  });
+
   it("skips (no throw) when there is no pending media", async () => {
     const result = await describeAndStore(
       { chatId: "5", telegramMessageId: 999 },
