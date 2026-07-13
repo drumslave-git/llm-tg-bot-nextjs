@@ -1,0 +1,162 @@
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+
+import type { ChatCompletionResult } from "@/server/llm/client";
+import { withAdvisoryLock } from "@/server/jobs/lock";
+import { listTraces } from "@/server/trace/repository";
+import { startTestDb, type TestDb } from "@/test/db";
+
+import { runVisionBackfill } from "./backfill";
+import { countPendingMedia, insertMedia, listPendingMedia } from "./repository";
+
+let ctx: TestDb;
+
+beforeAll(async () => {
+  ctx = await startTestDb();
+});
+
+afterAll(async () => {
+  await ctx?.stop();
+});
+
+beforeEach(async () => {
+  await ctx.truncate();
+});
+
+async function seedPending(telegramMessageId: number, chatId = "5") {
+  return insertMedia(ctx.db, {
+    id: crypto.randomUUID(),
+    chatId,
+    telegramMessageId,
+    kind: "photo",
+    fileId: `file-${telegramMessageId}`,
+    fileUniqueId: `u${telegramMessageId}`,
+    mimeType: "image/jpeg",
+    dataBase64: "QUJD",
+    visionHint: null,
+  });
+}
+
+function fakeComplete(content: string): ChatCompletionResult {
+  return {
+    content,
+    model: "vision-model",
+    usage: { promptTokens: 10, completionTokens: 20, totalTokens: 30 },
+    latencyMs: 12,
+    requestBody: {},
+    responseBody: {},
+  };
+}
+
+describe("runVisionBackfill", () => {
+  it("describes every pending row, drops bytes, and records a run trace", async () => {
+    await seedPending(10);
+    await seedPending(11);
+    await seedPending(12);
+
+    const result = await runVisionBackfill(
+      { complete: async () => fakeComplete("a photo") },
+      {},
+      ctx.db,
+    );
+
+    expect(result.described).toBe(3);
+    expect(result.unresolved).toBe(0);
+    expect(result.interrupted).toBe(false);
+    expect(await countPendingMedia(ctx.db)).toBe(0);
+
+    // The batch run is traced under vision-backfill; each row under vision.
+    const runTraces = await listTraces(ctx.db, { feature: "vision-backfill" });
+    expect(runTraces.traces).toHaveLength(1);
+    expect(runTraces.traces[0].status).toBe("success");
+    const describeTraces = await listTraces(ctx.db, { feature: "vision" });
+    expect(describeTraces.traces).toHaveLength(3);
+  });
+
+  it("is idempotent — a second run finds nothing pending", async () => {
+    await seedPending(10);
+    await runVisionBackfill({ complete: async () => fakeComplete("x") }, {}, ctx.db);
+
+    const second = await runVisionBackfill({ complete: async () => fakeComplete("y") }, {}, ctx.db);
+    expect(second.described).toBe(0);
+    expect(second.summary).toBe("nothing pending");
+  });
+
+  it("leaves a row pending and counts it unresolved when the description is empty", async () => {
+    await seedPending(10);
+    const result = await runVisionBackfill(
+      { complete: async () => fakeComplete("   ") }, // empty after trim → describeAndStore skips
+      {},
+      ctx.db,
+    );
+    expect(result.described).toBe(0);
+    expect(result.unresolved).toBe(1);
+    expect(await countPendingMedia(ctx.db)).toBe(1);
+  });
+
+  it("stops early when aborted, leaving the rest pending", async () => {
+    await seedPending(10);
+    await seedPending(11);
+    await seedPending(12);
+
+    // Abort after the first described row.
+    let calls = 0;
+    const complete = vi.fn(async () => {
+      calls += 1;
+      return fakeComplete("desc");
+    });
+    const result = await runVisionBackfill(
+      { complete },
+      { isAborted: () => calls >= 1 },
+      ctx.db,
+    );
+
+    expect(result.interrupted).toBe(true);
+    expect(result.described).toBe(1);
+    expect(await countPendingMedia(ctx.db)).toBe(2);
+  });
+
+  it("skips (does not run) when the advisory lock is already held", async () => {
+    await seedPending(10);
+
+    // Hold the lock across a concurrent run.
+    const inner = await withAdvisoryLock(
+      "vision-backfill",
+      async () => {
+        return runVisionBackfill({ complete: async () => fakeComplete("z") }, {}, ctx.db);
+      },
+      ctx.db,
+    );
+
+    expect(inner.ran).toBe(true);
+    if (inner.ran) {
+      expect(inner.result.summary).toBe("skipped — another run holds the lock");
+      expect(inner.result.described).toBe(0);
+    }
+    // The row was never touched — still pending for the next run.
+    expect(await listPendingMedia(ctx.db)).toHaveLength(1);
+  });
+});
+
+describe("withAdvisoryLock", () => {
+  it("runs fn and releases so a later call can re-acquire", async () => {
+    const first = await withAdvisoryLock("k", async () => 1, ctx.db);
+    expect(first).toEqual({ ran: true, result: 1 });
+    const second = await withAdvisoryLock("k", async () => 2, ctx.db);
+    expect(second).toEqual({ ran: true, result: 2 });
+  });
+
+  it("does not run fn when the lock is already held", async () => {
+    const outerRan = await withAdvisoryLock(
+      "k",
+      async () => {
+        const fn = vi.fn(async () => 99);
+        const nested = await withAdvisoryLock("k", fn, ctx.db);
+        expect(nested.ran).toBe(false);
+        expect(fn).not.toHaveBeenCalled();
+        return true;
+      },
+      ctx.db,
+    );
+    expect(outerRan.ran).toBe(true);
+  });
+});

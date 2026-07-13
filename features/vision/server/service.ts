@@ -14,6 +14,7 @@ import type { ImagePayload, MediaAnnotation, MediaKind, MediaView } from "../typ
 import { buildDescribeMessages } from "./describe";
 import { normalizeImageForChat } from "./normalize";
 import {
+  countPendingMedia,
   getMediaAnnotations,
   getMediaByMessage,
   getMediaById,
@@ -240,4 +241,9 @@ export async function listMedia(limit = 100, db: DrizzleDb = getDb()): Promise<M
 /** One media row by id (dashboard detail), or null. */
 export async function getMediaDetail(id: string, db: DrizzleDb = getDb()): Promise<MediaRecord | null> {
   return getMediaById(db, id);
+}
+
+/** Count of media rows still awaiting a description (backfill backlog size). */
+export async function getPendingMediaCount(db: DrizzleDb = getDb()): Promise<number> {
+  return countPendingMedia(db);
 }

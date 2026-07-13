@@ -4,9 +4,11 @@ import Link from "next/link";
 import { Button, EmptyState, PageHeader } from "@/components/ui";
 import { LiveIndicator } from "@/components/realtime/LiveIndicator";
 import { featureDebugHref } from "@/lib/features";
-import { listMedia } from "@/features/vision/server/service";
+import { getPendingMediaCount, listMedia } from "@/features/vision/server/service";
+import { getVisionBackfillStatus } from "@/features/vision/server/backfill-scheduler";
 import type { MediaView } from "@/features/vision/types";
 import { MediaGallery } from "@/features/vision/ui/MediaGallery";
+import { VisionBackfillCard } from "@/features/vision/ui/VisionBackfillCard";
 
 // Media is read from the database at request time.
 export const dynamic = "force-dynamic";
@@ -17,12 +19,14 @@ export const dynamic = "force-dynamic";
  */
 export default async function VisionPage() {
   let media: MediaView[] | null = null;
+  let pending = 0;
   let dbError: string | null = null;
   try {
-    media = await listMedia();
+    [media, pending] = await Promise.all([listMedia(), getPendingMediaCount()]);
   } catch (err) {
     dbError = err instanceof Error ? err.message : "Could not read media from the database";
   }
+  const backfill = { status: getVisionBackfillStatus(), pending };
 
   return (
     <>
@@ -43,7 +47,10 @@ export default async function VisionPage() {
       />
 
       {media ? (
-        <MediaGallery media={media} />
+        <div className="space-y-6">
+          <VisionBackfillCard initial={backfill} />
+          <MediaGallery media={media} />
+        </div>
       ) : (
         <EmptyState
           icon={Database}

@@ -1,5 +1,7 @@
 import "server-only";
 
+import { startVisionBackfill, stopVisionBackfill } from "@/features/vision/server/backfill-scheduler";
+
 import { startBot, stopBot } from "./bot-manager";
 
 /**
@@ -15,6 +17,7 @@ export function registerNode(): void {
   const shutdown = async (): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
+    stopVisionBackfill();
     await Promise.race([
       stopBot().catch(() => undefined),
       new Promise((resolve) => setTimeout(resolve, 3000)),
@@ -23,6 +26,12 @@ export function registerNode(): void {
   };
   process.once("SIGTERM", () => void shutdown());
   process.once("SIGINT", () => void shutdown());
+
+  // Start the in-process vision-backfill scheduler. It arms an initial run so any
+  // media left `pending` from before boot is captioned during the first quiet
+  // window; bot activity re-arms the idle wait thereafter. Independent of the bot
+  // token — a run with no LLM configured settles as a no-op.
+  startVisionBackfill();
 
   // Fire-and-forget: do not block server startup on the Telegram handshake.
   void startBot().then((status) => {

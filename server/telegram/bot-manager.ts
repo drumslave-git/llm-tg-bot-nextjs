@@ -36,6 +36,7 @@ import {
   ingestMessageMedia,
   loadReplyTargetImages,
 } from "@/features/vision/server/service";
+import { pokeVisionBackfill } from "@/features/vision/server/backfill-scheduler";
 import { ApiError } from "@/lib/api-error";
 import { chatCompletion, type ChatContentPart, type ChatMessage } from "@/server/llm/client";
 import { chatCompletionWithTools } from "@/server/llm/tool-loop";
@@ -244,6 +245,10 @@ function buildDeps(
 async function onMessage(ctx: Context): Promise<void> {
   const message = ctx.message;
   if (!message || !ctx.chat) return;
+
+  // Live traffic: push the idle vision-backfill run out and yield any batch in
+  // flight, so backfill only ever runs while the bot is quiet.
+  pokeVisionBackfill();
 
   // Remember every human sender + mirror every human message (addressed or not),
   // so the operator sees who talks to the bot and the history window has the full

@@ -1,6 +1,6 @@
 import "server-only";
 
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, count, desc, eq, inArray } from "drizzle-orm";
 
 import type { DrizzleDb } from "@/db/drizzle";
 import { messageMedia, type MessageMediaRow } from "@/db/schema";
@@ -198,8 +198,7 @@ export async function listRecentMedia(db: DrizzleDb, limit = 100): Promise<Media
 
 /**
  * Oldest pending media rows (bytes still present), for the vision backfill job
- * (priority 8). Exposed now so the repository contract is complete; unused until
- * the backfill scheduler lands.
+ * (priority 8). Oldest-first so the backlog drains in arrival order.
  */
 export async function listPendingMedia(db: DrizzleDb, limit = 20): Promise<MediaRecord[]> {
   const rows = await db
@@ -209,4 +208,13 @@ export async function listPendingMedia(db: DrizzleDb, limit = 20): Promise<Media
     .orderBy(asc(messageMedia.createdAt))
     .limit(limit);
   return rows.map(mapRow);
+}
+
+/** How many media rows are still awaiting a description (backfill backlog size). */
+export async function countPendingMedia(db: DrizzleDb): Promise<number> {
+  const [row] = await db
+    .select({ value: count() })
+    .from(messageMedia)
+    .where(eq(messageMedia.status, "pending"));
+  return row?.value ?? 0;
 }

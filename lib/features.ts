@@ -37,6 +37,12 @@ export const FEATURES = {
     relatedIdsKey: "message_media",
     path: "/vision",
   },
+  "vision-backfill": {
+    id: "vision-backfill",
+    label: "Vision backfill",
+    realtimeTopic: "vision",
+    path: "/vision",
+  },
   history: {
     id: "history",
     label: "History",
