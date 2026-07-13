@@ -23,6 +23,21 @@ Next: **Priority 5 — Search MCP tool** (Tavily), built on the MCP infra above.
 
 ### Session log
 
+- 2026-07-12 (follow-up 12): **Env surface trimmed to bootstrap-only** (user
+  request; the cleanup flagged in follow-up 11). `server/env.ts` now declares
+  only `DATABASE_URL`, `TZ`, `NODE_ENV` (the `<NAME>_FILE` Docker-secret
+  mechanism and lazy `requireEnv` contract unchanged) — removed the unread
+  MVP-era keys (`BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`, `LLM_*`,
+  `EMBEDDING_*`, `IMAGE_GENERATION_*`, `TAVILY_API_KEY`, `DOWNLOADS_DIR`,
+  `LOGGING_LEVEL`). `docker-compose.yml` app service now forwards only
+  `NODE_ENV`/`PORT`/`DATABASE_URL`/`TZ`. `.env.example` dropped the
+  "Reserved" section; DESIGN.md Configuration no longer calls the schema
+  legacy. `server/env.test.ts` retargeted to the surviving keys (invalid-enum
+  case now uses `NODE_ENV`, via a plain-record cast since Next types it
+  read-only). Per AGENTS.md, whether any future key lives env-side stays a
+  per-feature user decision — this removed only vars nothing reads
+  (`db/pool.ts` → `DATABASE_URL` is the sole consumer). Checks: lint ✓,
+  typecheck ✓, unit 123 ✓, integration 67 ✓, build ✓.
 - 2026-07-12 (follow-up 10): **Known groups + group↔user membership + group
   context injection** (user request — a new user-directed feature, not in the
   original priority list). Mirrors the known-users feature: a first-class list of

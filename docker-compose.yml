@@ -12,18 +12,6 @@ services:
       # Built from the bundled db service; override DATABASE_URL to use an
       # external database.
       DATABASE_URL: ${DATABASE_URL:-postgres://${POSTGRES_USER:-bot}:${POSTGRES_PASSWORD:-bot}@db:5432/${POSTGRES_DB:-bot}}
-      # Telegram
-      BOT_TOKEN: ${BOT_TOKEN:-}
-      BOT_TOKEN_FILE: ${BOT_TOKEN_FILE:-}
-      TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:-}
-      # LLM (OpenAI-compatible)
-      LLM_BASE_URL: ${LLM_BASE_URL:-}
-      LLM_API_KEY: ${LLM_API_KEY:-}
-      LLM_MODEL: ${LLM_MODEL:-}
-      # Optional integrations
-      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
-      # Runtime
-      LOGGING_LEVEL: ${LOGGING_LEVEL:-}
       TZ: ${TZ:-UTC}
     healthcheck:
       # 127.0.0.1 (not localhost): the standalone server binds IPv4 0.0.0.0, and

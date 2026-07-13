@@ -44,33 +44,17 @@ const optionalString = z
   .transform((v) => (v === "" ? undefined : v));
 
 /**
- * Known environment variables. All optional at parse time; capability-specific
+ * Known environment variables. Env is bootstrap-only: runtime configuration
+ * (LLM connection, bot token, prompts, feature settings) lives in DB-backed
+ * Settings edited via the dashboard. All keys are optional at parse time;
  * requirements are enforced where the capability is used.
  */
 const envSchema = z.object({
-  // Telegram
-  BOT_TOKEN: optionalString,
-  TELEGRAM_WEBHOOK_SECRET: optionalString,
-
-  // LLM (OpenAI-compatible)
-  LLM_BASE_URL: optionalString,
-  LLM_API_KEY: optionalString,
-  LLM_MODEL: optionalString,
-  EMBEDDING_BASE_URL: optionalString,
-  EMBEDDING_API_KEY: optionalString,
-  IMAGE_GENERATION_BASE_URL: optionalString,
-  IMAGE_GENERATION_API_KEY: optionalString,
-
   // Persistence
   DATABASE_URL: optionalString,
 
-  // Optional integrations
-  TAVILY_API_KEY: optionalString,
-
   // Runtime
   TZ: optionalString,
-  DOWNLOADS_DIR: optionalString,
-  LOGGING_LEVEL: z.enum(["ERROR", "DEBUG"]).optional(),
   NODE_ENV: z.enum(["development", "production", "test"]).optional(),
 });
 
