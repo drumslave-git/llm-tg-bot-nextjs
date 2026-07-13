@@ -1,0 +1,97 @@
+import "server-only";
+
+import { chromium, type Browser, type BrowserContext } from "playwright";
+
+import type { FetchedPage } from "../types";
+
+/**
+ * Headless Chromium page reader for the read-link tool. The browser is expensive
+ * to launch (~1s), so a single instance is kept alive on a `globalThis` singleton
+ * — the same pattern the bot manager and MCP registry use — so it survives Next
+ * bundle re-evaluation and dev hot-reload instead of leaking a Chromium process
+ * per module copy. Each read gets its own short-lived context (isolated cookies,
+ * fixed user-agent). When the browser agent feature (priority 13) lands it can
+ * reuse this singleton rather than launch a second Chromium.
+ */
+
+const NAVIGATION_TIMEOUT_MS = 60_000;
+const MAX_PAGE_TEXT_CHARS = 12_000;
+const USER_AGENT =
+  "Mozilla/5.0 (compatible; LLMTGBot/1.0; +https://github.com/drumslave-git/llm-tg-bot-nextjs)";
+
+interface BrowserStore {
+  browser: Browser | null;
+  launching: Promise<Browser> | null;
+}
+
+const STORE_KEY = Symbol.for("llm-tg-bot.link-fetch.chromium");
+
+function store(): BrowserStore {
+  const g = globalThis as typeof globalThis & { [STORE_KEY]?: BrowserStore };
+  if (!g[STORE_KEY]) g[STORE_KEY] = { browser: null, launching: null };
+  return g[STORE_KEY];
+}
+
+/**
+ * The shared headless Chromium instance, launched on first use. Idempotent and
+ * safe under concurrency — the first caller launches, the rest await the same
+ * promise. A failed launch clears the promise so a later call can retry.
+ */
+export async function getSharedChromium(): Promise<Browser> {
+  const s = store();
+  if (s.browser?.isConnected()) return s.browser;
+  if (!s.launching) {
+    s.launching = chromium
+      .launch({ headless: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] })
+      .then((b) => {
+        s.browser = b;
+        return b;
+      })
+      .catch((err) => {
+        s.launching = null;
+        throw err;
+      });
+  }
+  return s.launching;
+}
+
+/** Close the shared browser (for tests/shutdown); a later read relaunches it. */
+export async function closeSharedChromium(): Promise<void> {
+  const s = store();
+  if (s.browser) {
+    await s.browser.close().catch(() => {});
+  }
+  s.browser = null;
+  s.launching = null;
+}
+
+/** Collapse whitespace and bound the length of extracted page text. */
+function trimPageText(text: string): string {
+  return text.replace(/\s+/g, " ").trim().slice(0, MAX_PAGE_TEXT_CHARS);
+}
+
+/**
+ * Read one page's title + readable text with headless Chromium. Never throws:
+ * a navigation/render failure resolves to a `FetchedPage` carrying the `error`,
+ * so the tool boundary can always hand the model a usable result.
+ */
+export async function fetchPageWithPlaywright(url: string): Promise<FetchedPage> {
+  let context: BrowserContext | null = null;
+  try {
+    const browser = await getSharedChromium();
+    context = await browser.newContext({ userAgent: USER_AGENT });
+    const page = await context.newPage();
+    try {
+      await page.goto(url, { waitUntil: "domcontentloaded", timeout: NAVIGATION_TIMEOUT_MS });
+      const title = (await page.title()).trim();
+      const rawText = await page.evaluate(() => document.body?.innerText ?? "");
+      return { url, title, text: trimPageText(rawText) };
+    } finally {
+      await page.close().catch(() => {});
+    }
+  } catch (err) {
+    return { url, title: "", text: "", error: err instanceof Error ? err.message : String(err) };
+  } finally {
+    if (context) await context.close().catch(() => {});
+  }
+}

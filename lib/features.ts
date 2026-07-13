@@ -80,6 +80,11 @@ export const FEATURES = {
     label: "Web search tool",
     path: "/tools",
   },
+  "mcp-tools-link-fetch": {
+    id: "mcp-tools-link-fetch",
+    label: "Link reader tool",
+    path: "/tools",
+  },
 } as const satisfies Record<string, FeatureDescriptor>;
 
 /** A registered feature id (the trace `feature` string). */

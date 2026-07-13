@@ -6,6 +6,7 @@ import {
   HISTORY_SEARCH_TOOL,
 } from "@/features/history/server/mcp-tools";
 import { UPDATE_USER_ALIASES_TOOL } from "@/features/known-users/server/mcp-tools";
+import { READ_PAGE_TOOL } from "@/features/link-fetch/server/mcp-tools";
 import { SEARCH_WEB_TOOL } from "@/features/web-search/server/mcp-tools";
 import { getToolset, getToolsView } from "./service";
 
@@ -21,6 +22,7 @@ const ALL_TOOLS = [
   HISTORY_GET_BY_MESSAGE_IDS_TOOL,
   UPDATE_USER_ALIASES_TOOL,
   SEARCH_WEB_TOOL,
+  READ_PAGE_TOOL,
 ].sort();
 
 describe("getToolsView", () => {
@@ -31,6 +33,7 @@ describe("getToolsView", () => {
     expect(featureOf(HISTORY_SEARCH_TOOL)).toBe("history");
     expect(featureOf(UPDATE_USER_ALIASES_TOOL)).toBe("known-users");
     expect(featureOf(SEARCH_WEB_TOOL)).toBe("web-search");
+    expect(featureOf(READ_PAGE_TOOL)).toBe("link-fetch");
     expect(view.tools.every((t) => t.description.length > 0)).toBe(true);
   });
 });
