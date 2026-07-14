@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { sampleFrames, sampleImage } from "@/test/__mocks__/vision";
 import {
   buildVisionContent,
   frameSequenceHint,
@@ -45,30 +46,26 @@ describe("toImagePart / buildVisionContent", () => {
   });
 
   it("puts the text first, then the image part for a single image", () => {
-    const content = buildVisionContent("what is this?", [{ base64: "A", mimeHint: "image/jpeg" }]);
+    const content = buildVisionContent("what is this?", [sampleImage]);
     expect(content[0]).toEqual({ type: "text", text: "what is this?" });
     expect(content).toHaveLength(2);
     expect(content[1]).toEqual({ type: "image_url", image_url: { url: "data:image/jpeg;base64,A" } });
   });
 
   it("stands in a default instruction when there is no text", () => {
-    const content = buildVisionContent("   ", [{ base64: "A", mimeHint: "image/jpeg" }]);
+    const content = buildVisionContent("   ", [sampleImage]);
     expect(content[0]).toEqual({ type: "text", text: "Respond to this image." });
   });
 });
 
 describe("toVisionParts (ordered frame sequence)", () => {
   it("returns a single unlabeled image part for one image", () => {
-    const parts = toVisionParts([{ base64: "A", mimeHint: "image/jpeg" }]);
+    const parts = toVisionParts([sampleImage]);
     expect(parts).toEqual([{ type: "image_url", image_url: { url: "data:image/jpeg;base64,A" } }]);
   });
 
   it("labels and interleaves each frame for a sequence", () => {
-    const parts = toVisionParts([
-      { base64: "A", mimeHint: "image/jpeg" },
-      { base64: "B", mimeHint: "image/jpeg" },
-      { base64: "C", mimeHint: "image/jpeg" },
-    ]);
+    const parts = toVisionParts(sampleFrames);
     // [Frame 1 of 3:, imgA, Frame 2 of 3:, imgB, Frame 3 of 3:, imgC]
     expect(parts).toHaveLength(6);
     expect(parts[0]).toEqual({ type: "text", text: "Frame 1 of 3:" });

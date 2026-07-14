@@ -1,14 +1,7 @@
-import type { Message } from "@grammyjs/types";
 import { describe, expect, it } from "vitest";
 
+import { makeMessage as msg } from "@/test/__mocks__/telegram";
 import { detectMessageMedia, findReplyMediaMessage, messageHasVisionMedia } from "./detect";
-
-/** Minimal message factory — only the fields detection reads. Loose input so
- * reply chains can nest full `Message`s (the SDK types `reply_to_message` as the
- * narrower `ReplyMessage`). */
-function msg(partial: Record<string, unknown>): Message {
-  return { message_id: 1, date: 0, chat: { id: 1, type: "private" }, ...partial } as unknown as Message;
-}
 
 describe("detectMessageMedia", () => {
   it("returns the largest photo size", () => {

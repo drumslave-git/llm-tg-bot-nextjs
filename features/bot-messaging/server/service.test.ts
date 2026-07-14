@@ -1,4 +1,3 @@
-import type { Message } from "@grammyjs/types";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Isolate the policy from persistence: a no-op trace recorder and a stub db.
@@ -13,15 +12,16 @@ const recorder = vi.hoisted(() => ({
 vi.mock("@/server/trace", () => ({ startTrace: vi.fn().mockResolvedValue(recorder) }));
 vi.mock("@/db/drizzle", () => ({ getDb: () => ({}) }));
 
+import { openPolicy } from "@/test/__mocks__/policy";
+import { BOT, BOT_USER, makeMessage } from "@/test/__mocks__/telegram";
+import { imagePart } from "@/test/__mocks__/vision";
 import { startTrace } from "@/server/trace";
 import { BASE_SYSTEM_PROMPT } from "./prompt";
 import { handleIncomingMessage, type BotMessagingDeps, type IncomingMessage } from "./service";
 
-const BOT = { id: 42, username: "MyBot" };
-
 function incoming(partial: Partial<IncomingMessage>): IncomingMessage {
   return {
-    message: { message_id: 7, date: 0, chat: { id: 5, type: "private" } } as Message,
+    message: makeMessage({ message_id: 7, chat: { id: 5, type: "private" } }),
     chatId: 5,
     chatType: "private",
     messageId: 7,
@@ -34,7 +34,7 @@ function incoming(partial: Partial<IncomingMessage>): IncomingMessage {
 
 const stopTyping = vi.fn();
 
-const OPEN_POLICY = { ownerUserId: null, maintenanceModeEnabled: false } as const;
+const OPEN_POLICY = openPolicy;
 
 function deps(over: Partial<BotMessagingDeps> = {}): BotMessagingDeps {
   return {
@@ -71,9 +71,7 @@ describe("handleIncomingMessage", () => {
   });
 
   it("processes a caption-less media message (empty text but hasVision) like any other", async () => {
-    const imageParts = [
-      { type: "image_url" as const, image_url: { url: "data:image/jpeg;base64,ABC" } },
-    ];
+    const imageParts = [imagePart("ABC")];
     const d = deps({ loadVision: vi.fn().mockResolvedValue({ imageParts }) });
     const out = await handleIncomingMessage(incoming({ text: "", hasVision: true }), d);
     expect(out).toEqual({ status: "replied", text: "hi back" });
@@ -103,7 +101,7 @@ describe("handleIncomingMessage", () => {
 
   it("ignores un-addressed group chatter without tracing", async () => {
     const d = deps();
-    const m = { message_id: 7, date: 0, chat: { id: 5, type: "group" }, text: "chatter" } as Message;
+    const m = makeMessage({ message_id: 7, chat: { id: 5, type: "group" }, text: "chatter" });
     const out = await handleIncomingMessage(
       incoming({ message: m, chatType: "group", text: "chatter" }),
       d,
@@ -138,9 +136,7 @@ describe("handleIncomingMessage", () => {
   });
 
   it("attaches vision image parts to the current user turn and traces the step", async () => {
-    const imageParts = [
-      { type: "image_url" as const, image_url: { url: "data:image/jpeg;base64,ABC" } },
-    ];
+    const imageParts = [imagePart("ABC")];
     const d = deps({
       loadVision: vi.fn().mockResolvedValue({ imageParts }),
     });
@@ -167,7 +163,7 @@ describe("handleIncomingMessage", () => {
   it("appends the reply note to the text part when media comes from a replied-to image", async () => {
     const d = deps({
       loadVision: vi.fn().mockResolvedValue({
-        imageParts: [{ type: "image_url" as const, image_url: { url: "data:image/jpeg;base64,AB" } }],
+        imageParts: [imagePart("AB")],
         note: "The user is asking about the photo they replied to (shown here).",
       }),
     });
@@ -238,13 +234,12 @@ describe("handleIncomingMessage", () => {
 
   it("injects a group addressing hint naming the sender and address source", async () => {
     // A group message that mentions the bot by @username entity.
-    const m = {
+    const m = makeMessage({
       message_id: 7,
-      date: 0,
       chat: { id: 5, type: "group" },
       text: "@MyBot explain",
       entities: [{ type: "mention", offset: 0, length: 6 }],
-    } as unknown as Message;
+    });
     const d = deps({
       loadChatContext: vi.fn().mockResolvedValue({ content: "roster", data: {} }),
       loadCurrentTurn: vi.fn().mockResolvedValue({
@@ -461,13 +456,12 @@ describe("handleIncomingMessage", () => {
   it("keeps the owner fully functional in a group during maintenance (reply-to-bot)", async () => {
     // Reply-to-bot addressing (not a direct mention) still gets a normal reply —
     // maintenance mode imposes no extra restriction on the owner.
-    const m = {
+    const m = makeMessage({
       message_id: 7,
-      date: 0,
       chat: { id: 5, type: "group" },
       text: "thanks",
-      reply_to_message: { message_id: 1, from: { id: BOT.id, is_bot: true } },
-    } as unknown as Message;
+      reply_to_message: { message_id: 1, from: BOT_USER },
+    });
     const d = deps({ policy: { ownerUserId: "7", maintenanceModeEnabled: true } });
     const out = await handleIncomingMessage(
       incoming({ message: m, chatType: "group", text: "thanks", fromId: 7 }),

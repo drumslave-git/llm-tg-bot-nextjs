@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { imagePart } from "@/test/__mocks__/vision";
 import { sanitizeMessagesForTrace, toOpenAiBaseUrl, type ChatMessage } from "./client";
 
 describe("sanitizeMessagesForTrace", () => {
@@ -16,10 +17,7 @@ describe("sanitizeMessagesForTrace", () => {
     const messages: ChatMessage[] = [
       {
         role: "user",
-        content: [
-          { type: "text", text: "what is this?" },
-          { type: "image_url", image_url: { url: `data:image/jpeg;base64,${base64}` } },
-        ],
+        content: [{ type: "text", text: "what is this?" }, imagePart(base64)],
       },
     ];
     const [sanitized] = sanitizeMessagesForTrace(messages);

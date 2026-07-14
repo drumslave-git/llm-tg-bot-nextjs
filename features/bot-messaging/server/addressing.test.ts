@@ -1,17 +1,17 @@
-import type { Message, MessageEntity, User } from "@grammyjs/types";
+import type { Message, MessageEntity } from "@grammyjs/types";
 import { describe, expect, it } from "vitest";
 
-import { checkAddressed, type BotIdentity } from "./addressing";
+import { BOT, makeMessage, makeUser } from "@/test/__mocks__/telegram";
+import { checkAddressed } from "./addressing";
 
-const BOT: BotIdentity = { id: 42, username: "MyBot" };
-
-function user(id: number): User {
-  return { id, is_bot: id === 42, first_name: id === 42 ? "MyBot" : "Someone" };
+/** The bot resolves to id 42; any other id is a different participant. */
+function user(id: number) {
+  return id === BOT.id ? makeUser(id, { is_bot: true, first_name: "MyBot" }) : makeUser(id, { first_name: "Someone" });
 }
 
-/** Build a minimal Message; only the fields addressing reads are required. */
-function msg(partial: Partial<Message>): Message {
-  return { message_id: 1, date: 0, chat: { id: 1, type: "group" }, ...partial } as Message;
+/** A group message; only the fields addressing reads are required. */
+function msg(partial: Partial<Message> = {}): Message {
+  return makeMessage({ chat: { id: 1, type: "group" }, ...partial });
 }
 
 /** A `text` message carrying a single entity. */

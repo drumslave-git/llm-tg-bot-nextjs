@@ -1,25 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { matchUsersByReference, normalizeReference, type UserMatchCandidate } from "./match";
-
-const alice: UserMatchCandidate = {
-  username: "alice",
-  firstName: "Alice",
-  lastName: "Anderson",
-  aliases: ["Boss"],
-};
-const bob: UserMatchCandidate = {
-  username: "bobby",
-  firstName: "Bob",
-  lastName: null,
-  aliases: [],
-};
-const aliceB: UserMatchCandidate = {
-  username: "alicia",
-  firstName: "Alice",
-  lastName: "Brown",
-  aliases: [],
-};
+import {
+  aliceBrownCandidate as aliceB,
+  aliceCandidate as alice,
+  bobCandidate as bob,
+} from "@/test/__mocks__/users";
+import { matchUsersByReference, normalizeReference } from "./match";
 
 describe("normalizeReference", () => {
   it("trims, strips a leading @, and lowercases", () => {

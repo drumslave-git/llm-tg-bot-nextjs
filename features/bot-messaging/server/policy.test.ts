@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { checkMaintenance, isOwner, type BotPolicy } from "./policy";
+import {
+  openPolicy,
+  ownerlessMaintenancePolicy,
+  ownerMaintenancePolicy,
+} from "@/test/__mocks__/policy";
+import { checkMaintenance, isOwner } from "./policy";
 
-const OWNER: BotPolicy = { ownerUserId: "42", maintenanceModeEnabled: true };
+const OWNER = ownerMaintenancePolicy;
 
 describe("isOwner", () => {
   it("matches the configured owner by numeric id", () => {
@@ -11,8 +16,7 @@ describe("isOwner", () => {
   });
 
   it("is false when no owner is configured", () => {
-    const policy: BotPolicy = { ownerUserId: null, maintenanceModeEnabled: true };
-    expect(isOwner({ fromId: 1 }, policy)).toBe(false);
+    expect(isOwner({ fromId: 1 }, ownerlessMaintenancePolicy)).toBe(false);
   });
 
   it("is false when the sender has no id", () => {
@@ -22,8 +26,7 @@ describe("isOwner", () => {
 
 describe("checkMaintenance", () => {
   it("never blocks when maintenance is off", () => {
-    const policy: BotPolicy = { ...OWNER, maintenanceModeEnabled: false };
-    expect(checkMaintenance({ policy, owner: false })).toEqual({ blocked: false });
+    expect(checkMaintenance({ policy: openPolicy, owner: false })).toEqual({ blocked: false });
   });
 
   it("blocks non-owners when maintenance is on", () => {
