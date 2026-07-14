@@ -29,10 +29,10 @@ import {
 } from "@/features/known-groups/server/service";
 import { getToolset } from "@/features/mcp-tools/server/service";
 import { findReplyMediaMessage, messageHasVisionMedia } from "@/features/vision/detect";
-import { mediaKindLabel, renderMediaSuffix, toVisionParts } from "@/features/vision/format";
+import { mediaKindLabel, toVisionParts } from "@/features/vision/format";
 import {
   describeAndStore,
-  getMediaAnnotationsForMessages,
+  getMediaSuffixesForMessages,
   ingestMessageMedia,
   loadReplyTargetImages,
 } from "@/features/vision/server/service";
@@ -120,7 +120,16 @@ function buildDeps(
   bot: { id: number; username: string },
   policy: BotPolicy,
   personalityPrompt: string | null,
-  visionAttachment: { imageParts: ChatContentPart[]; note?: string } | null,
+  visionAttachment: {
+    imageParts: ChatContentPart[];
+    note?: string;
+    /**
+     * The current message's id when its freshly-ingested media must be recognized
+     * *before* the reply (so history stores the description and the reply carries
+     * it). Absent for replied-to media, which is not re-described here.
+     */
+    recognizeMessageId?: number;
+  } | null,
 ): BotMessagingDeps {
   const chatId = String(ctx.chat!.id);
   const isGroup = ctx.chat!.type !== "private";
@@ -132,7 +141,33 @@ function buildDeps(
     bot,
     policy,
     personalityPrompt,
-    loadVision: visionAttachment ? async () => visionAttachment : undefined,
+    // Called only for an addressed message about to be answered (after the
+    // addressing/maintenance gates), so recognition here runs exactly when the
+    // flow wants it: recognize → store in history → reply with images + result.
+    loadVision: visionAttachment
+      ? async () => {
+          let note = visionAttachment.note;
+          // Recognize the current turn's media now (before the reply). This drops
+          // the stored bytes and records the description on the media row, so the
+          // /history mirror shows it and there is nothing left to backfill. The
+          // reply still receives the images below (2-pass, per decision).
+          if (visionAttachment.recognizeMessageId != null) {
+            const runtime = await getLlmRuntime().catch(() => null);
+            if (runtime) {
+              const conn = { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey };
+              const described = await describeAndStore(
+                { chatId, telegramMessageId: visionAttachment.recognizeMessageId },
+                { complete: (messages) => chatCompletion(conn, { model: runtime.model, messages }) },
+              ).catch(() => null);
+              if (described?.description) {
+                const recognized = `Recognition of the media above: ${described.description}`;
+                note = note ? `${note}\n\n${recognized}` : recognized;
+              }
+            }
+          }
+          return { imageParts: visionAttachment.imageParts, note };
+        }
+      : undefined,
     startTyping() {
       // Preserve the forum-topic thread so typing shows in the right place.
       const threadId = ctx.message?.message_thread_id;
@@ -149,15 +184,7 @@ function buildDeps(
         excludeTelegramMessageId: currentMessageId,
         // Turn stored media descriptions into transcript suffixes so a past image
         // turn reads as text (e.g. ` [photo: a red car…]`).
-        loadMediaSuffixes: async (ids) => {
-          const annotations = await getMediaAnnotationsForMessages(chatId, ids);
-          const suffixes = new Map<number, string>();
-          for (const [id, annotation] of annotations) {
-            const suffix = renderMediaSuffix(annotation);
-            if (suffix) suffixes.set(id, suffix);
-          }
-          return suffixes;
-        },
+        loadMediaSuffixes: (ids) => getMediaSuffixesForMessages(chatId, ids),
       });
     },
     // Render the current message as a transcript line: id anchor, sender label,
@@ -295,8 +322,9 @@ async function onMessage(ctx: Context): Promise<void> {
   // the image(s) to attach to the current turn — either on the message itself or
   // on a replied-to image. The bot token (from settings) is needed to download
   // Telegram files. Best-effort — any failure just yields a text-only reply.
-  let visionAttachment: { imageParts: ChatContentPart[]; note?: string } | null = null;
-  let currentMediaIngested = false;
+  let visionAttachment:
+    | { imageParts: ChatContentPart[]; note?: string; recognizeMessageId?: number }
+    | null = null;
   const replyMedia = hasMedia ? null : findReplyMediaMessage(message);
   if (hasMedia || replyMedia) {
     const token = await getTelegramBotToken().catch(() => null);
@@ -310,12 +338,13 @@ async function onMessage(ctx: Context): Promise<void> {
         }).catch(() => null);
         if (ingested && ingested.images.length > 0) {
           // A video/GIF becomes an ordered, labelled frame sequence; the note
-          // explains the frames are one clip in order.
+          // explains the frames are one clip in order. `recognizeMessageId` marks
+          // this media to be described before the reply (see loadVision).
           visionAttachment = {
             imageParts: toVisionParts(ingested.images),
             note: ingested.note ?? undefined,
+            recognizeMessageId: message.message_id,
           };
-          currentMediaIngested = true;
         }
       } else if (replyMedia) {
         const loaded = await loadReplyTargetImages({ token, chatId, message: replyMedia }).catch(
@@ -350,7 +379,11 @@ async function onMessage(ctx: Context): Promise<void> {
     getActivePersonalityPrompt(),
   ]);
 
-  const outcome = await handleIncomingMessage(
+  // Recognition of the current message's media now happens *before* the reply,
+  // inside `loadVision` (only for addressed messages): it is described, stored in
+  // history, and its bytes dropped, so nothing is left to backfill. Unaddressed
+  // media stays pending for the backfill job.
+  await handleIncomingMessage(
     incoming,
     buildDeps(
       ctx,
@@ -360,22 +393,6 @@ async function onMessage(ctx: Context): Promise<void> {
       visionAttachment,
     ),
   );
-
-  // Immediate describe + resave for media on the answered message: the model
-  // already saw the image in the reply; now caption it to text and drop the
-  // bytes so the next turn's transcript carries a description, not base64. Only
-  // the current message's media is described now — other media waits for the
-  // backfill job (priority 8).
-  if (currentMediaIngested && outcome.status === "replied") {
-    const runtime = await getLlmRuntime().catch(() => null);
-    if (runtime) {
-      const conn = { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey };
-      await describeAndStore(
-        { chatId, telegramMessageId: message.message_id },
-        { complete: (messages) => chatCompletion(conn, { model: runtime.model, messages }) },
-      ).catch(() => undefined);
-    }
-  }
 }
 
 /**

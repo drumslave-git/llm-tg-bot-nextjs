@@ -59,4 +59,10 @@ export type ChatSummaryView = ChatSummary;
  */
 export interface ChatMessageWithTrace extends ChatMessageRecord {
   traceId: string | null;
+  /**
+   * Rendered media annotation for this message (` [photo: <description>]` /
+   * ` [photo]`), so a media message reads as text instead of blank content.
+   * Null when the message carries no media.
+   */
+  mediaSuffix?: string | null;
 }

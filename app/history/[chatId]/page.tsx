@@ -5,6 +5,7 @@ import { Button, EmptyState, PageHeader } from "@/components/ui";
 import { LiveIndicator } from "@/components/realtime/LiveIndicator";
 import { getChatHistory } from "@/features/history/server/service";
 import type { ChatMessageWithTrace } from "@/features/history/server/schema";
+import { getMediaSuffixesForMessages } from "@/features/vision/server/service";
 import { ChatHistoryTable } from "@/features/history/ui/ChatHistoryTable";
 
 // History is read from the database at request time.
@@ -25,7 +26,9 @@ export default async function ChatHistoryPage({
   let messages: ChatMessageWithTrace[] | null = null;
   let dbError: string | null = null;
   try {
-    messages = await getChatHistory(chatId);
+    messages = await getChatHistory(chatId, {
+      loadMediaSuffixes: (ids) => getMediaSuffixesForMessages(chatId, ids),
+    });
   } catch (err) {
     dbError = err instanceof Error ? err.message : "Could not read history from the database";
   }

@@ -11,7 +11,11 @@ import {
   listRecentMedia,
   markDescribed,
 } from "./repository";
-import { describeAndStore, getMediaAnnotationsForMessages } from "./service";
+import {
+  describeAndStore,
+  getMediaAnnotationsForMessages,
+  getMediaSuffixesForMessages,
+} from "./service";
 
 let ctx: TestDb;
 
@@ -94,6 +98,17 @@ describe("message_media repository", () => {
     expect(annotations.get(20)).toEqual({ kind: "photo", status: "described", description: "a cat" });
     expect(annotations.get(21)).toEqual({ kind: "photo", status: "pending", description: null });
     expect(annotations.has(99)).toBe(false);
+  });
+
+  it("renders media suffixes for the /history + transcript display", async () => {
+    const described = await seedPending({ telegramMessageId: 22 });
+    await markDescribed(ctx.db, described!.id, "a red car");
+    await seedPending({ telegramMessageId: 23 }); // still pending
+
+    const suffixes = await getMediaSuffixesForMessages("5", [22, 23, 99], ctx.db);
+    expect(suffixes.get(22)).toBe(" [photo: a red car]"); // described → shows the recognition
+    expect(suffixes.get(23)).toBe(" [photo]"); // pending → bare marker, never blank
+    expect(suffixes.has(99)).toBe(false);
   });
 });
 

@@ -73,6 +73,9 @@ export function ChatHistoryTable({
                   >
                     {m.content}
                   </span>
+                  {m.mediaSuffix ? (
+                    <span className="text-muted italic">{m.mediaSuffix}</span>
+                  ) : null}
                   <span className="ml-2 inline-flex gap-1 align-middle">
                     {m.editedAt ? (
                       <Badge tone="warning">edited</Badge>

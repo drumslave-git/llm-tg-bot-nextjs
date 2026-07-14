@@ -37,8 +37,22 @@ function MediaCard({ media }: { media: MediaView }) {
   return (
     <div className="flex flex-col overflow-hidden rounded-lg border border-border bg-surface-2">
       <div className="flex aspect-video items-center justify-center overflow-hidden bg-surface-3">
-        {media.preview ? (
-          // Stored base64 thumbnail for a pending image.
+        {media.frames && media.frames.length > 1 ? (
+          // A video/GIF: the ordered grid of every sampled frame.
+          <div className="grid h-full w-full grid-cols-5 gap-px bg-border">
+            {media.frames.map((frame, i) => (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                key={i}
+                src={frame}
+                alt={`Frame ${i + 1}`}
+                title={`Frame ${i + 1} of ${media.frames!.length}`}
+                className="h-full w-full bg-surface-3 object-cover"
+              />
+            ))}
+          </div>
+        ) : media.preview ? (
+          // Stored base64 thumbnail for a pending still image.
           // eslint-disable-next-line @next/next/no-img-element
           <img src={media.preview} alt="" className="h-full w-full object-contain" />
         ) : (

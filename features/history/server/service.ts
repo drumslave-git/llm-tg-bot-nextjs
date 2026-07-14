@@ -337,6 +337,14 @@ function traceCorrelationFor(record: ChatMessageRecord): string | null {
  */
 export async function getChatHistory(
   chatId: string,
+  options: {
+    /**
+     * Resolve media annotations (` [photo: <description>]`) for the given message
+     * ids so a media message shows its recognition instead of blank content.
+     * Injected so history stays decoupled from the vision feature.
+     */
+    loadMediaSuffixes?: (telegramMessageIds: number[]) => Promise<ReadonlyMap<number, string>>;
+  } = {},
   db: DrizzleDb = getDb(),
 ): Promise<ChatMessageWithTrace[]> {
   const records = await getChatMessages(db, chatId);
@@ -344,8 +352,15 @@ export async function getChatHistory(
     .map(traceCorrelationFor)
     .filter((value): value is string => value != null);
   const traceIds = await getLatestTraceIdsByCorrelation(db, correlations);
+  const mediaSuffixes = options.loadMediaSuffixes
+    ? await options.loadMediaSuffixes(records.map((r) => r.telegramMessageId)).catch(() => undefined)
+    : undefined;
   return records.map((record) => {
     const correlation = traceCorrelationFor(record);
-    return { ...record, traceId: correlation ? (traceIds.get(correlation) ?? null) : null };
+    return {
+      ...record,
+      traceId: correlation ? (traceIds.get(correlation) ?? null) : null,
+      mediaSuffix: mediaSuffixes?.get(record.telegramMessageId) ?? null,
+    };
   });
 }

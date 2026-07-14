@@ -56,7 +56,7 @@ describe("recordIncomingMessage", () => {
       ctx.db,
     );
     expect(dup).toBeNull();
-    expect(await getChatHistory("5", ctx.db)).toHaveLength(1);
+    expect(await getChatHistory("5", {}, ctx.db)).toHaveLength(1);
   });
 
   it("ignores an empty message rather than storing a blank row", async () => {
@@ -65,7 +65,7 @@ describe("recordIncomingMessage", () => {
       ctx.db,
     );
     expect(out).toBeNull();
-    expect(await getChatHistory("5", ctx.db)).toHaveLength(0);
+    expect(await getChatHistory("5", {}, ctx.db)).toHaveLength(0);
   });
 });
 
@@ -84,8 +84,28 @@ describe("getChatHistory", () => {
       ctx.db,
     );
 
-    const messages = await getChatHistory("5", ctx.db);
+    const messages = await getChatHistory("5", {}, ctx.db);
     expect(messages.map((m) => m.content)).toEqual(["third", "second", "first"]);
+  });
+
+  it("annotates each message with a media suffix from the injected loader", async () => {
+    await recordIncomingMessage(
+      { chatId: "5", telegramMessageId: 10, userId: "100", content: "", sentAt: TODAY, hasMedia: true },
+      ctx.db,
+    );
+    await recordIncomingMessage(
+      { chatId: "5", telegramMessageId: 11, userId: "100", content: "hi", sentAt: TODAY },
+      ctx.db,
+    );
+
+    const messages = await getChatHistory(
+      "5",
+      { loadMediaSuffixes: async (ids) => new Map(ids.filter((id) => id === 10).map((id) => [id, " [photo: a cat]"])) },
+      ctx.db,
+    );
+    const byId = new Map(messages.map((m) => [m.telegramMessageId, m]));
+    expect(byId.get(10)?.mediaSuffix).toBe(" [photo: a cat]"); // media message annotated
+    expect(byId.get(11)?.mediaSuffix).toBeNull(); // text message unannotated
   });
 });
 
@@ -117,7 +137,7 @@ describe("getChatHistory trace links", () => {
       ctx.db,
     );
 
-    const messages = await getChatHistory("5", ctx.db);
+    const messages = await getChatHistory("5", {}, ctx.db);
     const byMsg = (id: number) => messages.find((m) => m.telegramMessageId === id)!;
     // Both the user turn and its reply resolve to the same handling trace.
     expect(byMsg(1).traceId).toBe(trace.id);
@@ -299,7 +319,7 @@ describe("applyMessageEdit", () => {
     expect(updated).toMatchObject({ content: "fixed" });
     expect(updated?.editedAt).not.toBeNull();
 
-    const stored = await getChatHistory("5", ctx.db);
+    const stored = await getChatHistory("5", {}, ctx.db);
     expect(stored[0].content).toBe("fixed");
 
     const { traces } = await listTraces(ctx.db, { feature: "history" });

@@ -66,8 +66,10 @@ export interface MediaView {
   kind: MediaKind;
   status: MediaStatus;
   description: string | null;
-  /** `data:<mime>;base64,…` for a pending row with bytes, else null. */
+  /** `data:<mime>;base64,…` for a pending row with bytes, else null (first frame for a video). */
   preview: string | null;
+  /** All sampled frames as data URLs for a pending video/GIF, else null. */
+  frames: string[] | null;
   createdAt: string;
   describedAt: string | null;
 }

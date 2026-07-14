@@ -10,7 +10,7 @@ import { publishEvent } from "@/server/realtime/hub";
 import { startTrace } from "@/server/trace";
 
 import { detectMessageMedia } from "../detect";
-import { frameSequenceHint } from "../format";
+import { frameSequenceHint, renderMediaSuffix } from "../format";
 import type { DetectedMedia, ImagePayload, MediaAnnotation, MediaKind, MediaView } from "../types";
 import { buildDescribeMessages } from "./describe";
 import { VIDEO_FRAME_COUNT, extractVideoFrames } from "./frames";
@@ -298,8 +298,33 @@ export async function getMediaAnnotationsForMessages(
   return getMediaAnnotations(db, chatId, telegramMessageIds);
 }
 
+/**
+ * Rendered media suffixes (` [photo: <description>]` / ` [photo]`) keyed by
+ * Telegram message id — how a media message reads as text. Shared by the reply
+ * transcript window and the `/history` display so both show the same annotation.
+ */
+export async function getMediaSuffixesForMessages(
+  chatId: string,
+  telegramMessageIds: number[],
+  db: DrizzleDb = getDb(),
+): Promise<Map<number, string>> {
+  const annotations = await getMediaAnnotations(db, chatId, telegramMessageIds);
+  const suffixes = new Map<number, string>();
+  for (const [id, annotation] of annotations) {
+    const suffix = renderMediaSuffix(annotation);
+    if (suffix) suffixes.set(id, suffix);
+  }
+  return suffixes;
+}
+
 /** Map a stored row to its dashboard view (bytes → preview only while pending). */
 function toView(record: MediaRecord): MediaView {
+  const pending = record.status === "pending";
+  // A video/GIF exposes all its sampled frames; a still image exposes one preview.
+  const frames =
+    pending && record.frames && record.frames.length > 0
+      ? record.frames.map((base64) => `data:image/jpeg;base64,${base64}`)
+      : null;
   return {
     id: record.id,
     chatId: record.chatId,
@@ -308,9 +333,10 @@ function toView(record: MediaRecord): MediaView {
     status: record.status,
     description: record.description,
     preview:
-      record.status === "pending" && record.dataBase64
+      pending && record.dataBase64
         ? `data:${record.mimeType ?? "image/jpeg"};base64,${record.dataBase64}`
         : null,
+    frames,
     createdAt: record.createdAt,
     describedAt: record.describedAt,
   };
