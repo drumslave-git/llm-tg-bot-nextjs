@@ -30,6 +30,64 @@ Next: **Priority 9 — Mood feature** (mood/personality state + injection into r
 
 ### Session log
 
+- 2026-07-14 (Testing infrastructure): **Transport-boundary refactor + bot-less
+  flow simulator + opt-in real-LLM flow test** (user: "improve testing — test flows
+  without the bot (it's just a source of events + data, can be simulated); test
+  flows against the real LLM (DATABASE_URL + LLM backend config in DB is enough)").
+  - **Decisions (user, AskUserQuestion):** (1) simulator surface = **test harness
+    helper** only (no dashboard page / CLI); (2) real-LLM gating = **opt-in against
+    the real `DATABASE_URL`** (reads live `getLlmRuntime()`), skipped unless
+    `LLM_LIVE=1`; (3) refactor depth = **extract the transport boundary** (not a
+    minimal fake-context).
+  - **Insight:** the bot-messaging *service* (`handleIncomingMessage`) was already
+    fully DI'd + unit-tested; the untested, bot-coupled surface was the ~300-line
+    runtime glue in `bot-manager.ts` (`onMessage` + `buildDeps`) — remember/mirror/
+    vision-ingest/prompt/tools/LLM/trace/deliver — unreachable without a live grammy
+    `Context` and poller. The bot is only two edges: an incoming `Context` and a
+    reply sink (`ctx.reply`/typing); vision's file download (`telegram-files.ts`)
+    was already grammy-free (token-only). So the boundary is clean.
+  - **New `server/telegram/transport.ts`:** `IncomingUpdate` (`{ message, botInfo,
+    resolveToken }` — token resolved lazily, only when the turn carries media) +
+    `ReplyTransport` (`sendReply`/`sendTyping`). Re-exports `BotIdentity`.
+  - **New `server/telegram/process-update.ts`:** `processUpdate(update, transport,
+    overrides?)` + `processEditedUpdate(message)` — the whole pipeline moved out of
+    `bot-manager`, **grammy-free** (every `ctx.*` → `update.message.*` / `transport.*`).
+    `ProcessOverrides.generateReply` is the one test seam (default = real
+    DB-configured LLM + tool loop), so a flow can run deterministically *or* against
+    the real provider. No behavior change (verbatim move; the typing refresh
+    interval stays in the pipeline, calling `transport.sendTyping` per tick).
+  - **Slimmed `bot-manager.ts`:** now only the Telegram edge — poller lifecycle
+    (start/stop/status, unchanged `globalThis` singleton) + a thin `grammyTransport(ctx)`
+    adapter and `onMessage`/`onEditedMessage` that map a live `Context` onto
+    `processUpdate`/`processEditedUpdate`.
+  - **New `test/simulate.ts`:** `simulateUpdate(input, overrides?)` builds a
+    synthetic `Message` from a compact input (`chatId`/`chatType`/`from`/`text`/
+    `replyTo`/…), runs the **real** `processUpdate` through a capturing
+    `ReplyTransport`, and returns `{ outcome, replies, typingCalls }`. Media is
+    skipped by default (no real Telegram files behind a sim); token is injectable.
+  - **`test/db.ts`:** `TestDb` now exposes `connectionUri` so a flow test can point
+    the app's own pool (`getDb()`/`getPool()`, used *inside* the pipeline) at the
+    same Testcontainer by setting `DATABASE_URL` before the first query.
+  - **New `server/telegram/process-update.integration.test.ts`** (real Postgres,
+    injected deterministic generator, +5): private message → remembered + both turns
+    mirrored + replied + traced (bot-messaging, success); un-addressed group chatter
+    → ignored but still passively captured (user remembered + mirrored, **no**
+    bot-messaging reply trace — first-sight `known-users`/`known-groups` capture
+    traces are separate); group `@mention` → replied; maintenance mode → non-owner
+    turned away with the notice + no LLM call, owner let through. Proves the runtime
+    glue writes through the app's own `getDb()`.
+  - **New `server/telegram/live-flow.integration.test.ts`** (opt-in, `describe.skipIf(
+    !LLM_LIVE)`): loads `.env` via `@next/env`, reads live `getLlmRuntime()`, drives
+    `simulateUpdate` with **no** generator override (real provider) against a
+    dedicated synthetic chat/user id, asserts a non-empty reply + a success
+    bot-messaging trace, then deletes every row it wrote (messages, media, traces +
+    events by `correlationId` prefix, the test user). Run:
+    `LLM_LIVE=1 npm run test:integration -- live-flow`.
+  - Checks: lint ✓ (0 warnings), typecheck ✓, unit **214** ✓, integration **101
+    passed + 1 skipped** (the live test; was 96 → +5 flow). `build` **not run** — a
+    dev server is live on 3200 (`dont-clobber-running-dev-server`); typecheck covers
+    type validity and the change is internal (no deps/config).
+
 - 2026-07-14 (Priority 7 follow-up): **Vision pass split — describe always, attach
   images to the reply only when the message has text** (user refinement of the
   2-pass flow: "1 pass always — describe and store in history; conditional is the

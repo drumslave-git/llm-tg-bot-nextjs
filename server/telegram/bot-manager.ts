@@ -2,45 +2,10 @@ import "server-only";
 
 import { Bot, type Context } from "grammy";
 
-import {
-  getBotPolicy,
-  getLlmRuntime,
-  getTelegramBotToken,
-} from "@/features/settings/server/service";
-import type { BotPolicy } from "@/features/settings/server/service";
-import { getActivePersonalityPrompt } from "@/features/personalities/server/service";
-import {
-  handleIncomingMessage,
-  type BotMessagingDeps,
-  type IncomingMessage,
-} from "@/features/bot-messaging/server/service";
-import {
-  applyMessageEdit,
-  composeCurrentTurn,
-  getConversationWindow,
-  recordAssistantMessage,
-  recordIncomingMessage,
-} from "@/features/history/server/service";
-import { formatKnownUserLabel } from "@/features/known-users/format";
-import { getUserContext, rememberUser } from "@/features/known-users/server/service";
-import {
-  getGroupContext,
-  rememberGroupActivity,
-} from "@/features/known-groups/server/service";
-import { getToolset } from "@/features/mcp-tools/server/service";
-import { findReplyMediaMessage, messageHasVisionMedia } from "@/features/vision/detect";
-import { mediaKindLabel, toVisionParts } from "@/features/vision/format";
-import {
-  describeAndStore,
-  getMediaSuffixesForMessages,
-  ingestMessageMedia,
-  loadReplyTargetImages,
-} from "@/features/vision/server/service";
-import { pokeVisionBackfill } from "@/features/vision/server/backfill-scheduler";
-import { ApiError } from "@/lib/api-error";
-import { chatCompletion, type ChatContentPart, type ChatMessage } from "@/server/llm/client";
-import { chatCompletionWithTools } from "@/server/llm/tool-loop";
-import { runWithToolContext } from "@/server/mcp/context";
+import { getTelegramBotToken } from "@/features/settings/server/service";
+
+import { processEditedUpdate, processUpdate } from "./process-update";
+import type { IncomingUpdate, ReplyTransport } from "./transport";
 
 /**
  * In-process Telegram bot lifecycle (long polling), owned by a single manager.
@@ -51,10 +16,10 @@ import { runWithToolContext } from "@/server/mcp/context";
  * enforced here by a `globalThis` singleton that survives module re-evaluation
  * across Next bundles (instrumentation vs. Route Handlers) and dev hot-reload.
  *
- * The manager reads its token and LLM runtime from DB-backed settings at
- * start/handle time, so no bot secret lives in env. Reply generation resolves
- * the current LLM config per message; a token change requires a restart (the
- * poller binds the token at start).
+ * This module is now only the Telegram *edge*: the poller lifecycle plus a thin
+ * grammy adapter that maps a live `Context` onto the transport-agnostic
+ * {@link processUpdate} pipeline. All message-handling logic lives in
+ * `process-update.ts`, so it runs identically without a bot (see `test/simulate`).
  */
 
 export type BotState = "stopped" | "running" | "error";
@@ -96,360 +61,42 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** Telegram expires a chat action after ~5s; refresh just under that. */
-const TYPING_REFRESH_MS = 4_500;
-
-/** Human label for a raw Telegram user, matching the known-user label shape. */
-function labelForTelegramUser(user: {
-  id: number;
-  first_name?: string;
-  last_name?: string;
-  username?: string;
-}): string {
-  return formatKnownUserLabel({
-    firstName: user.first_name ?? null,
-    lastName: user.last_name ?? null,
-    username: user.username ?? null,
-    userId: String(user.id),
-  });
-}
-
-/** Build the per-message collaborators the bot-messaging service needs. */
-function buildDeps(
-  ctx: Context,
-  bot: { id: number; username: string },
-  policy: BotPolicy,
-  personalityPrompt: string | null,
-  visionAttachment: {
-    imageParts: ChatContentPart[];
-    note?: string;
-    /**
-     * The current message's id when its freshly-ingested media must be recognized
-     * *before* the reply (pass 1 — always, so history stores the description).
-     * Absent for replied-to media, which is not re-described here.
-     */
-    recognizeMessageId?: number;
-    /** Whether to attach the images to the reply (pass 2 — only when the message has text). */
-    attachToReply: boolean;
-  } | null,
-): BotMessagingDeps {
-  const chatId = String(ctx.chat!.id);
-  const isGroup = ctx.chat!.type !== "private";
-  const currentMessageId = ctx.message!.message_id;
-  const senderId = ctx.from?.id != null ? String(ctx.from.id) : null;
-  const botLabel = `You (@${bot.username})`;
-
+/** Grammy `Context` as the outbound sink for the pipeline. */
+function grammyTransport(ctx: Context): ReplyTransport {
   return {
-    bot,
-    policy,
-    personalityPrompt,
-    // Called only for an addressed message about to be answered (after the
-    // addressing/maintenance gates), so recognition here runs exactly when the
-    // flow wants it: recognize → store in history → reply with images + result.
-    loadVision: visionAttachment
-      ? async () => {
-          const va = visionAttachment;
-          let note = va.note;
-          let description: string | null = null;
-          let mediaLabel = "media";
-          // Pass 1 (always for the current media): recognize it and store the
-          // description on the media row — this drops the stored bytes, so the
-          // /history mirror shows it and there is nothing left to backfill.
-          if (va.recognizeMessageId != null) {
-            const runtime = await getLlmRuntime().catch(() => null);
-            if (runtime) {
-              const conn = { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey };
-              const described = await describeAndStore(
-                { chatId, telegramMessageId: va.recognizeMessageId },
-                { complete: (messages) => chatCompletion(conn, { model: runtime.model, messages }) },
-              ).catch(() => null);
-              if (described?.description) {
-                description = described.description;
-                mediaLabel = mediaKindLabel(described.kind);
-              }
-            }
-          }
-          // Pass 2 (conditional): attach the images to the reply only when asked
-          // (the message had text). Otherwise the reply is generated from the
-          // recognition text alone — no images, one vision pass total.
-          if (va.attachToReply) {
-            if (description) {
-              const recognized = `Recognition of the media above: ${description}`;
-              note = note ? `${note}\n\n${recognized}` : recognized;
-            }
-            return { imageParts: va.imageParts, note };
-          }
-          const recognized = description
-            ? `The user sent a ${mediaLabel} (no caption). Its content: ${description}`
-            : note;
-          return { imageParts: [], note: recognized };
-        }
-      : undefined,
-    startTyping() {
-      // Preserve the forum-topic thread so typing shows in the right place.
-      const threadId = ctx.message?.message_thread_id;
-      const other = threadId != null ? { message_thread_id: threadId } : undefined;
-      const tick = () => void ctx.replyWithChatAction("typing", other).catch(() => undefined);
-      tick();
-      const interval = setInterval(tick, TYPING_REFRESH_MS);
-      return () => clearInterval(interval);
-    },
-    loadHistory() {
-      return getConversationWindow({
-        chatId,
-        botLabel,
-        excludeTelegramMessageId: currentMessageId,
-        // Turn stored media descriptions into transcript suffixes so a past image
-        // turn reads as text (e.g. ` [photo: a red car…]`).
-        loadMediaSuffixes: (ids) => getMediaSuffixesForMessages(chatId, ids),
-      });
-    },
-    // Render the current message as a transcript line: id anchor, sender label,
-    // and its reply target resolved against the mirror (an anchor when stored,
-    // the quoted sender + full text inlined when not). Best-effort — a failure
-    // falls back to the raw text rather than dropping the reply.
-    loadCurrentTurn: () => {
-      const message = ctx.message!;
-      const from = ctx.from;
-      const replyTo = message.reply_to_message;
-      return composeCurrentTurn({
-        chatId,
-        telegramMessageId: currentMessageId,
-        senderLabel: from && !from.is_bot ? labelForTelegramUser(from) : null,
-        content: message.text ?? message.caption ?? "",
-        replyTo: replyTo
-          ? {
-              telegramMessageId: replyTo.message_id,
-              senderLabel: replyTo.from
-                ? replyTo.from.id === bot.id
-                  ? botLabel
-                  : labelForTelegramUser(replyTo.from)
-                : null,
-              text: replyTo.text ?? replyTo.caption ?? null,
-              quote: message.quote?.text ?? null,
-            }
-          : null,
-      }).catch(() => null);
-    },
-    // Inject the chat's identity context: in a group the known-participant
-    // roster, in a private chat who the bot is talking to (so the model can
-    // address them and has a reference name for the alias tool). Best-effort — a
-    // lookup failure resolves null rather than dropping the reply.
-    loadChatContext: isGroup
-      ? () =>
-          getGroupContext(chatId)
-            .then((c) => (c ? { content: c.content, data: { memberCount: c.memberCount } } : null))
-            .catch(() => null)
-      : senderId != null
-        ? () => getUserContext(senderId).catch(() => null)
-        : undefined,
-    async recordReply(input) {
-      await recordAssistantMessage({
-        chatId,
-        telegramMessageId: input.telegramMessageId,
-        content: input.content,
-        replyToMessageId: input.replyToMessageId,
-      });
-    },
-    async generateReply(messages: ChatMessage[], onToolCall) {
-      const runtime = await getLlmRuntime();
-      if (!runtime) {
-        throw ApiError.serviceUnavailable("LLM is not configured — set the endpoint and model in Settings");
-      }
-      const conn = { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey };
-      // No tools registered → a single inference (cache-friendly path). A reply
-      // that needs no tool still costs one inference even when tools are offered.
-      const toolset = await getToolset();
-      if (!toolset) {
-        return chatCompletion(conn, { model: runtime.model, messages });
-      }
-      // Run the tool-call loop with the current chat bound, so tools only ever
-      // read this conversation's data.
-      return runWithToolContext({ chatId }, () =>
-        chatCompletionWithTools(conn, {
-          model: runtime.model,
-          messages,
-          tools: toolset.tools,
-          callTool: toolset.callTool,
-          onToolCall: (rec) =>
-            onToolCall?.({ name: rec.name, args: rec.args, result: rec.result, ok: rec.ok }),
-        }),
-      );
-    },
-    async sendReply(text: string) {
+    async sendReply(text, opts) {
       const sent = await ctx.reply(text, {
-        reply_parameters: { message_id: currentMessageId },
+        reply_parameters: { message_id: opts.replyToMessageId },
       });
       return { messageId: sent.message_id };
+    },
+    sendTyping(opts) {
+      const other =
+        opts.threadId != null ? { message_thread_id: opts.threadId } : undefined;
+      void ctx.replyWithChatAction("typing", other).catch(() => undefined);
     },
   };
 }
 
-/** Map a grammy update to the service's normalized input and handle it. */
+/** Map a grammy message update onto the transport-agnostic pipeline. */
 async function onMessage(ctx: Context): Promise<void> {
   const message = ctx.message;
   if (!message || !ctx.chat) return;
 
-  // Live traffic: push the idle vision-backfill run out and yield any batch in
-  // flight, so backfill only ever runs while the bot is quiet.
-  pokeVisionBackfill();
-
-  // Remember every human sender + mirror every human message (addressed or not),
-  // so the operator sees who talks to the bot and the history window has the full
-  // running conversation. Both are best-effort and must not block handling.
-  const from = ctx.from;
-  const text = message.text ?? message.caption ?? "";
-  const chat = ctx.chat;
-  const chatId = String(chat.id);
-  const hasMedia = messageHasVisionMedia(message);
-  if (from && !from.is_bot) {
-    await rememberUser({
-      userId: String(from.id),
-      username: from.username?.toLowerCase() ?? null,
-      firstName: from.first_name ?? null,
-      lastName: from.last_name ?? null,
-    });
-    // In a group, also remember the group and record this sender as a member, so
-    // the operator sees the bot's groups and the roster is available for context.
-    // Runs after rememberUser so the membership FK to known_users is satisfied.
-    if (chat.type === "group" || chat.type === "supergroup") {
-      await rememberGroupActivity({
-        chatId,
-        title: chat.title,
-        type: chat.type,
-        userId: String(from.id),
-      });
-    }
-    // Mirror the message when it has text or media (a media-only message still
-    // belongs in the transcript — its image is described separately).
-    if (text.trim() || hasMedia) {
-      await recordIncomingMessage({
-        chatId,
-        telegramMessageId: message.message_id,
-        userId: String(from.id),
-        content: text,
-        replyToMessageId: message.reply_to_message?.message_id ?? null,
-        sentAt: new Date(message.date * 1000),
-        hasMedia,
-      });
-    }
-  }
-
-  // Vision: ingest this message's media (passive, stored as base64) and resolve
-  // the image(s) to attach to the current turn — either on the message itself or
-  // on a replied-to image. The bot token (from settings) is needed to download
-  // Telegram files. Best-effort — any failure just yields a text-only reply.
-  let visionAttachment:
-    | {
-        imageParts: ChatContentPart[];
-        note?: string;
-        /** Current media to describe+store (pass 1). Always set for current media. */
-        recognizeMessageId?: number;
-        /** Whether to attach the images to the reply (pass 2). */
-        attachToReply: boolean;
-      }
-    | null = null;
-  const replyMedia = hasMedia ? null : findReplyMediaMessage(message);
-  if (hasMedia || replyMedia) {
-    const token = await getTelegramBotToken().catch(() => null);
-    if (token) {
-      if (hasMedia) {
-        const ingested = await ingestMessageMedia({
-          token,
-          chatId,
-          telegramMessageId: message.message_id,
-          message,
-        }).catch(() => null);
-        if (ingested && ingested.images.length > 0) {
-          // Pass 1 (always): recognize + store the current media in history.
-          // Pass 2 (conditional): attach the images to the reply only when the
-          // message also carries text (a real question). A media-only message is
-          // answered from the recognition text alone — one vision pass.
-          visionAttachment = {
-            imageParts: toVisionParts(ingested.images),
-            note: ingested.note ?? undefined,
-            recognizeMessageId: message.message_id,
-            attachToReply: Boolean(text.trim()),
-          };
-        }
-      } else if (replyMedia) {
-        const loaded = await loadReplyTargetImages({ token, chatId, message: replyMedia }).catch(
-          () => null,
-        );
-        if (loaded && loaded.images.length > 0) {
-          const base = `The user is asking about the ${mediaKindLabel(loaded.kind)} they replied to (shown here).`;
-          // A replied-to reference is explicit — always show the media to the reply.
-          visionAttachment = {
-            imageParts: toVisionParts(loaded.images),
-            note: loaded.note ? `${base} ${loaded.note}` : base,
-            attachToReply: true,
-          };
-        }
-      }
-    }
-  }
-
-  const incoming: IncomingMessage = {
+  const update: IncomingUpdate = {
     message,
-    chatId: ctx.chat.id,
-    chatType: ctx.chat.type,
-    messageId: message.message_id,
-    fromId: ctx.from?.id,
-    fromIsBot: ctx.from?.is_bot ?? false,
-    text,
-    // A loadable image (on this message or a replied-to one) makes a caption-less
-    // message real content, so it is answered and described like any other.
-    hasVision: visionAttachment != null,
+    botInfo: { id: ctx.me.id, username: ctx.me.username },
+    // The token is only needed when the turn carries media; resolve it lazily.
+    resolveToken: () => getTelegramBotToken(),
   };
-
-  const [policy, personalityPrompt] = await Promise.all([
-    getBotPolicy(),
-    getActivePersonalityPrompt(),
-  ]);
-
-  // Recognition of the current message's media happens *before* the reply, inside
-  // `loadVision` (only for an addressed message that also carries text): it is
-  // described, stored in history, and its bytes dropped. A media-only message is
-  // answered in one pass and its media, like unaddressed media, is described later
-  // by the backfill job.
-  await handleIncomingMessage(
-    incoming,
-    buildDeps(
-      ctx,
-      { id: ctx.me.id, username: ctx.me.username },
-      policy,
-      personalityPrompt,
-      visionAttachment,
-    ),
-  );
+  await processUpdate(update, grammyTransport(ctx));
 }
 
-/**
- * Mirror a Telegram `edited_message` into history so the stored conversation
- * tracks edits 1:1. Only text/caption edits are mirrored; edits with no textual
- * content are ignored.
- */
+/** Map a grammy `edited_message` update onto the history-edit mirror. */
 async function onEditedMessage(ctx: Context): Promise<void> {
   const edited = ctx.editedMessage;
   if (!edited || !ctx.chat) return;
-  const content = edited.text ?? edited.caption ?? "";
-  if (!content.trim()) return;
-
-  await applyMessageEdit(
-    {
-      chatId: String(ctx.chat.id),
-      telegramMessageId: edited.message_id,
-      content,
-      editedAt: new Date((edited.edit_date ?? edited.date) * 1000),
-    },
-    {
-      kind: "telegram",
-      actor: ctx.from ? String(ctx.from.id) : String(ctx.chat.id),
-      correlationId: `${ctx.chat.id}:${edited.message_id}`,
-    },
-  ).catch((err) => {
-    console.error("Failed to mirror edited message:", errorMessage(err));
-  });
+  await processEditedUpdate(edited);
 }
 
 /**
