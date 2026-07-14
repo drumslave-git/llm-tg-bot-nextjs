@@ -82,6 +82,25 @@ describe("handleIncomingMessage", () => {
     expect(messages.at(-1).content).toEqual([{ type: "text", text: "" }, ...imageParts]);
   });
 
+  it("folds the recognition into the turn text when no images are attached (media-only)", async () => {
+    const d = deps({
+      loadVision: vi.fn().mockResolvedValue({
+        imageParts: [],
+        note: "The user sent a photo (no caption). Its content: a red car.",
+      }),
+    });
+    await handleIncomingMessage(incoming({ text: "", hasVision: true }), d);
+    const messages = (d.generateReply as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    const userTurn = messages.at(-1);
+    // No image parts → the turn is plain text carrying the recognition.
+    expect(typeof userTurn.content).toBe("string");
+    expect(userTurn.content).toContain("a red car");
+    const step = recorder.event.mock.calls
+      .map((c) => c[0])
+      .find((e) => e.message === "vision media attached");
+    expect(step.data).toEqual({ imageCount: 0, hasNote: true });
+  });
+
   it("ignores un-addressed group chatter without tracing", async () => {
     const d = deps();
     const m = { message_id: 7, date: 0, chat: { id: 5, type: "group" }, text: "chatter" } as Message;
@@ -142,7 +161,7 @@ describe("handleIncomingMessage", () => {
     const step = recorder.event.mock.calls
       .map((c) => c[0])
       .find((e) => e.message === "vision media attached");
-    expect(step.data).toEqual({ imageCount: 1, fromReply: false });
+    expect(step.data).toEqual({ imageCount: 1, hasNote: false });
   });
 
   it("appends the reply note to the text part when media comes from a replied-to image", async () => {

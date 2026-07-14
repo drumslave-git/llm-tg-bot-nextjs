@@ -125,10 +125,12 @@ function buildDeps(
     note?: string;
     /**
      * The current message's id when its freshly-ingested media must be recognized
-     * *before* the reply (so history stores the description and the reply carries
-     * it). Absent for replied-to media, which is not re-described here.
+     * *before* the reply (pass 1 — always, so history stores the description).
+     * Absent for replied-to media, which is not re-described here.
      */
     recognizeMessageId?: number;
+    /** Whether to attach the images to the reply (pass 2 — only when the message has text). */
+    attachToReply: boolean;
   } | null,
 ): BotMessagingDeps {
   const chatId = String(ctx.chat!.id);
@@ -146,26 +148,41 @@ function buildDeps(
     // flow wants it: recognize → store in history → reply with images + result.
     loadVision: visionAttachment
       ? async () => {
-          let note = visionAttachment.note;
-          // Recognize the current turn's media now (before the reply). This drops
-          // the stored bytes and records the description on the media row, so the
-          // /history mirror shows it and there is nothing left to backfill. The
-          // reply still receives the images below (2-pass, per decision).
-          if (visionAttachment.recognizeMessageId != null) {
+          const va = visionAttachment;
+          let note = va.note;
+          let description: string | null = null;
+          let mediaLabel = "media";
+          // Pass 1 (always for the current media): recognize it and store the
+          // description on the media row — this drops the stored bytes, so the
+          // /history mirror shows it and there is nothing left to backfill.
+          if (va.recognizeMessageId != null) {
             const runtime = await getLlmRuntime().catch(() => null);
             if (runtime) {
               const conn = { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey };
               const described = await describeAndStore(
-                { chatId, telegramMessageId: visionAttachment.recognizeMessageId },
+                { chatId, telegramMessageId: va.recognizeMessageId },
                 { complete: (messages) => chatCompletion(conn, { model: runtime.model, messages }) },
               ).catch(() => null);
               if (described?.description) {
-                const recognized = `Recognition of the media above: ${described.description}`;
-                note = note ? `${note}\n\n${recognized}` : recognized;
+                description = described.description;
+                mediaLabel = mediaKindLabel(described.kind);
               }
             }
           }
-          return { imageParts: visionAttachment.imageParts, note };
+          // Pass 2 (conditional): attach the images to the reply only when asked
+          // (the message had text). Otherwise the reply is generated from the
+          // recognition text alone — no images, one vision pass total.
+          if (va.attachToReply) {
+            if (description) {
+              const recognized = `Recognition of the media above: ${description}`;
+              note = note ? `${note}\n\n${recognized}` : recognized;
+            }
+            return { imageParts: va.imageParts, note };
+          }
+          const recognized = description
+            ? `The user sent a ${mediaLabel} (no caption). Its content: ${description}`
+            : note;
+          return { imageParts: [], note: recognized };
         }
       : undefined,
     startTyping() {
@@ -323,7 +340,14 @@ async function onMessage(ctx: Context): Promise<void> {
   // on a replied-to image. The bot token (from settings) is needed to download
   // Telegram files. Best-effort — any failure just yields a text-only reply.
   let visionAttachment:
-    | { imageParts: ChatContentPart[]; note?: string; recognizeMessageId?: number }
+    | {
+        imageParts: ChatContentPart[];
+        note?: string;
+        /** Current media to describe+store (pass 1). Always set for current media. */
+        recognizeMessageId?: number;
+        /** Whether to attach the images to the reply (pass 2). */
+        attachToReply: boolean;
+      }
     | null = null;
   const replyMedia = hasMedia ? null : findReplyMediaMessage(message);
   if (hasMedia || replyMedia) {
@@ -337,13 +361,15 @@ async function onMessage(ctx: Context): Promise<void> {
           message,
         }).catch(() => null);
         if (ingested && ingested.images.length > 0) {
-          // A video/GIF becomes an ordered, labelled frame sequence; the note
-          // explains the frames are one clip in order. `recognizeMessageId` marks
-          // this media to be described before the reply (see loadVision).
+          // Pass 1 (always): recognize + store the current media in history.
+          // Pass 2 (conditional): attach the images to the reply only when the
+          // message also carries text (a real question). A media-only message is
+          // answered from the recognition text alone — one vision pass.
           visionAttachment = {
             imageParts: toVisionParts(ingested.images),
             note: ingested.note ?? undefined,
             recognizeMessageId: message.message_id,
+            attachToReply: Boolean(text.trim()),
           };
         }
       } else if (replyMedia) {
@@ -352,9 +378,11 @@ async function onMessage(ctx: Context): Promise<void> {
         );
         if (loaded && loaded.images.length > 0) {
           const base = `The user is asking about the ${mediaKindLabel(loaded.kind)} they replied to (shown here).`;
+          // A replied-to reference is explicit — always show the media to the reply.
           visionAttachment = {
             imageParts: toVisionParts(loaded.images),
             note: loaded.note ? `${base} ${loaded.note}` : base,
+            attachToReply: true,
           };
         }
       }
@@ -379,10 +407,11 @@ async function onMessage(ctx: Context): Promise<void> {
     getActivePersonalityPrompt(),
   ]);
 
-  // Recognition of the current message's media now happens *before* the reply,
-  // inside `loadVision` (only for addressed messages): it is described, stored in
-  // history, and its bytes dropped, so nothing is left to backfill. Unaddressed
-  // media stays pending for the backfill job.
+  // Recognition of the current message's media happens *before* the reply, inside
+  // `loadVision` (only for an addressed message that also carries text): it is
+  // described, stored in history, and its bytes dropped. A media-only message is
+  // answered in one pass and its media, like unaddressed media, is described later
+  // by the backfill job.
   await handleIncomingMessage(
     incoming,
     buildDeps(

@@ -311,13 +311,18 @@ export async function handleIncomingMessage(
       const userText = currentTurn?.content ?? text;
       let userContent: string | ChatContentPart[] = userText;
       const vision = deps.loadVision ? await deps.loadVision() : null;
-      if (vision && vision.imageParts.length > 0) {
+      // Attach the images when present; otherwise (media-only, answered from the
+      // recognition text) fold the description note into the turn text.
+      if (vision && (vision.imageParts.length > 0 || vision.note)) {
         const promptText = vision.note ? `${userText}\n\n${vision.note}` : userText;
-        userContent = [{ type: "text", text: promptText }, ...vision.imageParts];
+        userContent =
+          vision.imageParts.length > 0
+            ? [{ type: "text", text: promptText }, ...vision.imageParts]
+            : promptText;
         await trace.event({
           type: "step",
           message: "vision media attached",
-          data: { imageCount: vision.imageParts.length, fromReply: Boolean(vision.note) },
+          data: { imageCount: vision.imageParts.length, hasNote: Boolean(vision.note) },
         });
       }
 
