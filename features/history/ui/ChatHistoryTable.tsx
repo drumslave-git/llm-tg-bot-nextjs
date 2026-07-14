@@ -15,7 +15,7 @@ import {
   TableHeaderCell,
   TableRow,
 } from "@/components/ui";
-import { formatTimestamp } from "@/lib/format";
+import { Timestamp } from "@/components/time/Timestamp";
 import type { ChatMessageWithTrace } from "../server/schema";
 
 /**
@@ -57,7 +57,7 @@ export function ChatHistoryTable({
             {messages.map((m) => (
               <TableRow key={m.id}>
                 <TableCell className="whitespace-nowrap text-xs text-faint">
-                  {formatTimestamp(m.sentAt)}
+                  <Timestamp iso={m.sentAt} />
                 </TableCell>
                 <TableCell className="font-mono text-xs text-faint">{m.telegramMessageId}</TableCell>
                 <TableCell>

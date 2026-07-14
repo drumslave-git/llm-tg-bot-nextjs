@@ -19,6 +19,7 @@ import {
   type BadgeTone,
 } from "@/components/ui";
 import { useLiveRefresh } from "@/components/realtime/useLiveRefresh";
+import { Timestamp } from "@/components/time/Timestamp";
 import type {
   SelfImprovementView,
   UserFeedbackView,
@@ -36,10 +37,6 @@ const STATUS_TONE: Record<FeedbackStatus, BadgeTone> = {
   awaiting_text: "info",
   completed: "success",
 };
-
-function formatTime(iso: string): string {
-  return new Date(iso).toLocaleString();
-}
 
 function IncorporationBadges({ feedback }: { feedback: UserFeedbackView }) {
   if (feedback.prefsVersion == null && feedback.correctionsVersion == null) {
@@ -100,7 +97,7 @@ export function SelfImprovementPanel({ view }: { view: SelfImprovementView }) {
                 {feedbacks.map((feedback) => (
                   <TableRow key={feedback.id}>
                     <TableCell className="whitespace-nowrap text-muted">
-                      {formatTime(feedback.createdAt)}
+                      <Timestamp iso={feedback.createdAt} />
                     </TableCell>
                     <TableCell>{feedback.userLabel}</TableCell>
                     <TableCell>
@@ -175,7 +172,7 @@ export function SelfImprovementPanel({ view }: { view: SelfImprovementView }) {
                       {preference.model}
                     </TableCell>
                     <TableCell className="whitespace-nowrap text-muted">
-                      {formatTime(preference.createdAt)}
+                      <Timestamp iso={preference.createdAt} />
                     </TableCell>
                   </TableRow>
                 ))}
@@ -203,7 +200,7 @@ export function SelfImprovementPanel({ view }: { view: SelfImprovementView }) {
             <div className="space-y-2">
               <p className="whitespace-pre-wrap text-sm">{correction.correction}</p>
               <p className="text-xs text-muted">
-                {correction.model} · {formatTime(correction.createdAt)}
+                {correction.model} · <Timestamp iso={correction.createdAt} />
               </p>
             </div>
           ) : (

@@ -1,5 +1,6 @@
 import type { TraceEvent, TraceEventType, TraceLevel } from "@/lib/trace";
-import { formatDuration, formatTime } from "@/lib/format";
+import { Timestamp } from "@/components/time/Timestamp";
+import { formatDuration } from "@/lib/format";
 import { JsonBlock } from "./JsonBlock";
 
 /**
@@ -105,7 +106,7 @@ export function TraceTimeline({
               </span>
               <span className="ml-auto flex items-center gap-2 font-mono text-xs text-faint tabular-nums">
                 {took ? <span title="Time since previous step">+{took}</span> : null}
-                <span>{formatTime(event.ts)}</span>
+                <Timestamp iso={event.ts} timeOnly />
               </span>
             </div>
             {event.usage ? <UsageLine usage={event.usage} /> : null}

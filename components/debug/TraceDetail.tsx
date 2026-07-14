@@ -7,7 +7,8 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui";
-import { formatDuration, formatTimestamp } from "@/lib/format";
+import { Timestamp } from "@/components/time/Timestamp";
+import { formatDuration } from "@/lib/format";
 import type { Trace } from "@/lib/trace";
 import { DownloadButton } from "./DownloadButton";
 import { TraceStatusBadge } from "./TraceStatusBadge";
@@ -75,9 +76,11 @@ export function TraceDetail({ trace }: { trace: Trace }) {
             </Meta>
             <Meta label="Correlation">{trace.trigger.correlationId ?? null}</Meta>
             <Meta label="Duration">{duration ?? null}</Meta>
-            <Meta label="Started">{formatTimestamp(trace.startedAt)}</Meta>
+            <Meta label="Started">
+              <Timestamp iso={trace.startedAt} />
+            </Meta>
             <Meta label="Finished">
-              {trace.finishedAt ? formatTimestamp(trace.finishedAt) : null}
+              {trace.finishedAt ? <Timestamp iso={trace.finishedAt} /> : null}
             </Meta>
             <Meta label="Input">{trace.inputSummary ?? null}</Meta>
             {trace.relatedIds ? <RelatedIds relatedIds={trace.relatedIds} /> : null}

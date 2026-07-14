@@ -88,6 +88,62 @@ export async function appendChatMessage(
   return row ? mapRow(row) : null;
 }
 
+/** Fields for restoring a message from an export (carries the mirror's flags). */
+export interface RestoreChatMessage extends AppendChatMessage {
+  editedAt?: Date | null;
+  deletedAt?: Date | null;
+}
+
+/**
+ * Append many messages in one statement, skipping any row whose
+ * `(chat_id, telegram_message_id)` already exists — the CSV import's write path.
+ * Returns only the rows actually inserted, so the caller can report how many
+ * were duplicates without a second query.
+ */
+export async function appendChatMessages(
+  db: DrizzleDb,
+  values: readonly RestoreChatMessage[],
+): Promise<ChatMessageRecord[]> {
+  if (values.length === 0) return [];
+  const rows = await db
+    .insert(chatMessages)
+    .values(
+      values.map((v) => ({
+        chatId: v.chatId,
+        telegramMessageId: v.telegramMessageId,
+        role: v.role,
+        userId: v.userId ?? null,
+        content: v.content,
+        replyToMessageId: v.replyToMessageId ?? null,
+        sentAt: v.sentAt,
+        editedAt: v.editedAt ?? null,
+        deletedAt: v.deletedAt ?? null,
+      })),
+    )
+    .onConflictDoNothing({
+      target: [chatMessages.chatId, chatMessages.telegramMessageId],
+    })
+    .returning();
+  return rows.map(mapRow);
+}
+
+/**
+ * Every stored message, oldest first — optionally scoped to one chat. Backs the
+ * CSV export, so deleted rows are included (flagged): the export is the mirror,
+ * not a filtered view of it.
+ */
+export async function listChatMessagesForExport(
+  db: DrizzleDb,
+  chatId?: string,
+): Promise<ChatMessageRecord[]> {
+  const rows = await db
+    .select()
+    .from(chatMessages)
+    .where(chatId ? eq(chatMessages.chatId, chatId) : undefined)
+    .orderBy(asc(chatMessages.chatId), asc(chatMessages.id));
+  return rows.map(mapRow);
+}
+
 /** One message by its Telegram id within a chat, or null. */
 export async function getChatMessageByTelegramId(
   db: DrizzleDb,

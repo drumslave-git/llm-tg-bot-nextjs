@@ -15,7 +15,7 @@ Status values:
 Status: in-progress
 Owner: agent/2026-07-14
 Last updated: 2026-07-14
-Proof: `npm run lint` ✓, `npm run typecheck` ✓, `npm run test` ✓ (284 unit), `npm run test:integration` ✓ (126 + 14 skipped live, real Postgres via Testcontainers). `npm run build` not run this session — a dev server is live on 3200 and a production build would clobber it (see the Priority 6 log entry). **Priority 2 — system & personality prompts (done):** the base system prompt is a fixed code constant (`BASE_SYSTEM_PROMPT` in `features/bot-messaging/server/prompt.ts`); the operator manages personas as a **full personalities CRUD feature** (user decision — corrected from an initial single-field approach). A `personalities` table (migration `0005`: id/name/prompt/timestamps) + `settings.active_personality_id` (FK, `on delete set null`). New `features/personalities/*` (repository/schema/service/ui) with a **`/personalities` page** (create/edit/delete + set-active) and **`/personalities/debug`**; routes `GET/POST /api/personalities`, `PATCH/DELETE /api/personalities/[id]`, `PUT /api/personalities/active`; every mutation traced. Composition (`buildSystemPrompt`/`hasPersonality`, pure) is unchanged: base alone, or base + `---\nAdditional instructions:\n<persona>`; the bot-messaging service records a **`system prompt composed`** step (`personalityApplied` + full composed prompt) between `addressing check` and `request`; the runtime injects the **active** personality's prompt via `getActivePersonalityPrompt()`. Verified live: created a persona on `/personalities`, set it active (Active badge + `activeId` via API), deleted it (list emptied and active auto-cleared via the FK), all four mutations traced `success` on `/personalities/debug`; no console errors. **Known users + owner-by-dropdown**: a `known_users` table (migration `0004`) capturing everyone who messages the bot, a `/users` page with inline alias editing, and the owner is now chosen from a **dropdown of known users** (id stored directly — the earlier lazy @username→id resolution is removed). **Maintenance mode + owner checks** built and verified live (a pure `bot-messaging/policy.ts`; blocked-but-addressed messages traced as skipped). The **shared Debug UI** is now built and verified live — the last feature-contract gap for both `settings` and priority-1 `bot-messaging`. A global `/debug` page (filter by feature/status, pagination, "Download all") plus a shared `/debug/[id]` detail view (metadata panel, error panel, ordered event timeline with LLM usage, per-trace JSON download) and a feature-scoped `/settings/debug`. Backed by `server/trace/service.ts` (list/detail/bundle) over the existing recorder/repository, thin `app/api/traces/**` handlers, and reusable `components/debug/*`. Verified live against the running dev server on real recorded traces: list renders 11 traces; a bot reply detail shows LLM usage (`prompt 38 · completion 184 · total 222 · 5741ms`); an error trace shows the error panel + timeline; `/settings/debug` shows only settings traces; single + filtered bundle downloads return the `llm-tg-bot/trace-bundle@1` envelope with attachment headers; no console errors.
+Proof: `npm run lint` ✓, `npm run typecheck` ✓, `npm run test` ✓ (299 unit), `npm run test:integration` ✓ (136 + 14 skipped live, real Postgres via Testcontainers). `npm run build` not run this session — a dev server is live on 3200 and a production build would clobber it (see the Priority 6 log entry). **History CSV import/export (done, user-requested):** a `/history/transfer` page (linked from History) with operator-configurable column mapping + data preview on import, duplicate-skipping writes, chat-scoped or all-chats export, and traced imports — see the top session-log entry, which also records a **dev-environment fix**: the dev `DATABASE_URL` points at the old MVP database, whose pre-existing `chat_messages` table had silently blocked migration `0006` (`CREATE TABLE IF NOT EXISTS`) so history reads failed there; the operator dropped that table and `0006`'s DDL was replayed by hand, so the dev DB now serves history correctly (empty mirror). **Priority 2 — system & personality prompts (done):** the base system prompt is a fixed code constant (`BASE_SYSTEM_PROMPT` in `features/bot-messaging/server/prompt.ts`); the operator manages personas as a **full personalities CRUD feature** (user decision — corrected from an initial single-field approach). A `personalities` table (migration `0005`: id/name/prompt/timestamps) + `settings.active_personality_id` (FK, `on delete set null`). New `features/personalities/*` (repository/schema/service/ui) with a **`/personalities` page** (create/edit/delete + set-active) and **`/personalities/debug`**; routes `GET/POST /api/personalities`, `PATCH/DELETE /api/personalities/[id]`, `PUT /api/personalities/active`; every mutation traced. Composition (`buildSystemPrompt`/`hasPersonality`, pure) is unchanged: base alone, or base + `---\nAdditional instructions:\n<persona>`; the bot-messaging service records a **`system prompt composed`** step (`personalityApplied` + full composed prompt) between `addressing check` and `request`; the runtime injects the **active** personality's prompt via `getActivePersonalityPrompt()`. Verified live: created a persona on `/personalities`, set it active (Active badge + `activeId` via API), deleted it (list emptied and active auto-cleared via the FK), all four mutations traced `success` on `/personalities/debug`; no console errors. **Known users + owner-by-dropdown**: a `known_users` table (migration `0004`) capturing everyone who messages the bot, a `/users` page with inline alias editing, and the owner is now chosen from a **dropdown of known users** (id stored directly — the earlier lazy @username→id resolution is removed). **Maintenance mode + owner checks** built and verified live (a pure `bot-messaging/policy.ts`; blocked-but-addressed messages traced as skipped). The **shared Debug UI** is now built and verified live — the last feature-contract gap for both `settings` and priority-1 `bot-messaging`. A global `/debug` page (filter by feature/status, pagination, "Download all") plus a shared `/debug/[id]` detail view (metadata panel, error panel, ordered event timeline with LLM usage, per-trace JSON download) and a feature-scoped `/settings/debug`. Backed by `server/trace/service.ts` (list/detail/bundle) over the existing recorder/repository, thin `app/api/traces/**` handlers, and reusable `components/debug/*`. Verified live against the running dev server on real recorded traces: list renders 11 traces; a bot reply detail shows LLM usage (`prompt 38 · completion 184 · total 222 · 5741ms`); an error trace shows the error panel + timeline; `/settings/debug` shows only settings traces; single + filtered bundle downloads return the `llm-tg-bot/trace-bundle@1` envelope with attachment headers; no console errors.
 Realtime: the dashboard now updates **live over SSE** (user decision — not polling/WebSockets). Shared layer: in-process `server/realtime/hub.ts` pub/sub, `GET /api/events` SSE stream, `useLiveRefresh`/`LiveIndicator` client; the trace recorder publishes on create/settle. Verified live: with the page untouched, a newly recorded `test-connection` trace appeared at the top of `/debug` on its own; the `/api/events` stream stays open (200); no console errors. Debug rows are now fully clickable (stretched link) — clicking any cell opens the trace.
 **Priority 3 — History feature (done):** a **1:1 conversation mirror** (`chat_messages`, migration `0006`) capturing every human message and every bot reply with full metadata (chat id, Telegram message id, sender id, reply-to pointer, content, sent/edited/deleted timestamps). New `features/history/*` (repository/schema/format/service/ui). Messages are captured **passively** on every incoming message (even un-addressed group chatter) in `bot-manager.onMessage`; the delivered reply is mirrored via a `recordReply` dep. Per reply, `getConversationWindow` loads the **current UTC day's** messages and injects them as **structured prior turns** (`user`/`assistant`) between the cache-stable system prompt and the current message — the bot-messaging service records a `history window loaded` step. In groups, human turns are prefixed with the sender's known-user label. **Edits** are mirrored (`bot.on("edited_message")` → `applyMessageEdit`, traced). **Deletes:** the Telegram Bot API delivers no deletion update for ordinary chats, so user-initiated deletes cannot be mirrored — a `deleted_at` column exists to represent deletions we *can* know about (bot's own / Business-connection events) and the constraint is recorded in Decision Notes. Pages: `/history` (chat list), `/history/[chatId]` (full mirror with edited/deleted badges), `/history/debug` (shared `TraceExplorer`, edit traces). Verified live: seeded two chats → `/history` lists both (most-recent first, correct counts), `/history/777` shows the metadata mirror incl. reply pointer + an `edited` badge, `/history/debug` renders; no console errors; dev DB left clean. Base system prompt gained a short Conversation section (history-awareness).
 **Priority 4 — MCP tools basic support (done):** tools use the **real MCP SDK** (`@modelcontextprotocol/sdk`, in-process — user decision, MVP parity): one shared `McpServer` with per-feature tool registrars, linked to a `Client` over an in-process transport pair (`server/mcp/*`: `in-process-transport`, `registry` `BotMcpRegistry`, `openai-tools` conversion, `context` per-turn `AsyncLocalStorage` chat binding, `runtime` `globalThis` singleton). A **bounded, stall-guarded tool-call loop** (`server/llm/tool-loop.ts` — pure `runToolLoop` core + `chatCompletionWithTools`) appends tool results to the same `messages` array the history window feeds, so a reply that needs no tool is still a single cache-friendly inference. The **first history MCP tools** ship (user decision): `history_search` + `history_get_in_range` (`features/history/server/mcp-tools.ts`) — deeper-than-today lookups scoped to the current chat via the tool context (the model never passes a chat id). **All registered tools are always available** — there is **no per-tool on/off** (user decision, follow-up 8): the runtime always offers every registered tool via `getToolset()`. The **`/tools` page** is a read-only registry listing (grouped by feature); `GET /api/tools`. Tool **calls** are recorded as full `external_call` events on the bot-messaging **reply** trace (args + result), so they show in `/debug` — the MCP-tools feature owns no traces of its own, so it has no dedicated Debug page. Verified via the test suite (the `getToolsView`/`getToolset` unit test drives the real in-process registry end to end) + typecheck/build; an earlier live check confirmed the page renders and traces record before the on/off mechanism was removed. The remaining feature-1..4 gate is an operator-run live LLM+token round-trip.
@@ -33,6 +33,156 @@ Realtime: the dashboard now updates **live over SSE** (user decision — not pol
 Next: **Priority 10 — Memory feature** (user reprioritized 2026-07-14: **Mood moved to lowest priority (13)**, so the ordered list is now Memory → Image generation → Browser agent → Mood). Memory: extract/store/edit/retrieve/inject memories with traceable extraction and update flows, building on history + prompts + the shared background-job model. Flows are verified with the **bot-less simulation harness** (`simulateUpdate` / injected fire deps against real Postgres) — a real bot token is not a testing gate, only the live Telegram send/receive adapters remain out of in-process scope.
 
 ### Session log
+
+- 2026-07-14 (Cross-cutting UI fix, user-requested): **every dashboard date/time
+  now renders in the configured operator timezone (done)** — previously the UI
+  showed three different clocks: `lib/format.ts` hardcoded **UTC**
+  (`getUTCHours()` + a literal `" UTC"` suffix — Debug, History, Groups, Vision
+  gallery), three feature cards had their own `toLocaleString()` helper
+  (**viewer-local**, locale-dependent — Vision backfill, Self-improvement panel +
+  job card), and only `ScheduledTasksManager` used `settings.timezone`, threaded
+  down as a prop.
+  - **Shared layer (the fix, per `extract-shared-before-second-use`):**
+    `lib/format.ts` `formatTimestamp(iso, timeZone)` / `formatTime(iso, timeZone)`
+    are now `Intl.DateTimeFormat`-based (cached per zone, `hourCycle: "h23"`,
+    `timeZoneName: "short"` → `2026-07-14 21:29:48 GMT+3`), falling back to UTC
+    when the runtime does not know the zone so a mistyped setting cannot break
+    every page. New `components/time/TimezoneProvider.tsx` (client context, seeded
+    once per request by the root layout from `getTimezone()`, UTC on DB failure)
+    and `components/time/Timestamp.tsx` — a `<Timestamp iso timeOnly? fallback? />`
+    that emits a semantic `<time dateTime>` and renders from Server **and** Client
+    Components alike. **`<Timestamp>` is now the one way to render an instant**;
+    no component formats a date itself, and the zone is never passed as a prop.
+  - **Converted:** `TraceList`, `TraceDetail`, `TraceTimeline` (time-only),
+    `ChatSummaryList`, `ChatHistoryTable`, `KnownGroupsList`, `GroupMembersCard`,
+    `MediaGallery`, `VisionBackfillCard`, `SelfImprovementPanel`,
+    `SelfImprovementJobCard`, `ScheduledTasksManager` (its `timezone` prop and the
+    page's now-redundant `getTimezone()` read are gone — it reads the context).
+  - **Proof:** `npm run lint` ✓, `npm run typecheck` ✓, `npm run test` ✓ (307
+    unit — `lib/format.test.ts` gained zone-shift, cross-midnight, and
+    unknown-zone cases). Verified live on the dev server (operator zone
+    Europe/Kyiv): `/history` and `/debug` now read `… GMT+3` where they read UTC
+    before; a trace detail's timeline (`21:29:48`) matches the **time context the
+    bot itself injects** (`2026-07-14 21:29 … Europe/Kyiv`) for the same trace —
+    the UI and the bot finally agree; `/self-improvement` shows "Next run
+    2026-07-15 04:00:00 GMT+3", matching the configured 04:00 local run time;
+    `/scheduled-tasks` and `/vision` render correctly. No hydration warnings (the
+    only console errors are the pre-existing `ThemeScript` inline-script notices).
+    `npm run build` not run — the dev server is live on 3200
+    (`dont-clobber-running-dev-server`).
+  - **Remaining risk:** timestamps in **downloaded JSON trace bundles** are raw
+    ISO/UTC by design (machine-readable payloads, unchanged); only rendered UI is
+    zone-aware.
+
+- 2026-07-14 (History follow-up, user-requested): **CSV import/export for the
+  history mirror (done)** — a `/history/transfer` page reachable from History,
+  with operator-configurable column mapping and a live data preview on import.
+  - **Decisions (user, AskUserQuestion):** (1) duplicates are **skipped**, never
+    overwritten (the mirror's `(chat_id, telegram_message_id)` unique key makes a
+    re-import idempotent rather than destructive); (2) `telegram_message_id`
+    **must be mapped** — no synthetic ids, so every row still traces back to a real
+    Telegram message; (3) export covers **both** all chats and a single chat.
+  - **Fixed values for columns the file does not have (user follow-up).** Each field's
+    source is now a discriminated `ColumnSource` — `{kind:"column",header}` **or**
+    `{kind:"constant",value}` — so a file that lacks a column (a per-chat export with
+    no chat id, an all-human log with no role, a one-person log with no sender) can
+    still be imported by giving that field one value used for **every** row. The
+    mapping select gains a "— fixed value for every row —" option plus an inline
+    input. **`telegram_message_id` is the one field that cannot take a constant** (it
+    is the per-chat unique key — one value would collapse the file into a single
+    message); the option is not offered, and the server rejects it if sent anyway.
+    A constant is held to exactly the **same validation as a column** (shared
+    `validateFieldValue` — the single definition of what each field accepts, used by
+    both row coercion and constant checking), and an unusable one is reported as a
+    **mapping problem** (`invalidConstants`, one inline error) rather than as N
+    identical row errors. `MAX_CONTENT_CHARS` now lives in the client-safe `csv.ts`
+    and is re-exported by `server/schema.ts` (it had been duplicated).
+    Verified live on the operator's dev server with a `mid,body,when` file: fixed
+    Chat ID/Role/Sender applied to every previewed row, a bad fixed role (`alien`)
+    produced exactly one inline error and blocked the import, and the corrected
+    import wrote 2 rows that exported back with the constants in place (test rows +
+    traces deleted afterwards — dev DB left clean).
+  - **Shared pure module** `features/history/csv.ts` (client-safe, dependency-free):
+    RFC 4180 `parseCsv` (quotes, `""` escapes, embedded newlines, CRLF, BOM) +
+    `detectDelimiter` (`,` `;` tab `|` — Excel's European dialect and TSV),
+    `toCsv`/`rowsToCsv`, the `HISTORY_CSV_FIELDS` column model (label/required/hint/
+    aliases), `guessMapping` (alias-based auto-detection), and `mapCsvRows`
+    (per-row coercion → `{rows, errors, missing}`; ISO **or** Unix-seconds/ms dates,
+    `human`/`bot` role aliases, sender nulled on assistant rows). **The browser and
+    the server run the same module** — the preview cannot disagree with the write,
+    and the server re-parses the raw text rather than trusting the client's parse.
+  - **Server:** `features/history/server/transfer.ts` — `exportHistoryCsv(chatId?)`
+    (canonical header, deleted rows included/flagged, so an export round-trips
+    straight back through import) and `importHistoryCsv` (**traced** under
+    `history`/`import`: parse → validate → chunked bulk insert with
+    `onConflictDoNothing` → `{totalRows, imported, skippedDuplicates, errors,
+    chatIds}`; invalid rows reported per line instead of failing the file; an
+    all-invalid/empty/unmapped file is rejected). Repository gained
+    `appendChatMessages` (bulk, conflict-skipping, returns only what it inserted)
+    and `listChatMessagesForExport`. New shared `csvDownload` in `server/http.ts`
+    (sibling of `jsonDownload`; UTF-8 BOM for Excel — the parser strips it again).
+  - **Routes/UI:** `GET /api/history/export?chatId=`, `POST /api/history/import`;
+    `/history/transfer` page + `HistoryTransferPanel` (export scope picker; file →
+    auto-mapping → per-column selects → preview table of the coerced rows → per-line
+    error list → import → result summary). "Import / export" button on `/history`,
+    "Export CSV" on `/history/[chatId]`. Import publishes the `history` SSE topic.
+  - **Verified live end to end** (see the DB note below — verification ran against a
+    throwaway `csv_verify` database on a second dev server, since the operator's dev
+    DB cannot serve history at all; the scratch DB and its launch config were removed
+    afterwards): a semicolon-delimited foreign CSV (`Conversation;MsgId;Who;Text;
+    When;Author;ReplyTo`) auto-mapped all 7 columns → "5 rows · 3 valid · 2 invalid"
+    → preview rendered the coerced rows (Unix-seconds date, quoted/multi-line
+    content, assistant row with no sender + reply pointer) and listed both bad rows
+    by line → **3 imported, 0 skipped, 2 invalid**; re-importing the same file gave
+    **0 imported, 3 skipped** (idempotent); `/history/4242` showed the mirror;
+    `GET /api/history/export?chatId=4242` returned `text/csv` +
+    `attachment; filename="history-chat-4242.csv"` + a `EF BB BF` BOM and the exact
+    round-trippable rows; both imports traced `success` on `/debug?feature=history`
+    with a `CSV parsed` (headers/mapping/delimiter) → `rows validated` (warn, full
+    error list) → `messages imported` timeline. No console errors beyond the
+    pre-existing theme-script warning (present on untouched pages too).
+  - **Two defects found *by* the live run and fixed:** the unmapped-required-column
+    case was being surfaced as a fake `line 0` **row** error (and counted as an
+    invalid row) — `mapCsvRows` now returns a separate `missing` list, and the UI
+    shows a mapping message with human labels; and `Author` was winning the **role**
+    alias before `Who` could (in real exports that column is the sender id), so
+    `author` moved from `role`'s aliases to `user_id`'s.
+  - **Environment finding (not caused by this change) — found, then resolved:** the
+    dev `DATABASE_URL` points at the **old MVP's database** (`bot`), whose
+    pre-existing `chat_messages` table had the MVP shape (`entity_id`, `message_id`,
+    `tsv`, bigint `created_at`). Drizzle's `CREATE TABLE IF NOT EXISTS` silently
+    no-op'd for migration `0006`, so the new app's history table was **never created
+    there** and every history read failed ("column chat_id does not exist"); the
+    other tables were created fresh, which is why the rest of the dashboard worked.
+    **Resolution:** the operator dropped the MVP table, and migration `0006`'s SQL
+    was then replayed by hand against the dev DB (the drizzle ledger already had
+    `0006` marked applied, so `db:migrate` alone would not restore it; `0006` is the
+    only migration touching this table). The dev DB now has the correct table
+    (identity PK + both indexes) and `/history` + `/history/transfer` render there
+    with no console errors. The mirror starts empty — the MVP rows went with the
+    dropped table; a dump of them can be re-imported through the new CSV page
+    (`entity_id`→Chat ID, `message_id`→Message ID, `created_at`→Sent at, which the
+    importer accepts as a Unix timestamp).
+    **Pitfall for future migrations:** a fresh table in a database that already
+    holds a same-named legacy table will be skipped silently — check
+    `information_schema.columns`, not just table existence, when history/schema reads
+    fail on a DB that was previously the MVP's.
+  - **Tests:** unit `features/history/csv.test.ts` (+20: parse/quotes/BOM/delimiter,
+    `toCsv` round-trip, alias mapping incl. the live foreign-header shape, coercion,
+    Unix dates, assistant-sender nulling, per-line errors, empty content, the
+    `missing` contract, and fixed values — applied to every row, satisfying a
+    required column, rejected when unusable, refused for the message id, still
+    nulling the sender on assistant rows) → **304 unit**. Integration
+    `features/history/server/transfer.integration.test.ts` (+12, real Postgres:
+    export all/scoped/empty, full round-trip preserving quotes+newlines+reply
+    pointers, duplicate-skipping incl. a mixed re-import, a foreign CSV through an
+    operator mapping, a file with no chat/role/sender columns imported via fixed
+    values, rejection of an unusable constant and of a fixed message id before any
+    write, per-line invalid rows, rejection of unmapped/empty/all-invalid files,
+    success + error traces) → **138 integration** (+14 skipped live).
+  - Checks: lint ✓ (0 warnings), typecheck ✓, unit 304 ✓, integration 138 ✓.
+    `build` **not run** — the operator's dev server is live on 3200
+    (`dont-clobber-running-dev-server`); typecheck covers type validity.
 
 - 2026-07-14 (Self-improvement system, user-requested): **👍/👎 feedback →
   per-user communication preferences + global self-corrections (done).**
@@ -1805,6 +1955,7 @@ Foundation work supports features but is not a substitute for feature completion
 | Shared table/filter components | in-progress | Shared `components/ui/Table` primitives (`Table`/`TableHead`/`TableBody`/`TableRow`/`TableHeaderCell`/`TableCell` — scroll container, borders, header typography, `interactive`/`header` row variants, align/valign). Both `components/debug/TraceList` and `features/known-users/ui/KnownUsersTable` compose from it (no bespoke table markup). Verified live | Add filter/pagination primitives (Debug still uses `DebugFilters`); adopt in new feature tables |
 | Shared debug components | done | `components/debug/*` (barrel): `TraceExplorer` (uncapped list + filters + live + export), `TraceList` (clickable rows), `TraceDetail`, `TraceTimeline` (per-step timing), `JsonBlock` (collapsible, theme-aware `react-json-view-lite`), `TraceStatusBadge`, `DownloadButton`, `DebugFilters`; consumed by `/debug`, `/debug/[id]`, `/settings/debug`; verified live (JSON tree, timings, full bodies, theme switch) | Add per-feature Debug pages as thin `TraceExplorer` wrappers (e.g. a bot-messaging section when it gets a dashboard route) |
 | Shared realtime (SSE) | in-progress | `lib/realtime.ts` (event contract) + `server/realtime/hub.ts` (in-process pub/sub singleton) + `GET /api/events` SSE stream + `components/realtime/useLiveRefresh` hook + `LiveIndicator` pill. Topics `traces` (Debug), `history` (chat mirror — publishes on record/edit), `users` (known-users — publishes on capture/alias edit) all live; each page drops a `<LiveIndicator topic>` and its service calls `publishEvent`. **Standing rule (user):** every data-display page must live-update via this layer — no manual refresh (memory `live-data-no-manual-refresh`). Verified live: a `users` publish triggered a `/users?_rsc` refetch with the page untouched. Decision: SSE not polling/WS (user) | Publish `bot`/`status` topics from the bot manager + status probes; consume on Overview. Reconcile client-state tables (e.g. `KnownUsersTable` alias input) so live prop changes show |
+| Shared timestamp rendering | done | `lib/format.ts` (`formatTimestamp`/`formatTime` — `Intl`-based, per-zone cached, UTC fallback on an unknown zone) + `components/time/TimezoneProvider` (client context seeded once per request by the root layout from `settings.timezone`) + `components/time/Timestamp` (`<Timestamp iso timeOnly? fallback? />`, semantic `<time>`, works in Server + Client Components). **Standing rule: every rendered date/time goes through `<Timestamp>`** — no component formats a date itself, no `toLocaleString()`, no hardcoded UTC, and the zone is never threaded as a prop. All 12 render sites converted; verified live (Europe/Kyiv → `GMT+3` across Debug/History/Vision/Self-improvement/Scheduled tasks) | — |
 | Shared status components | done | `components/ui/Badge` (tones+dot), `EmptyState`, `Skeleton`/`Spinner`, refactored `StatusCard`/`PageHeader` onto tokens | Add explicit error panel when debug UI lands |
 | Test harness | done | Vitest unit config (57) + Testcontainers integration config (22); `server-only` alias stub; `vi.hoisted`+`vi.mock` pattern for isolating services from persistence (see `bot-messaging/service.test.ts`) | Add Route Handler + dashboard smoke tests per feature |
 

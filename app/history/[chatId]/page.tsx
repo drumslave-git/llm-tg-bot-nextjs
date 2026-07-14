@@ -1,4 +1,4 @@
-import { ArrowLeft, Database } from "lucide-react";
+import { ArrowLeft, Database, Download } from "lucide-react";
 import Link from "next/link";
 
 import { Button, EmptyState, PageHeader } from "@/components/ui";
@@ -41,6 +41,12 @@ export default async function ChatHistoryPage({
         actions={
           <div className="flex items-center gap-2">
             <LiveIndicator topic="history" />
+            <Button asChild variant="outline" size="sm">
+              <a href={`/api/history/export?chatId=${encodeURIComponent(chatId)}`} download>
+                <Download className="h-4 w-4" aria-hidden />
+                Export CSV
+              </a>
+            </Button>
             <Button asChild variant="outline" size="sm">
               <Link href="/history">
                 <ArrowLeft className="h-4 w-4" aria-hidden />

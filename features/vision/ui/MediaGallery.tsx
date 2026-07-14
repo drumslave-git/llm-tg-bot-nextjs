@@ -10,7 +10,7 @@ import {
   EmptyState,
   type BadgeTone,
 } from "@/components/ui";
-import { formatTimestamp } from "@/lib/format";
+import { Timestamp } from "@/components/time/Timestamp";
 
 import { mediaKindLabel } from "../format";
 import type { MediaStatus, MediaView } from "../types";
@@ -72,7 +72,7 @@ function MediaCard({ media }: { media: MediaView }) {
           <span className="truncate font-mono" title={`chat ${media.chatId}`}>
             {media.chatId}
           </span>
-          <span>{formatTimestamp(media.createdAt)}</span>
+          <Timestamp iso={media.createdAt} />
         </div>
       </div>
     </div>

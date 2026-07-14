@@ -10,7 +10,8 @@ import {
   TableHeaderCell,
   TableRow,
 } from "@/components/ui";
-import { formatDuration, formatTimestamp } from "@/lib/format";
+import { Timestamp } from "@/components/time/Timestamp";
+import { formatDuration } from "@/lib/format";
 import type { Trace } from "@/lib/trace";
 import { TraceStatusBadge } from "./TraceStatusBadge";
 
@@ -80,7 +81,7 @@ export function TraceList({
                 ) : null}
               </TableCell>
               <TableCell className="whitespace-nowrap text-muted">
-                {formatTimestamp(trace.startedAt)}
+                <Timestamp iso={trace.startedAt} />
               </TableCell>
               <TableCell align="right" className="whitespace-nowrap text-muted">
                 {duration ?? "—"}

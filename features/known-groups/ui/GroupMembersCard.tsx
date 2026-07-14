@@ -16,7 +16,7 @@ import {
   TableRow,
 } from "@/components/ui";
 import { formatKnownUserLabel } from "@/features/known-users/format";
-import { formatTimestamp } from "@/lib/format";
+import { Timestamp } from "@/components/time/Timestamp";
 import type { GroupMember } from "../server/schema";
 
 /**
@@ -67,7 +67,9 @@ export function GroupMembersCard({ members }: { members: GroupMember[] }) {
                   <TableCell className="text-muted">
                     {member.aliases.length > 0 ? member.aliases.join(", ") : "—"}
                   </TableCell>
-                  <TableCell className="text-muted">{formatTimestamp(member.lastSeenAt)}</TableCell>
+                  <TableCell className="text-muted">
+                    <Timestamp iso={member.lastSeenAt} />
+                  </TableCell>
                 </TableRow>
               ))}
             </TableBody>

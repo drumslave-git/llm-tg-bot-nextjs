@@ -3,6 +3,8 @@ import { Geist, Geist_Mono } from "next/font/google";
 
 import { AppShell } from "@/components/layout/AppShell";
 import { ThemeScript } from "@/components/theme/theme-script";
+import { TimezoneProvider } from "@/components/time/TimezoneProvider";
+import { getTimezone } from "@/features/settings/server/service";
 import { getConfigReadiness } from "@/server/status";
 import "./globals.css";
 
@@ -27,6 +29,10 @@ export default async function RootLayout({
   children: React.ReactNode;
 }>) {
   const readiness = await getConfigReadiness();
+  // Every dashboard timestamp renders in this zone. Falls back to UTC when the
+  // database is unreachable — the shell still renders its "database unavailable"
+  // state rather than erroring on a formatting concern.
+  const timezone = await getTimezone().catch(() => "UTC");
 
   return (
     <html
@@ -40,7 +46,9 @@ export default async function RootLayout({
         <ThemeScript />
       </head>
       <body className="min-h-full">
-        <AppShell botStatus={readiness}>{children}</AppShell>
+        <TimezoneProvider timezone={timezone}>
+          <AppShell botStatus={readiness}>{children}</AppShell>
+        </TimezoneProvider>
       </body>
     </html>
   );

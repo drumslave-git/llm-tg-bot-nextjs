@@ -14,13 +14,9 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui";
+import { Timestamp } from "@/components/time/Timestamp";
 import type { ApiErrorBody } from "@/lib/api-error";
 import type { SelfImprovementJobInfo } from "@/features/self-improvement/server/scheduler";
-
-function formatTime(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  return new Date(iso).toLocaleString();
-}
 
 /**
  * Status + control card for the daily self-improvement job. Client Component:
@@ -87,11 +83,15 @@ export function SelfImprovementJobCard({ initial }: { initial: SelfImprovementJo
         <dl className="grid grid-cols-1 gap-x-6 gap-y-1 sm:grid-cols-2">
           <div className="flex justify-between gap-4">
             <dt>Next run</dt>
-            <dd className="text-foreground">{formatTime(nextRunAt)}</dd>
+            <dd className="text-foreground">
+              <Timestamp iso={nextRunAt} />
+            </dd>
           </div>
           <div className="flex justify-between gap-4">
             <dt>Last run</dt>
-            <dd className="text-foreground">{formatTime(lastResult?.at ?? null)}</dd>
+            <dd className="text-foreground">
+              <Timestamp iso={lastResult?.at ?? null} />
+            </dd>
           </div>
           <div className="flex justify-between gap-4 sm:col-span-2">
             <dt>Last result</dt>

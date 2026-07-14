@@ -15,7 +15,7 @@ import {
   TableHeaderCell,
   TableRow,
 } from "@/components/ui";
-import { formatTimestamp } from "@/lib/format";
+import { Timestamp } from "@/components/time/Timestamp";
 import { formatKnownGroupLabel } from "../format";
 import type { KnownGroupSummary } from "../server/schema";
 
@@ -65,7 +65,9 @@ export function KnownGroupsList({ groups }: { groups: KnownGroupSummary[] }) {
                   </TableCell>
                   <TableCell className="text-muted">{group.type ?? "—"}</TableCell>
                   <TableCell className="text-muted">{group.memberCount}</TableCell>
-                  <TableCell className="text-muted">{formatTimestamp(group.updatedAt)}</TableCell>
+                  <TableCell className="text-muted">
+                    <Timestamp iso={group.updatedAt} />
+                  </TableCell>
                 </TableRow>
               ))}
             </TableBody>

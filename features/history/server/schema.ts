@@ -1,5 +1,12 @@
 import { z } from "zod";
 
+import {
+  HISTORY_CSV_FIELDS,
+  MAX_CONTENT_CHARS,
+  MAX_CSV_CHARS,
+  type ColumnMapping,
+  type ColumnSource,
+} from "../csv";
 import type { ChatMessageRecord, ChatSummary } from "./repository";
 
 /**
@@ -8,8 +15,12 @@ import type { ChatMessageRecord, ChatSummary } from "./repository";
  * so these schemas validate the runtime's inputs before they reach persistence.
  */
 
-/** Upper bound on a single stored message (mirrors Telegram's own message cap). */
-export const MAX_CONTENT_CHARS = 8192;
+/**
+ * Upper bound on a single stored message (mirrors Telegram's own message cap).
+ * Defined in the client-safe `../csv` module so the import preview enforces the
+ * same cap in the browser, and re-exported here as the mirror's own constant.
+ */
+export { MAX_CONTENT_CHARS };
 
 const chatId = z.string().min(1);
 const telegramMessageId = z.number().int().positive();
@@ -45,6 +56,35 @@ export const applyEditSchema = z.object({
   editedAt: z.date(),
 });
 export type ApplyEditInput = z.infer<typeof applyEditSchema>;
+
+/** Where one field's value comes from: a column of the file, or a fixed value. */
+const columnSourceSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("column"), header: z.string().min(1) }),
+  z.object({ kind: z.literal("constant"), value: z.string().max(MAX_CONTENT_CHARS) }),
+]);
+
+/**
+ * A CSV import request: the raw file text plus the operator's column mapping.
+ * The server re-parses the text with the same pure module the mapping preview
+ * used — the client's parse is never trusted.
+ */
+export const importHistorySchema = z.object({
+  csv: z.string().min(1).max(MAX_CSV_CHARS),
+  mapping: z.object(
+    Object.fromEntries(
+      HISTORY_CSV_FIELDS.map((field) => [field.key, columnSourceSchema.nullish()]),
+    ) as Record<string, z.ZodType<ColumnSource | null | undefined>>,
+  ),
+  /** Delimiter override; sniffed from the header when omitted. */
+  delimiter: z.string().length(1).optional(),
+});
+export type ImportHistoryInput = z.infer<typeof importHistorySchema> & { mapping: ColumnMapping };
+
+/** Which chat to export, or every chat when omitted. */
+export const exportHistoryQuerySchema = z.object({
+  chatId: z.string().min(1).optional(),
+});
+export type ExportHistoryQuery = z.infer<typeof exportHistoryQuerySchema>;
 
 /** Client-facing shapes (already free of secrets). */
 export type ChatMessageView = ChatMessageRecord;

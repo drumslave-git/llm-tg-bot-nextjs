@@ -15,6 +15,7 @@ import {
   CardTitle,
   type BadgeTone,
 } from "@/components/ui";
+import { Timestamp } from "@/components/time/Timestamp";
 import type { ApiErrorBody } from "@/lib/api-error";
 import type { IdleJobStatus } from "@/server/jobs/idle-scheduler";
 
@@ -35,11 +36,6 @@ const PHASE_TONE: Record<IdleJobStatus["phase"], BadgeTone> = {
   scheduled: "warning",
   running: "success",
 };
-
-function formatTime(iso: string | null): string {
-  if (!iso) return "—";
-  return new Date(iso).toLocaleString();
-}
 
 /**
  * Status + control card for the vision backfill job. Client Component: shows the
@@ -107,7 +103,9 @@ export function VisionBackfillCard({ initial }: { initial: VisionBackfillView })
         <dl className="grid grid-cols-1 gap-x-6 gap-y-1 sm:grid-cols-2">
           <div className="flex justify-between gap-4">
             <dt>Last run</dt>
-            <dd className="text-foreground">{formatTime(status.lastRunAt)}</dd>
+            <dd className="text-foreground">
+              <Timestamp iso={status.lastRunAt} />
+            </dd>
           </div>
           <div className="flex justify-between gap-4">
             <dt>Last result</dt>

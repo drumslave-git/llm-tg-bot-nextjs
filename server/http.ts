@@ -49,6 +49,22 @@ export function jsonDownload(data: unknown, filename: string): Response {
   });
 }
 
+/**
+ * CSV file download (`Content-Disposition: attachment`). Shared so every feature
+ * that exports tabular data emits the same headers. A UTF-8 BOM is prepended so
+ * Excel opens non-ASCII content correctly; the shared CSV parser strips it again
+ * on import, so an export still round-trips.
+ */
+export function csvDownload(csv: string, filename: string): Response {
+  return new Response(`﻿${csv}`, {
+    status: 200,
+    headers: {
+      "content-type": "text/csv; charset=utf-8",
+      "content-disposition": `attachment; filename="${filename}"`,
+    },
+  });
+}
+
 /** Map any thrown value to an {@link ApiError} without leaking internals. */
 export function toApiError(err: unknown): ApiError {
   if (isApiError(err)) return err;

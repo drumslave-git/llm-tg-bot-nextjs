@@ -15,7 +15,7 @@ import {
   TableHeaderCell,
   TableRow,
 } from "@/components/ui";
-import { formatTimestamp } from "@/lib/format";
+import { Timestamp } from "@/components/time/Timestamp";
 import type { ChatSummaryView } from "../server/schema";
 
 /**
@@ -61,7 +61,9 @@ export function ChatSummaryList({ chats }: { chats: ChatSummaryView[] }) {
                     </Link>
                   </TableCell>
                   <TableCell className="text-muted">{chat.messageCount}</TableCell>
-                  <TableCell className="text-muted">{formatTimestamp(chat.lastSentAt)}</TableCell>
+                  <TableCell className="text-muted">
+                    <Timestamp iso={chat.lastSentAt} />
+                  </TableCell>
                 </TableRow>
               ))}
             </TableBody>

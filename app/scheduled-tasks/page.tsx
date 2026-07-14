@@ -7,7 +7,6 @@ import { formatKnownUserLabel } from "@/features/known-users/format";
 import { listUsers } from "@/features/known-users/server/service";
 import { listGroups } from "@/features/known-groups/server/service";
 import { getScheduledTasks } from "@/features/scheduled-tasks/server/service";
-import { getTimezone } from "@/features/settings/server/service";
 import type { ScheduledTask } from "@/features/scheduled-tasks/types";
 import {
   ScheduledTasksManager,
@@ -20,24 +19,22 @@ export const dynamic = "force-dynamic";
 
 /**
  * Scheduled-tasks dashboard page. Server Component: lists tasks, resolves the
- * target-chat options (known DMs + groups) and the operator timezone, and
- * delegates create/edit/enable/delete + "run due now" to a Client Component.
+ * target-chat options (known DMs + groups), and delegates create/edit/
+ * enable/delete + "run due now" to a Client Component. Times render in the
+ * operator timezone supplied by the root layout's TimezoneProvider.
  */
 export default async function ScheduledTasksPage() {
   let tasks: ScheduledTask[] | null = null;
   let chats: ChatOption[] = [];
   let authors: Record<string, string> = {};
-  let timezone = "UTC";
   let dbError: string | null = null;
   try {
-    const [taskList, users, groups, tz] = await Promise.all([
+    const [taskList, users, groups] = await Promise.all([
       getScheduledTasks(),
       listUsers(),
       listGroups(),
-      getTimezone(),
     ]);
     tasks = taskList;
-    timezone = tz;
     chats = [
       ...users.map((u) => ({
         chatId: u.userId,
@@ -72,7 +69,7 @@ export default async function ScheduledTasksPage() {
       />
 
       {tasks ? (
-        <ScheduledTasksManager tasks={tasks} chats={chats} authors={authors} timezone={timezone} />
+        <ScheduledTasksManager tasks={tasks} chats={chats} authors={authors} />
       ) : (
         <EmptyState
           icon={Database}

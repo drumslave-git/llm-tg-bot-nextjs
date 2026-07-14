@@ -1,4 +1,4 @@
-import { Bug, Database } from "lucide-react";
+import { ArrowDownUp, Bug, Database } from "lucide-react";
 import Link from "next/link";
 
 import { Button, EmptyState, PageHeader } from "@/components/ui";
@@ -32,6 +32,12 @@ export default async function HistoryPage() {
         actions={
           <div className="flex items-center gap-2">
             <LiveIndicator topic="history" />
+            <Button asChild variant="outline" size="sm">
+              <Link href="/history/transfer">
+                <ArrowDownUp className="h-4 w-4" aria-hidden />
+                Import / export
+              </Link>
+            </Button>
             <Button asChild variant="outline" size="sm">
               <Link href={featureDebugHref("history")}>
                 <Bug className="h-4 w-4" aria-hidden />

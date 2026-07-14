@@ -20,6 +20,8 @@ import {
   Switch,
 } from "@/components/ui";
 import { useLiveRefresh } from "@/components/realtime/useLiveRefresh";
+import { Timestamp } from "@/components/time/Timestamp";
+import { useTimezone } from "@/components/time/TimezoneProvider";
 import type { ApiErrorBody } from "@/lib/api-error";
 
 import { describeSchedule } from "../schedule";
@@ -39,15 +41,6 @@ export interface ChatOption {
 }
 
 const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-
-/** Format an ISO instant in a specific IANA timezone, matching its label. */
-function formatInZone(iso: string, timeZone: string): string {
-  try {
-    return new Date(iso).toLocaleString(undefined, { timeZone });
-  } catch {
-    return new Date(iso).toLocaleString();
-  }
-}
 
 async function readError(res: Response): Promise<string> {
   try {
@@ -263,12 +256,10 @@ function TaskCard({
   task,
   chatLabel,
   authorLabel,
-  timezone,
 }: {
   task: ScheduledTask;
   chatLabel: string;
   authorLabel: string;
-  timezone: string;
 }) {
   const router = useRouter();
   const [editing, setEditing] = useState(false);
@@ -407,13 +398,13 @@ function TaskCard({
       <CardContent>
         <p className="text-sm text-muted">
           {task.nextRunAt ? (
-            <>
-              Next run: {formatInZone(task.nextRunAt, timezone)} ({timezone})
-            </>
+            <>Next run: <Timestamp iso={task.nextRunAt} /></>
           ) : (
             <span className="text-faint">No upcoming run.</span>
           )}
-          {task.lastRunAt ? <> · Last run: {formatInZone(task.lastRunAt, timezone)}</> : null}
+          {task.lastRunAt ? (
+            <> · Last run: <Timestamp iso={task.lastRunAt} /></>
+          ) : null}
         </p>
         {error ? <p className="mt-2 text-sm text-danger">{error}</p> : null}
       </CardContent>
@@ -425,15 +416,14 @@ export function ScheduledTasksManager({
   tasks,
   chats,
   authors,
-  timezone,
 }: {
   tasks: ScheduledTask[];
   chats: ChatOption[];
   /** Map of creator user id → display label, for showing each task's author. */
   authors: Record<string, string>;
-  timezone: string;
 }) {
   useLiveRefresh("tasks");
+  const timezone = useTimezone();
   const router = useRouter();
   const [running, setRunning] = useState(false);
 
@@ -484,7 +474,6 @@ export function ScheduledTasksManager({
               task={t}
               chatLabel={chatLabelOf(t.chatId)}
               authorLabel={authorLabelOf(t.createdByUserId)}
-              timezone={timezone}
             />
           ))}
         </div>
