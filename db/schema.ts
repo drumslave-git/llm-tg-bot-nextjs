@@ -117,6 +117,12 @@ export const settings = pgTable(
      * Captured onto each task at creation. Defaults to `UTC`.
      */
     timezone: text("timezone").notNull().default("UTC"),
+    /**
+     * Local wall-clock time (`HH:MM`, 24-hour, in `timezone`) at which the daily
+     * self-improvement job runs — distilling collected user feedback into
+     * per-user communication preferences and global self-corrections.
+     */
+    selfImprovementRunTime: text("self_improvement_run_time").notNull().default("04:00"),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [check("settings_singleton", sql`${t.id} = 'singleton'`)],
@@ -400,6 +406,119 @@ export const scheduledTasks = pgTable(
 
 export type ScheduledTaskRow = typeof scheduledTasks.$inferSelect;
 export type ScheduledTaskInsert = typeof scheduledTasks.$inferInsert;
+
+/**
+ * One piece of user feedback on a bot reply, collected via a 👍/👎 reaction and
+ * the follow-up menu (5 predefined options + free-text "Other"). Keyed by the
+ * reacted **assistant** message — joins {@link chatMessages} on
+ * `(chat_id, telegram_message_id)` — and by who reacted, so several users can
+ * give feedback on the same reply.
+ *
+ * Lifecycle: `pending` (reaction seen, menu sent) → `awaiting_text` (user tapped
+ * "Other", we await their reply to the menu message) → `completed` (feedback
+ * text stored). A repeat reaction reopens/updates the row.
+ *
+ * `prefs_version` / `corrections_version` record which
+ * {@link usersCommunicationPreferences} / {@link selfCorrections} version
+ * incorporated this feedback (null = not yet incorporated) — the daily job scans
+ * for the nulls. `model` is the clean model name (e.g. `gemma3:12b`, no registry
+ * prefixes) that generated the reply; informational only.
+ */
+export const usersFeedbacks = pgTable(
+  "users_feedbacks",
+  {
+    id: text("id").primaryKey(),
+    /** Telegram chat id, as a string (matches `chat_messages.chat_id`). */
+    chatId: text("chat_id").notNull(),
+    /** Telegram `message_id` of the reacted bot reply. */
+    telegramMessageId: bigint("telegram_message_id", { mode: "number" }).notNull(),
+    /** Who reacted. */
+    userId: text("user_id")
+      .notNull()
+      .references(() => knownUsers.userId, { onDelete: "cascade" }),
+    /** `up` (👍) or `down` (👎). */
+    reaction: text("reaction").notNull(),
+    /** The chosen option text or the user's own words; null until answered. */
+    feedback: text("feedback"),
+    /** `pending` | `awaiting_text` | `completed`. */
+    status: text("status").notNull().default("pending"),
+    /** Telegram `message_id` of the menu we sent (for edits + reply capture). */
+    menuMessageId: bigint("menu_message_id", { mode: "number" }),
+    /** Clean model name that generated the reacted reply (informational). */
+    model: text("model").notNull(),
+    /** Preferences version that incorporated this feedback, or null. */
+    prefsVersion: integer("prefs_version"),
+    /** Self-corrections version that incorporated this feedback, or null. */
+    correctionsVersion: integer("corrections_version"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("users_feedbacks_msg_user_idx").on(t.chatId, t.telegramMessageId, t.userId),
+    index("users_feedbacks_status_idx").on(t.status),
+    // The daily job scans completed-but-unincorporated rows per user.
+    index("users_feedbacks_prefs_idx").on(t.userId, t.prefsVersion),
+  ],
+);
+
+export type UsersFeedbackRow = typeof usersFeedbacks.$inferSelect;
+export type UsersFeedbackInsert = typeof usersFeedbacks.$inferInsert;
+
+/**
+ * Versioned per-user communication preferences, distilled by the daily
+ * self-improvement job from that user's feedbacks. The latest version per user
+ * (max `version`) is injected into the reply prompt as a system context, like
+ * the known-user identity block. `model` is the clean model name that performed
+ * the distillation; informational only. Append-only — history is kept.
+ */
+export const usersCommunicationPreferences = pgTable(
+  "users_communication_preferences",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => knownUsers.userId, { onDelete: "cascade" }),
+    /** Clean model name that produced this version (informational). */
+    model: text("model").notNull(),
+    /** What this user likes about the bot's replies. */
+    likes: text("likes").notNull(),
+    /** What this user dislikes about the bot's replies. */
+    dislikes: text("dislikes").notNull(),
+    /** Monotonic version per user; the latest wins. */
+    version: integer("version").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("users_comm_prefs_user_version_idx").on(t.userId, t.version)],
+);
+
+export type UsersCommunicationPreferenceRow = typeof usersCommunicationPreferences.$inferSelect;
+export type UsersCommunicationPreferenceInsert =
+  typeof usersCommunicationPreferences.$inferInsert;
+
+/**
+ * Versioned global self-corrections, distilled by the daily self-improvement job
+ * from common complaints/likes across all users' feedbacks. The latest version
+ * (max `version`) is composed into the system prompt on every reply, like the
+ * personality. `model` is the clean model name that produced the version;
+ * informational only. Append-only — history is kept.
+ */
+export const selfCorrections = pgTable(
+  "self_corrections",
+  {
+    id: text("id").primaryKey(),
+    /** Clean model name that produced this version (informational). */
+    model: text("model").notNull(),
+    /** The correction guidelines composed into the system prompt. */
+    correction: text("correction").notNull(),
+    /** Monotonic global version; the latest wins. */
+    version: integer("version").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("self_corrections_version_idx").on(t.version)],
+);
+
+export type SelfCorrectionRow = typeof selfCorrections.$inferSelect;
+export type SelfCorrectionInsert = typeof selfCorrections.$inferInsert;
 
 export type TraceRow = typeof traces.$inferSelect;
 export type TraceInsert = typeof traces.$inferInsert;

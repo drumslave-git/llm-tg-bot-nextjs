@@ -1,6 +1,10 @@
 import "server-only";
 
 import { startTaskScheduler, stopTaskScheduler } from "@/features/scheduled-tasks/server/scheduler";
+import {
+  startSelfImprovementScheduler,
+  stopSelfImprovementScheduler,
+} from "@/features/self-improvement/server/scheduler";
 import { startVisionBackfill, stopVisionBackfill } from "@/features/vision/server/backfill-scheduler";
 
 import { startBot, stopBot } from "./bot-manager";
@@ -20,6 +24,7 @@ export function registerNode(): void {
     shuttingDown = true;
     stopVisionBackfill();
     stopTaskScheduler();
+    stopSelfImprovementScheduler();
     await Promise.race([
       stopBot().catch(() => undefined),
       new Promise((resolve) => setTimeout(resolve, 3000)),
@@ -39,6 +44,11 @@ export function registerNode(): void {
   // wall-clock time (independent of bot activity); a tick with no LLM configured,
   // no due tasks, or the bot stopped settles as a harmless no-op.
   startTaskScheduler();
+
+  // Start the daily self-improvement poller. It checks once a minute whether the
+  // configured local run time has been reached and incorporates the feedback
+  // backlog; a tick with nothing due or no LLM configured is a harmless no-op.
+  startSelfImprovementScheduler();
 
   // Fire-and-forget: do not block server startup on the Telegram handshake.
   void startBot().then((status) => {

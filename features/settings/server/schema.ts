@@ -17,6 +17,12 @@ const botToken = z.string().trim().max(200);
 /** Owner is chosen from known users; the id is Telegram's numeric user id. */
 const ownerUserId = z.string().trim().regex(/^\d+$/, "Invalid user id");
 
+/** Local wall-clock time as `HH:MM` (24-hour). */
+const timeOfDay = z
+  .string()
+  .trim()
+  .regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Time must be HH:MM (24-hour)");
+
 /** Settings as returned to clients — no secret values. */
 export const settingsSchema = z.object({
   /** OpenAI-compatible endpoint base URL, or null when unconfigured. */
@@ -37,6 +43,8 @@ export const settingsSchema = z.object({
   maintenanceModeEnabled: z.boolean(),
   /** Operator IANA timezone for wall-clock features (scheduled tasks). */
   timezone: z.string(),
+  /** Local `HH:MM` (in `timezone`) the daily self-improvement job runs at. */
+  selfImprovementRunTime: z.string(),
   /** Last write time, or null if never configured. */
   updatedAt: z.string().datetime().nullable(),
 });
@@ -58,6 +66,7 @@ export const updateSettingsSchema = z
     ownerUserId: ownerUserId.nullable(),
     maintenanceModeEnabled: z.boolean(),
     timezone: z.string().trim().min(1).max(64),
+    selfImprovementRunTime: timeOfDay,
   })
   .partial()
   .refine((v) => Object.keys(v).length > 0, {

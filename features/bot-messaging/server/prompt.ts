@@ -88,6 +88,12 @@ export interface SystemPromptOptions {
    * Null/empty (after trimming) means the base prompt is used alone.
    */
   personalityPrompt?: string | null;
+  /**
+   * The latest global self-correction guidelines (distilled from user feedback
+   * by the self-improvement job), appended below the persona. Null/empty (after
+   * trimming) means no correction block.
+   */
+  selfCorrection?: string | null;
 }
 
 /** Whether a non-empty personality prompt is present (after trimming). */
@@ -97,12 +103,18 @@ export function hasPersonality(personalityPrompt?: string | null): boolean {
 
 /**
  * Compose the system prompt for a reply: the fixed base prompt, plus the
- * operator's personality instructions when configured.
+ * operator's personality instructions when configured, plus the latest
+ * self-correction guidelines learned from user feedback.
  */
 export function buildSystemPrompt(options: SystemPromptOptions = {}): string {
   const persona = options.personalityPrompt?.trim();
-  if (!persona) return BASE_SYSTEM_PROMPT;
-  return `${BASE_SYSTEM_PROMPT}\n\n---\nAdditional instructions:\n${persona}`;
+  const correction = options.selfCorrection?.trim();
+  let prompt = BASE_SYSTEM_PROMPT;
+  if (persona) prompt += `\n\n---\nAdditional instructions:\n${persona}`;
+  if (correction) {
+    prompt += `\n\n---\nSelf-correction guidelines (learned from user feedback on your replies):\n${correction}`;
+  }
+  return prompt;
 }
 
 /** How the sender addressed the bot, phrased for the addressing hint. */

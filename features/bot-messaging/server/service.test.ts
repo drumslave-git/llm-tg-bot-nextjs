@@ -340,6 +340,55 @@ describe("handleIncomingMessage", () => {
     expect(events.some((e) => e.message === "chat context loaded")).toBe(false);
   });
 
+  it("injects the sender's communication preferences after the chat context and traces the step", async () => {
+    const prefs = "Communication preferences of Bob (@bob):\n- They like: short answers";
+    const d = deps({
+      loadChatContext: vi.fn().mockResolvedValue({ content: "You are chatting with Bob." }),
+      loadSenderPreferences: vi
+        .fn()
+        .mockResolvedValue({ content: prefs, data: { userId: "100", version: 2 } }),
+    });
+    await handleIncomingMessage(incoming({ text: "hi" }), d);
+
+    const messages = (d.generateReply as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    // system prompt, chat context, preferences, current message.
+    expect(messages.map((m: { role: string }) => m.role)).toEqual([
+      "system",
+      "system",
+      "system",
+      "user",
+    ]);
+    expect(messages[2]).toEqual({ role: "system", content: prefs });
+
+    const events = recorder.event.mock.calls.map((c) => c[0]);
+    const loaded = events.find((e) => e.message === "communication preferences loaded");
+    expect(loaded.data).toEqual({ userId: "100", version: 2 });
+  });
+
+  it("omits the preferences step when the loader resolves null", async () => {
+    const d = deps({ loadSenderPreferences: vi.fn().mockResolvedValue(null) });
+    await handleIncomingMessage(incoming({ text: "hi" }), d);
+    const messages = (d.generateReply as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(messages).toHaveLength(2);
+    const events = recorder.event.mock.calls.map((c) => c[0]);
+    expect(events.some((e) => e.message === "communication preferences loaded")).toBe(false);
+  });
+
+  it("composes the latest self-correction into the system prompt and flags it on the trace", async () => {
+    const correction = "Answer in fewer words; do not open with a summary.";
+    const d = deps({ selfCorrection: correction });
+    await handleIncomingMessage(incoming({ text: "hi" }), d);
+    const messages = (d.generateReply as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(messages[0].content).toContain(BASE_SYSTEM_PROMPT);
+    expect(messages[0].content).toContain("Self-correction guidelines");
+    expect(messages[0].content).toContain(correction);
+    const composed = recorder.event.mock.calls
+      .map((c) => c[0])
+      .find((e) => e.message === "system prompt composed");
+    expect(composed.data.selfCorrectionApplied).toBe(true);
+    expect(composed.data.systemPrompt).toBe(messages[0].content);
+  });
+
   it("records an empty data object for the chat-context step when the loader omits data", async () => {
     const d = deps({
       loadChatContext: vi.fn().mockResolvedValue({ content: "You are chatting with Bob." }),

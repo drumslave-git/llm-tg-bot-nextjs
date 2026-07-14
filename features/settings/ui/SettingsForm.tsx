@@ -63,6 +63,9 @@ export function SettingsForm({
   const [ownerUserId, setOwnerUserId] = useState(initial.ownerUserId ?? "");
   const [maintenanceMode, setMaintenanceMode] = useState(initial.maintenanceModeEnabled);
   const [timezone, setTimezone] = useState(initial.timezone);
+  const [selfImprovementRunTime, setSelfImprovementRunTime] = useState(
+    initial.selfImprovementRunTime,
+  );
   const [model, setModel] = useState(initial.model ?? "");
   // Seed with the server-preloaded list (falling back to just the saved model);
   // a successful "Test connection" replaces this with a fresh list.
@@ -117,6 +120,12 @@ export function SettingsForm({
     if (timezone.trim() !== initial.timezone && timezone.trim() !== "") {
       patch.timezone = timezone.trim();
     }
+    if (
+      selfImprovementRunTime.trim() !== initial.selfImprovementRunTime &&
+      selfImprovementRunTime.trim() !== ""
+    ) {
+      patch.selfImprovementRunTime = selfImprovementRunTime.trim();
+    }
 
     try {
       const res = await fetch("/api/settings", {
@@ -138,6 +147,7 @@ export function SettingsForm({
       setOwnerUserId(data.ownerUserId ?? "");
       setMaintenanceMode(data.maintenanceModeEnabled);
       setTimezone(data.timezone);
+      setSelfImprovementRunTime(data.selfImprovementRunTime);
       setSave({ kind: "saved" });
       // Re-read server state so masked "configured" placeholders reflect the save.
       router.refresh();
@@ -319,6 +329,22 @@ export function SettingsForm({
             value={timezone}
             onChange={(e) => setTimezone(e.target.value)}
             placeholder="UTC"
+          />
+        )}
+      </Field>
+
+      <Field
+        id="selfImprovementRunTime"
+        label="Self-improvement run time"
+        hint="Local time (HH:MM, in the timezone above) the daily job distills user feedback into preferences and corrections."
+      >
+        {({ id, describedBy }) => (
+          <Input
+            id={id}
+            aria-describedby={describedBy}
+            value={selfImprovementRunTime}
+            onChange={(e) => setSelfImprovementRunTime(e.target.value)}
+            placeholder="04:00"
           />
         )}
       </Field>

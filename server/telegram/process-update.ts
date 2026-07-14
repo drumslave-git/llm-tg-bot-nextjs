@@ -38,6 +38,11 @@ import {
   ingestMessageMedia,
   loadReplyTargetImages,
 } from "@/features/vision/server/service";
+import {
+  captureFeedbackReply,
+  getLatestSelfCorrectionPrompt,
+  getPreferencesContext,
+} from "@/features/self-improvement/server/service";
 import { pokeVisionBackfill } from "@/features/vision/server/backfill-scheduler";
 import { ApiError } from "@/lib/api-error";
 import { chatCompletion, type ChatContentPart, type ChatMessage } from "@/server/llm/client";
@@ -64,6 +69,12 @@ export interface ProcessOverrides {
    * exactly what the opt-in real-LLM flow test wants.
    */
   generateReply?: BotMessagingDeps["generateReply"];
+  /**
+   * Rewrite a feedback-menu message once a free-text answer is captured (real:
+   * the bot manager's grammy adapter). When absent (no edit capability), the
+   * capture is confirmed with a plain reply instead.
+   */
+  editFeedbackMenu?: (input: { chatId: string; messageId: number; text: string }) => Promise<void>;
 }
 
 /** Telegram expires a chat action after ~5s; refresh just under that. */
@@ -90,6 +101,7 @@ function buildDeps(
   transport: ReplyTransport,
   policy: BotPolicy,
   personalityPrompt: string | null,
+  selfCorrection: string | null,
   timeContext: string | null,
   visionAttachment: {
     imageParts: ChatContentPart[];
@@ -118,6 +130,7 @@ function buildDeps(
     bot,
     policy,
     personalityPrompt,
+    selfCorrection,
     timeContext,
     // Called only for an addressed message about to be answered (after the
     // addressing/maintenance gates), so recognition here runs exactly when the
@@ -216,6 +229,11 @@ function buildDeps(
       : senderId != null
         ? () => getUserContext(senderId).catch(() => null)
         : undefined,
+    // The sender's learned communication preferences (from their 👍/👎
+    // feedback), so the reply adapts to this person in groups and DMs alike.
+    // Best-effort — a lookup failure resolves null rather than dropping the reply.
+    loadSenderPreferences:
+      senderId != null ? () => getPreferencesContext(senderId).catch(() => null) : undefined,
     async recordReply(input) {
       await recordAssistantMessage({
         chatId,
@@ -318,6 +336,34 @@ export async function processUpdate(
     }
   }
 
+  // Feedback capture: a reply to an `awaiting_text` feedback menu from the
+  // reactor is the free-text answer to the 👍/👎 menu — record it and stop, the
+  // message is not a turn for the bot to answer (it stays mirrored above).
+  if (from && !from.is_bot && message.reply_to_message && text.trim()) {
+    const captured = await captureFeedbackReply({
+      chatId,
+      menuMessageId: message.reply_to_message.message_id,
+      userId: String(from.id),
+      text,
+    }).catch(() => null);
+    if (captured) {
+      if (overrides?.editFeedbackMenu) {
+        await overrides
+          .editFeedbackMenu({
+            chatId,
+            messageId: captured.menuMessageId,
+            text: captured.confirmation,
+          })
+          .catch(() => undefined);
+      } else {
+        await transport
+          .sendReply(captured.confirmation, { replyToMessageId: message.message_id })
+          .catch(() => undefined);
+      }
+      return { status: "ignored", reason: "feedback_captured" };
+    }
+  }
+
   // Vision: ingest this message's media (passive, stored as base64) and resolve
   // the image(s) to attach to the current turn — either on the message itself or
   // on a replied-to image. The bot token (from settings) is needed to download
@@ -385,9 +431,10 @@ export async function processUpdate(
     hasVision: visionAttachment != null,
   };
 
-  const [policy, personalityPrompt, timezone] = await Promise.all([
+  const [policy, personalityPrompt, selfCorrection, timezone] = await Promise.all([
     getBotPolicy(),
     getActivePersonalityPrompt(),
+    getLatestSelfCorrectionPrompt().catch(() => null),
     getTimezone().catch(() => "UTC"),
   ]);
   const timeContext = buildTimeContext(new Date(), timezone);
@@ -399,7 +446,16 @@ export async function processUpdate(
   // by the backfill job.
   return handleIncomingMessage(
     incoming,
-    buildDeps(update, transport, policy, personalityPrompt, timeContext, visionAttachment, overrides),
+    buildDeps(
+      update,
+      transport,
+      policy,
+      personalityPrompt,
+      selfCorrection,
+      timeContext,
+      visionAttachment,
+      overrides,
+    ),
   );
 }
 

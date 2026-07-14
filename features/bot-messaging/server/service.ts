@@ -104,6 +104,14 @@ export interface BotMessagingDeps {
    */
   loadChatContext?: () => Promise<{ content: string; data?: Record<string, unknown> } | null>;
   /**
+   * Load the sender's latest communication preferences (distilled from their
+   * 👍/👎 feedback by the self-improvement job), injected as a system message
+   * after the chat context so the reply adapts to this person. Resolves null
+   * when the sender has none. `data` is recorded verbatim on the trace step.
+   * Best-effort — must never fail the reply.
+   */
+  loadSenderPreferences?: () => Promise<{ content: string; data?: Record<string, unknown> } | null>;
+  /**
    * Render the current message in transcript-line format (`[#<id>] <sender> …`),
    * with its reply target resolved against the history mirror. `senderLabel`
    * feeds the group addressing hint; `data` is recorded verbatim on the trace
@@ -142,6 +150,11 @@ export interface BotMessagingDeps {
    * system prompt for this reply. Null/absent → base prompt only.
    */
   personalityPrompt?: string | null;
+  /**
+   * The latest global self-correction guidelines (from the self-improvement
+   * job), composed into the system prompt below the persona. Null/absent → none.
+   */
+  selfCorrection?: string | null;
   /**
    * A system-message line giving the model the current date/time (see
    * {@link import("./prompt").buildTimeContext}), injected right before the
@@ -257,14 +270,19 @@ export async function handleIncomingMessage(
         data: { addressed: true, reason: decision.source },
       });
 
-      // 2. Compose the system prompt (base + operator personality) and record it
-      // so the operator can see exactly what persona drove the reply.
-      const systemPrompt = buildSystemPrompt({ personalityPrompt: deps.personalityPrompt });
+      // 2. Compose the system prompt (base + operator personality + learned
+      // self-corrections) and record it so the operator can see exactly what
+      // persona and corrections drove the reply.
+      const systemPrompt = buildSystemPrompt({
+        personalityPrompt: deps.personalityPrompt,
+        selfCorrection: deps.selfCorrection,
+      });
       await trace.event({
         type: "step",
         message: "system prompt composed",
         data: {
           personalityApplied: hasPersonality(deps.personalityPrompt),
+          selfCorrectionApplied: Boolean(deps.selfCorrection?.trim()),
           systemPrompt,
         },
       });
@@ -281,6 +299,21 @@ export async function handleIncomingMessage(
             type: "step",
             message: "chat context loaded",
             data: chatContext.data ?? {},
+          });
+        }
+      }
+
+      // 2b'. Sender preferences — what this person likes/dislikes about the
+      // bot's replies (distilled from their feedback), injected as a system
+      // message after the chat context. Skipped when the sender has none.
+      let senderPreferences: { content: string; data?: Record<string, unknown> } | null = null;
+      if (deps.loadSenderPreferences) {
+        senderPreferences = await deps.loadSenderPreferences();
+        if (senderPreferences) {
+          await trace.event({
+            type: "step",
+            message: "communication preferences loaded",
+            data: senderPreferences.data ?? {},
           });
         }
       }
@@ -347,6 +380,9 @@ export async function handleIncomingMessage(
       const messages: ChatMessage[] = [
         { role: "system", content: systemPrompt },
         ...(chatContext ? [{ role: "system" as const, content: chatContext.content }] : []),
+        ...(senderPreferences
+          ? [{ role: "system" as const, content: senderPreferences.content }]
+          : []),
         ...(addressingHint ? [{ role: "system" as const, content: addressingHint }] : []),
         ...history.messages,
         ...(deps.timeContext ? [{ role: "system" as const, content: deps.timeContext }] : []),

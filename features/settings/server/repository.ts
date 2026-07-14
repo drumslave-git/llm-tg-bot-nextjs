@@ -29,6 +29,8 @@ export interface SettingsRecord {
   maintenanceModeEnabled: boolean;
   /** Operator IANA timezone for wall-clock features (scheduled tasks). */
   timezone: string;
+  /** Local `HH:MM` (in `timezone`) the daily self-improvement job runs at. */
+  selfImprovementRunTime: string;
   updatedAt: string | null;
 }
 
@@ -44,6 +46,7 @@ export interface SettingsPatch {
   ownerUserId?: string | null;
   maintenanceModeEnabled?: boolean;
   timezone?: string;
+  selfImprovementRunTime?: string;
 }
 
 function mapRow(row: SettingsRow): SettingsRecord {
@@ -58,6 +61,7 @@ function mapRow(row: SettingsRow): SettingsRecord {
     ownerUserId: row.ownerUserId,
     maintenanceModeEnabled: row.maintenanceModeEnabled,
     timezone: row.timezone,
+    selfImprovementRunTime: row.selfImprovementRunTime,
     updatedAt: row.updatedAt.toISOString(),
   };
 }

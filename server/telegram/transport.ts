@@ -1,6 +1,7 @@
 import type { Message } from "@grammyjs/types";
 
 import type { BotIdentity } from "@/features/bot-messaging/server/addressing";
+import type { MenuKeyboard } from "@/features/self-improvement/menu";
 
 /**
  * Transport boundary between the Telegram edge and the message-processing
@@ -40,4 +41,28 @@ export interface ReplyTransport {
    * (Telegram expires the action after a few seconds), so this is a single tick.
    */
   sendTyping(opts: { threadId?: number }): void;
+}
+
+/**
+ * Outbound ops the feedback-menu flows need (reaction → menu → answer). Same
+ * seam pattern as {@link ReplyTransport}: a grammy adapter in the bot manager,
+ * a capturing fake in the simulation harness.
+ */
+export interface FeedbackTransport {
+  /** Post the options menu into the chat, resolving with its message id. */
+  sendMenu(input: {
+    chatId: string;
+    text: string;
+    keyboard: MenuKeyboard;
+    replyToMessageId: number;
+  }): Promise<{ messageId: number }>;
+  /** Rewrite a previously sent menu message (`null` keyboard removes it). */
+  editMenu(input: {
+    chatId: string;
+    messageId: number;
+    text: string;
+    keyboard: MenuKeyboard | null;
+  }): Promise<void>;
+  /** Answer a callback query (stops the button spinner; optional toast text). */
+  answerCallback(input: { callbackQueryId: string; text?: string }): Promise<void>;
 }

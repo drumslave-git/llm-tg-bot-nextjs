@@ -41,6 +41,7 @@ function toClientSettings(record: SettingsRecord | null): Settings {
     ownerUserId: record?.ownerUserId ?? null,
     maintenanceModeEnabled: record?.maintenanceModeEnabled ?? false,
     timezone: record?.timezone ?? "UTC",
+    selfImprovementRunTime: record?.selfImprovementRunTime ?? "04:00",
     updatedAt: record?.updatedAt ?? null,
   };
 }
@@ -107,6 +108,14 @@ export async function getTimezone(db: DrizzleDb = getDb()): Promise<string> {
 }
 
 /**
+ * Server-only: the local `HH:MM` (in the operator timezone) at which the daily
+ * self-improvement job runs. Defaults to `04:00`.
+ */
+export async function getSelfImprovementRunTime(db: DrizzleDb = getDb()): Promise<string> {
+  return (await getSettingsRecord(db))?.selfImprovementRunTime ?? "04:00";
+}
+
+/**
  * Server-only: the active personality's id, or null when none is chosen. Used by
  * the personalities feature to resolve the persona composed into replies.
  */
@@ -155,6 +164,9 @@ function toPatch(input: UpdateSettings): SettingsPatch {
       throw ApiError.badRequest(`Unknown timezone: ${input.timezone}`);
     }
     patch.timezone = input.timezone;
+  }
+  if (input.selfImprovementRunTime !== undefined) {
+    patch.selfImprovementRunTime = input.selfImprovementRunTime;
   }
   return patch;
 }

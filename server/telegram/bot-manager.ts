@@ -4,8 +4,10 @@ import { Bot, type Context } from "grammy";
 
 import { getTelegramBotToken } from "@/features/settings/server/service";
 
+import { processCallbackUpdate } from "./process-callback";
+import { processReactionUpdate } from "./process-reaction";
 import { processEditedUpdate, processUpdate } from "./process-update";
-import type { IncomingUpdate, ReplyTransport } from "./transport";
+import type { FeedbackTransport, IncomingUpdate, ReplyTransport } from "./transport";
 
 /**
  * In-process Telegram bot lifecycle (long polling), owned by a single manager.
@@ -97,6 +99,35 @@ function grammyTransport(ctx: Context): ReplyTransport {
   };
 }
 
+/** Grammy `Context` as the feedback-menu sink (reaction menus + presses). */
+function grammyFeedbackTransport(ctx: Context): FeedbackTransport {
+  const toInlineKeyboard = (keyboard: { text: string; callbackData: string }[][]) => ({
+    inline_keyboard: keyboard.map((row) =>
+      row.map((button) => ({ text: button.text, callback_data: button.callbackData })),
+    ),
+  });
+  return {
+    async sendMenu(input) {
+      const sent = await ctx.api.sendMessage(input.chatId, input.text, {
+        reply_parameters: { message_id: input.replyToMessageId },
+        reply_markup: toInlineKeyboard(input.keyboard),
+      });
+      return { messageId: sent.message_id };
+    },
+    async editMenu(input) {
+      await ctx.api.editMessageText(input.chatId, input.messageId, input.text, {
+        // Editing without `reply_markup` drops the inline keyboard.
+        ...(input.keyboard ? { reply_markup: toInlineKeyboard(input.keyboard) } : {}),
+      });
+    },
+    async answerCallback(input) {
+      await ctx.api.answerCallbackQuery(input.callbackQueryId, {
+        ...(input.text ? { text: input.text } : {}),
+      });
+    },
+  };
+}
+
 /** Map a grammy message update onto the transport-agnostic pipeline. */
 async function onMessage(ctx: Context): Promise<void> {
   const message = ctx.message;
@@ -108,7 +139,31 @@ async function onMessage(ctx: Context): Promise<void> {
     // The token is only needed when the turn carries media; resolve it lazily.
     resolveToken: () => getTelegramBotToken(),
   };
-  await processUpdate(update, grammyTransport(ctx));
+  const feedback = grammyFeedbackTransport(ctx);
+  await processUpdate(update, grammyTransport(ctx), {
+    // A captured feedback answer edits the menu message in place.
+    editFeedbackMenu: (input) =>
+      feedback.editMenu({
+        chatId: input.chatId,
+        messageId: input.messageId,
+        text: input.text,
+        keyboard: null,
+      }),
+  });
+}
+
+/** Map a grammy `message_reaction` update onto the feedback flow. */
+async function onReaction(ctx: Context): Promise<void> {
+  const reaction = ctx.messageReaction;
+  if (!reaction) return;
+  await processReactionUpdate(reaction, grammyFeedbackTransport(ctx));
+}
+
+/** Map a grammy `callback_query` update onto the feedback-menu flow. */
+async function onCallbackQuery(ctx: Context): Promise<void> {
+  const query = ctx.callbackQuery;
+  if (!query) return;
+  await processCallbackUpdate(query, grammyFeedbackTransport(ctx));
 }
 
 /** Map a grammy `edited_message` update onto the history-edit mirror. */
@@ -142,6 +197,10 @@ export async function startBot(): Promise<BotStatus> {
     const bot = new Bot(token);
     bot.on("message", (ctx) => onMessage(ctx));
     bot.on("edited_message", (ctx) => onEditedMessage(ctx));
+    // Feedback collection: 👍/👎 reactions open a menu, presses answer it. In
+    // groups Telegram only delivers `message_reaction` when the bot is an admin.
+    bot.on("message_reaction", (ctx) => onReaction(ctx));
+    bot.on("callback_query:data", (ctx) => onCallbackQuery(ctx));
     bot.catch((err) => {
       console.error("Telegram bot error:", err.error);
     });
@@ -162,7 +221,13 @@ export async function startBot(): Promise<BotStatus> {
     };
 
     // Long-polling loop; do not await (it resolves only when the bot stops).
-    void bot.start({ allowed_updates: ["message", "edited_message"] }).catch((err) => {
+    // `message_reaction` is opt-in: it must be listed here or Telegram never
+    // delivers it (and in groups the bot must additionally be an admin).
+    void bot
+      .start({
+        allowed_updates: ["message", "edited_message", "message_reaction", "callback_query"],
+      })
+      .catch((err) => {
       s.bot = null;
       s.status = { ...s.status, state: "error", error: errorMessage(err) };
     });

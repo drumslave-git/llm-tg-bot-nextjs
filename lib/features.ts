@@ -83,6 +83,19 @@ export const FEATURES = {
     relatedIdsKey: "settings",
     path: "/settings",
   },
+  "user-feedback": {
+    id: "user-feedback",
+    label: "User feedback",
+    realtimeTopic: "feedback",
+    relatedIdsKey: "users_feedbacks",
+    path: "/self-improvement",
+  },
+  "self-improvement": {
+    id: "self-improvement",
+    label: "Self-improvement",
+    realtimeTopic: "feedback",
+    path: "/self-improvement",
+  },
 
   // Per-tool trace scopes. Every MCP tool call is recorded under
   // `mcp-tools-<owning-feature>` (see `server/mcp/tool-trace.ts`), so each tool

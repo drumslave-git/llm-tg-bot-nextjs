@@ -4,6 +4,7 @@ import { upsertKnownUser } from "@/features/known-users/server/repository";
 import { listTraces } from "@/server/trace/repository";
 import { startTestDb, type TestDb } from "@/test/db";
 import { getSettingsRecord } from "./repository";
+import { updateSettingsSchema } from "./schema";
 import {
   getBotPolicy,
   getSettings,
@@ -45,6 +46,7 @@ describe("getSettings", () => {
       ownerUserId: null,
       maintenanceModeEnabled: false,
       timezone: "UTC",
+      selfImprovementRunTime: "04:00",
       updatedAt: null,
     });
   });
@@ -73,6 +75,14 @@ describe("updateSettings", () => {
     await expect(updateSettings({ timezone: "Mars/Phobos" }, trigger, ctx.db)).rejects.toThrow(
       /timezone/i,
     );
+  });
+
+  it("persists the self-improvement run time (validated at the schema boundary)", async () => {
+    const set = await updateSettings({ selfImprovementRunTime: "05:30" }, trigger, ctx.db);
+    expect(set.selfImprovementRunTime).toBe("05:30");
+    // The HH:MM shape is enforced by `updateSettingsSchema` before the service.
+    expect(updateSettingsSchema.safeParse({ selfImprovementRunTime: "25:99" }).success).toBe(false);
+    expect(updateSettingsSchema.safeParse({ selfImprovementRunTime: "23:45" }).success).toBe(true);
   });
 
   it("never exposes the API key but reports it as configured, and can clear it", async () => {

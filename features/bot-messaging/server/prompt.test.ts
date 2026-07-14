@@ -26,6 +26,29 @@ describe("buildSystemPrompt", () => {
     const persona = "Line one.\nLine two.";
     expect(buildSystemPrompt({ personalityPrompt: persona })).toContain(persona);
   });
+
+  it("appends a trimmed self-correction block below the persona", () => {
+    const out = buildSystemPrompt({
+      personalityPrompt: "Be terse.",
+      selfCorrection: "  Stop rambling.  ",
+    });
+    expect(out).toBe(
+      `${BASE_SYSTEM_PROMPT}\n\n---\nAdditional instructions:\nBe terse.` +
+        `\n\n---\nSelf-correction guidelines (learned from user feedback on your replies):\nStop rambling.`,
+    );
+  });
+
+  it("appends the self-correction even without a personality", () => {
+    const out = buildSystemPrompt({ selfCorrection: "Answer shorter." });
+    expect(out).toBe(
+      `${BASE_SYSTEM_PROMPT}\n\n---\nSelf-correction guidelines (learned from user feedback on your replies):\nAnswer shorter.`,
+    );
+  });
+
+  it("treats a blank self-correction as unset", () => {
+    expect(buildSystemPrompt({ selfCorrection: "   " })).toBe(BASE_SYSTEM_PROMPT);
+    expect(buildSystemPrompt({ selfCorrection: null })).toBe(BASE_SYSTEM_PROMPT);
+  });
 });
 
 describe("buildTimeContext", () => {
