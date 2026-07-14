@@ -12,6 +12,10 @@ import { AsyncLocalStorage } from "node:async_hooks";
 export interface McpToolContext {
   /** The current chat's id (Telegram chat/group id as a string). */
   chatId: string;
+  /** The sender's numeric Telegram user id, when known (absent for tests). */
+  userId?: string | null;
+  /** The forum-topic thread the turn is in, when any (so a task delivers there). */
+  threadId?: number | null;
 }
 
 const storage = new AsyncLocalStorage<McpToolContext>();

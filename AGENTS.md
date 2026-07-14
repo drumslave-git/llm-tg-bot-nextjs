@@ -102,11 +102,11 @@ Current priority order:
 6. Visit/read link MCP tool
 7. Bot messaging: vision
 8. Vision backfill background job
-9. Mood feature
-10. Scheduled tasks feature
-11. Memory feature
-12. Image generation
-13. Browser agent feature
+9. Scheduled tasks feature
+10. Memory feature
+11. Image generation
+12. Browser agent feature
+13. Mood feature (de-prioritized to lowest by the user, 2026-07-14)
 
 Features not listed there are not v1 by default. Add a feature to the tracker
 with explicit priority, acceptance criteria, and dependencies before

@@ -153,9 +153,9 @@ describe("updateNotes", () => {
 
 describe("getGroupContext", () => {
   it("builds a roster block with member labels, aliases, and notes", async () => {
-    await seedUser({ userId: "1", username: "drumslave", firstName: "George", lastName: null });
-    await setKnownUserAliases(ctx.db, "1", ["Dad", "Boss"]);
-    await seedUser({ userId: "2", username: null, firstName: "Alice", lastName: "Smith" });
+    await seedUser({ userId: "1", username: "testuser", firstName: "Ada", lastName: null });
+    await setKnownUserAliases(ctx.db, "1", ["Cap", "Chief"]);
+    await seedUser({ userId: "2", username: null, firstName: "Bob", lastName: "Jones" });
     await rememberGroupActivity({ chatId: "-1", title: "Family", type: "group", userId: "1" }, ctx.db);
     await rememberGroupActivity({ chatId: "-1", title: "Family", type: "group", userId: "2" }, ctx.db);
     await updateNotes("-1", { notes: "Keep it casual" }, trigger, ctx.db);
@@ -164,8 +164,8 @@ describe("getGroupContext", () => {
     expect(context?.memberCount).toBe(2);
     expect(context?.content).toContain('group "Family"');
     expect(context?.content).toContain("About this group: Keep it casual");
-    expect(context?.content).toContain("George (@drumslave) — also known as: Dad, Boss");
-    expect(context?.content).toContain("Alice Smith");
+    expect(context?.content).toContain("Ada (@testuser) — also known as: Cap, Chief");
+    expect(context?.content).toContain("Bob Jones");
   });
 
   it("returns null for a group with no members and no notes", async () => {

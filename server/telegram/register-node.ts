@@ -1,5 +1,6 @@
 import "server-only";
 
+import { startTaskScheduler, stopTaskScheduler } from "@/features/scheduled-tasks/server/scheduler";
 import { startVisionBackfill, stopVisionBackfill } from "@/features/vision/server/backfill-scheduler";
 
 import { startBot, stopBot } from "./bot-manager";
@@ -18,6 +19,7 @@ export function registerNode(): void {
     if (shuttingDown) return;
     shuttingDown = true;
     stopVisionBackfill();
+    stopTaskScheduler();
     await Promise.race([
       stopBot().catch(() => undefined),
       new Promise((resolve) => setTimeout(resolve, 3000)),
@@ -32,6 +34,11 @@ export function registerNode(): void {
   // window; bot activity re-arms the idle wait thereafter. Independent of the bot
   // token — a run with no LLM configured settles as a no-op.
   startVisionBackfill();
+
+  // Start the periodic scheduled-tasks poller. It fires due tasks at their
+  // wall-clock time (independent of bot activity); a tick with no LLM configured,
+  // no due tasks, or the bot stopped settles as a harmless no-op.
+  startTaskScheduler();
 
   // Fire-and-forget: do not block server startup on the Telegram handshake.
   void startBot().then((status) => {

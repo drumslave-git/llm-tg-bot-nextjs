@@ -62,6 +62,7 @@ export function SettingsForm({
   const [tavilyKeyDirty, setTavilyKeyDirty] = useState(false);
   const [ownerUserId, setOwnerUserId] = useState(initial.ownerUserId ?? "");
   const [maintenanceMode, setMaintenanceMode] = useState(initial.maintenanceModeEnabled);
+  const [timezone, setTimezone] = useState(initial.timezone);
   const [model, setModel] = useState(initial.model ?? "");
   // Seed with the server-preloaded list (falling back to just the saved model);
   // a successful "Test connection" replaces this with a fresh list.
@@ -113,6 +114,9 @@ export function SettingsForm({
     if (maintenanceMode !== initial.maintenanceModeEnabled) {
       patch.maintenanceModeEnabled = maintenanceMode;
     }
+    if (timezone.trim() !== initial.timezone && timezone.trim() !== "") {
+      patch.timezone = timezone.trim();
+    }
 
     try {
       const res = await fetch("/api/settings", {
@@ -133,6 +137,7 @@ export function SettingsForm({
       setTavilyKey("");
       setOwnerUserId(data.ownerUserId ?? "");
       setMaintenanceMode(data.maintenanceModeEnabled);
+      setTimezone(data.timezone);
       setSave({ kind: "saved" });
       // Re-read server state so masked "configured" placeholders reflect the save.
       router.refresh();
@@ -299,6 +304,22 @@ export function SettingsForm({
             />
             <span className="text-sm text-muted">{maintenanceMode ? "On" : "Off"}</span>
           </div>
+        )}
+      </Field>
+
+      <Field
+        id="timezone"
+        label="Timezone"
+        hint="IANA timezone for scheduled tasks — a task at '09:00 daily' fires at 09:00 here. e.g. Europe/Berlin."
+      >
+        {({ id, describedBy }) => (
+          <Input
+            id={id}
+            aria-describedby={describedBy}
+            value={timezone}
+            onChange={(e) => setTimezone(e.target.value)}
+            placeholder="UTC"
+          />
         )}
       </Field>
     </div>

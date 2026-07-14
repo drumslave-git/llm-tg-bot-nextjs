@@ -237,8 +237,9 @@ function buildDeps(
           return chatCompletion(conn, { model: runtime.model, messages });
         }
         // Run the tool-call loop with the current chat bound, so tools only ever
-        // read this conversation's data.
-        return runWithToolContext({ chatId }, () =>
+        // read this conversation's data. The sender + thread are bound too, so a
+        // task tool records who created a task and delivers into the right thread.
+        return runWithToolContext({ chatId, userId: senderId, threadId }, () =>
           chatCompletionWithTools(conn, {
             model: runtime.model,
             messages,

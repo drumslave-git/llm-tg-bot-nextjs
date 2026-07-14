@@ -40,6 +40,7 @@ function toClientSettings(record: SettingsRecord | null): Settings {
     ownerUsername: record?.ownerUsername ?? null,
     ownerUserId: record?.ownerUserId ?? null,
     maintenanceModeEnabled: record?.maintenanceModeEnabled ?? false,
+    timezone: record?.timezone ?? "UTC",
     updatedAt: record?.updatedAt ?? null,
   };
 }
@@ -98,6 +99,14 @@ export async function getLlmRuntime(
 }
 
 /**
+ * Server-only: the operator timezone (IANA name, defaulting to `UTC`). Used by
+ * the scheduled-tasks feature to interpret wall-clock schedules.
+ */
+export async function getTimezone(db: DrizzleDb = getDb()): Promise<string> {
+  return (await getSettingsRecord(db))?.timezone ?? "UTC";
+}
+
+/**
  * Server-only: the active personality's id, or null when none is chosen. Used by
  * the personalities feature to resolve the persona composed into replies.
  */
@@ -141,7 +150,23 @@ function toPatch(input: UpdateSettings): SettingsPatch {
   if (input.maintenanceModeEnabled !== undefined) {
     patch.maintenanceModeEnabled = input.maintenanceModeEnabled;
   }
+  if (input.timezone !== undefined) {
+    if (!isValidIanaTimezone(input.timezone)) {
+      throw ApiError.badRequest(`Unknown timezone: ${input.timezone}`);
+    }
+    patch.timezone = input.timezone;
+  }
   return patch;
+}
+
+/** Whether `Intl` recognizes the given IANA timezone name. */
+function isValidIanaTimezone(timeZone: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**

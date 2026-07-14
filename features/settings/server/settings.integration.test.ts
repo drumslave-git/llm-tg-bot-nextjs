@@ -44,6 +44,7 @@ describe("getSettings", () => {
       ownerUsername: null,
       ownerUserId: null,
       maintenanceModeEnabled: false,
+      timezone: "UTC",
       updatedAt: null,
     });
   });
@@ -64,6 +65,14 @@ describe("updateSettings", () => {
     // Untouched fields survive partial updates.
     expect(second.llmBaseUrl).toBe("https://api.openai.com/v1");
     expect(second.model).toBe("gpt-4o-mini");
+  });
+
+  it("stores a valid timezone and rejects an unknown one", async () => {
+    const set = await updateSettings({ timezone: "Europe/Berlin" }, trigger, ctx.db);
+    expect(set.timezone).toBe("Europe/Berlin");
+    await expect(updateSettings({ timezone: "Mars/Phobos" }, trigger, ctx.db)).rejects.toThrow(
+      /timezone/i,
+    );
   });
 
   it("never exposes the API key but reports it as configured, and can clear it", async () => {

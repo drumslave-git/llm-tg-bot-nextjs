@@ -24,15 +24,15 @@ describe("formatGroupContext", () => {
       title: "Family",
       notes: null,
       members: [
-        { label: "George (@drumslave)", aliases: ["Dad", "Boss"] },
-        { label: "Alice", aliases: [] },
+        { label: "Ada L (@testuser)", aliases: ["Cap", "Chief"] },
+        { label: "Bob", aliases: [] },
       ],
     });
     expect(block).toContain('You are chatting in the Telegram group "Family".');
-    expect(block).toContain("- George (@drumslave) — also known as: Dad, Boss");
-    expect(block).toContain("- Alice");
+    expect(block).toContain("- Ada L (@testuser) — also known as: Cap, Chief");
+    expect(block).toContain("- Bob");
     // A member without aliases gets no "also known as" suffix.
-    expect(block).not.toContain("- Alice —");
+    expect(block).not.toContain("- Bob —");
   });
 
   it("includes operator notes and works without a title", () => {

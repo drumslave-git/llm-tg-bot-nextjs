@@ -26,9 +26,156 @@ Realtime: the dashboard now updates **live over SSE** (user decision — not pol
 
 **Priority 8 — Vision backfill background job (done):** the `pending` media rows (`message_media.status='pending'`, bytes intact) are captioned in the background by an **in-process idle-debounced scheduler** — the newly-decided **shared background-job operating model** (user decision; establishes the pattern for priorities 9–13). New shared primitive `server/jobs/idle-scheduler.ts` (`createIdleScheduler` — job-agnostic phase machine + debounce timer; `onActivity`/`runNow`/`getStatus`/`stop`; cooperative abort via `ctx.isAborted()`) and `server/jobs/lock.ts` (`withAdvisoryLock` — cross-process Postgres advisory lock on a pinned pool connection). The job body `features/vision/server/backfill.ts` (`runVisionBackfill`) wraps the lock, iterates `listPendingMedia` batches, calls the existing `describeAndStore` per row (which drops the bytes on success), respects abort, caps at 200 rows/run, and traces the batch under a new **`vision-backfill`** feature (per-row describes still trace under `vision`). Idempotency = the existing `status='pending'` gating (a described/unavailable row is never re-fetched; `describeAndStore` re-checks before spending an LLM call). Trigger = **idle-debounced (MVP parity)**: `features/vision/server/backfill-scheduler.ts` is a `globalThis` singleton wiring the primitive to the job (45s debounce code constant, LLM conn read fresh per run); `bot-manager.onMessage` calls `pokeVisionBackfill()` on every message to re-arm the wait and yield a running batch to live traffic; `register-node.ts` starts it on boot (arms an initial backlog-clearing run) and stops it on shutdown. Dashboard: a **Backfill card** on `/vision` (phase badge, backlog count, last-run summary, "Run now") backed by `GET/POST /api/vision/backfill`; live via the existing `vision` SSE topic (the scheduler publishes on every status change); shared Debug at `/debug?feature=vision-backfill`. Tests: `idle-scheduler.test.ts` (+6 unit, fake timers: debounce, re-arm, runNow, mid-run abort+re-arm, error, stop → **208 unit**), `backfill.integration.test.ts` (+7: describe-all + run/row traces, idempotent second run, empty-desc→unresolved, abort-early, lock-skip, `withAdvisoryLock` acquire/release + held-skip). Verified live on the running dev server: `/vision` shows the Backfill card ("Idle", "2 media rows awaiting a description", Run now) with no console errors; `GET /api/vision/backfill` returns `{status:{phase:"idle",…},pending:2}`. **Not run:** a real "Run now" against the operator's live pending media (irreversibly drops their stored image bytes + spends tokens — left to the operator) and the idle auto-run/poke wiring, which needs a dev-server restart (scheduler + bot-manager are boot-bound singletons). `next build` not run (dev server live on 3200 — `dont-clobber-running-dev-server`).
 
-Next: **Priority 9 — Mood feature** (mood/personality state + injection into replies, dashboard controls, debug traces) — builds on the personalities table (priority 2) and, for any mood-cooldown background work, reuses the shared in-process idle-scheduler model established here. The shared feature-1..8 gate is an operator-run live test with a real bot token + a dev-server restart (do not create credentials).
+**Priority 9 — Scheduled tasks (done):** user-configurable standing directives (`scheduled_tasks` table, migration `0011`) that fire on a wall-clock schedule — the LLM writes an in-character message *performing* the directive and it is posted to the chat. New `features/scheduled-tasks/*`: client-safe `types.ts` + `schedule.ts` (dependency-free `Intl` once/daily/weekly wall-clock math — `computeNextRun`/`describeSchedule`/`normalizeSchedule`, ported from the MVP); server `repository.ts`/`schema.ts`/`service.ts` (CRUD + schedule validation + next-run computation in the operator timezone + trace recording), `fire.ts` (compose base+persona system prompt + directive → generate → deliver → mirror to history → trace under `scheduled-tasks`; capped `recentDeliveries` seeds wording variation for recurring fires), `scheduler.ts` (`globalThis` singleton), `mcp-tools.ts` (5 tools). **Trigger = a new shared in-process periodic primitive** `server/jobs/interval-scheduler.ts` (fixed-interval ticker + overlap guard — the sibling of `idle-scheduler.ts`, since time-based firing can't idle-defer), wrapped by the feature scheduler: each 30s tick, under the `withAdvisoryLock` cross-process lock, scans due tasks, fires each, advances `next_run_at` (a spent one-shot → null → disabled); firing pauses during maintenance. Started from `register-node`. **Creation = MCP tools + dashboard, NOT owner-gated** (user decision — any chat participant manages that chat's tasks): `tasks_create/update/delete/list/get` bound to the current chat via the extended tool context (`chatId`+`userId`+`threadId`); `/scheduled-tasks` page (create with a known-chat picker, edit, enable/disable, delete, "Run due now") live over the `tasks` SSE topic; `GET/POST /api/scheduled-tasks`, `PATCH/DELETE /api/scheduled-tasks/[id]`, `GET/POST /api/scheduled-tasks/run`. New operator `settings.timezone` (IANA, default UTC) + a Settings field. Verified live on the dev server: `/scheduled-tasks` renders with the real chat dropdown (a DM + a group); created a daily task (correct next-run, `success` create trace on `/debug?feature=scheduled-tasks`, 77ms), then deleted it (dev DB left clean); no console errors. **The full fire path is proven by a simulated-fire integration test** (`runDueScheduledTasks` extracted as the testable due-run core; a capturing reply sink + deterministic generator drive due-scan → fire → deliver → mirror-to-history → advance against real Postgres, no bot/LLM) — covering delivery, wording variation, one-shot self-disable, empty-output skip, and nothing-due. The only sliver not exercised in-process is the thin grammy `sendChatMessage` adapter calling Telegram's API.
+
+Next: **Priority 10 — Memory feature** (user reprioritized 2026-07-14: **Mood moved to lowest priority (13)**, so the ordered list is now Memory → Image generation → Browser agent → Mood). Memory: extract/store/edit/retrieve/inject memories with traceable extraction and update flows, building on history + prompts + the shared background-job model. Flows are verified with the **bot-less simulation harness** (`simulateUpdate` / injected fire deps against real Postgres) — a real bot token is not a testing gate, only the live Telegram send/receive adapters remain out of in-process scope.
 
 ### Session log
+
+- 2026-07-14 (Testing infrastructure): **Live tool-selection coverage — every MCP
+  tool proven to be picked by the real LLM** (user: "each tool has to be covered by
+  live LLM tests — that the model understands different request types and actually
+  calls the proper tool, though we don't need to run the actual Tavily search etc.").
+  - **Insight:** the intent is testing *tool selection*, not tool execution. So the
+    harness drives the **real** configured LLM with the **real** registered tool
+    schemas/descriptions (straight through `getToolset()`) and the production system
+    prompt (`buildSystemPrompt()`), but **intercepts every tool call** — records it
+    and returns a canned result. No Tavily HTTP, no headless browser, no DB mutation;
+    the model sees the exact production tool contract, so its choice is faithful.
+  - **New `test/tool-selection.ts`** (shared cross-cutting harness): `runToolSelection`
+    resolves the LLM connection from DB settings, builds `[system prompt,
+    ...systemContext, ...priorTurns, user]` like the service does, and runs
+    `chatCompletionWithTools` with a recording `callTool`. Realistic per-tool canned
+    results let multi-step flows proceed (e.g. "cancel my reminder" → the model calls
+    `tasks_list`, whose canned result carries `task_demo_1`, which it then passes to
+    `tasks_delete`). Returns the ordered tool calls + final content; swallows a
+    stalled/empty-loop error since the recorded *selection* is what we assert on. Also
+    exports the shared suite plumbing — `LLM_LIVE`, `useLiveLlm()` (load `.env` + fail
+    fast if the LLM is unconfigured + close the pool after), `TOOL_SELECTION_TIMEOUT`,
+    `expectToolCalled`/`expectToolNotCalled`.
+  - **Cases co-located per feature** (matching the repo convention — every feature
+    keeps its integration tests in its own `server/` folder), opt-in
+    `describe.skipIf(!LLM_LIVE)`, 12 cases total:
+    `features/history/server/tool-selection.integration.test.ts` (`history_search`,
+    `history_get_in_range`, `history_get_by_message_ids`),
+    `features/known-users/server/…` (`update_user_aliases`, with a DM identity
+    context), `features/web-search/server/…` (`search_web` **plus a negative case**
+    asserting the model does **not** search for plain general knowledge — "capital of
+    France"), `features/link-fetch/server/…` (`read_page`),
+    `features/scheduled-tasks/server/…` (`tasks_create/list/update/delete/get`). No
+    rows written (tools intercepted, LLM read-only).
+    Run: `LLM_LIVE=1 npm run test:integration -- tool-selection` (the shared basename
+    matches all five files).
+  - **Verified live** against the operator's configured backend: **12/12 passed in
+    ~38s** — the model selected the correct tool for every request, including the
+    list→act two-step for update/delete and the negative no-search case. Cheap,
+    small prompts; no external side effects.
+  - Checks: lint ✓ (0 warnings), typecheck ✓, collection ✓ (5 files, 12 tests
+    skipped without `LLM_LIVE`), live run ✓ (5 files, 12 passed, ~48s). `build` not
+    run — dev server may be live (`dont-clobber-running-dev-server`); the change is
+    test-only.
+
+- 2026-07-14 (Priority 9 follow-up): **Task author-scoping + timezone stored in
+  UTC** (two user corrections).
+  - **(1) Author-scoped edit/cancel.** Every task already recorded
+    `created_by_user_id`; the MCP `tasks_update`/`tasks_delete` tools now enforce
+    it via a shared `checkOwnership` (task must be in this chat AND created by the
+    caller) — a participant can only change/cancel tasks **they** created, and a
+    dashboard-authored (null-author) task can't be changed by a chat user. Tool
+    descriptions updated to say so; list/get remain chat-scoped reads and the
+    structured view now includes `created_by_user_id`. The dashboard (operator
+    surface) stays unrestricted and shows each task's author ("by <label>" resolved
+    from known users, or "via dashboard").
+  - **(2) Timezone in UTC, adapted at runtime.** Dropped the per-task `timezone`
+    column (migration `0012`); schedules are interpreted at create/edit/fire
+    against the single `settings.timezone` (read fresh each time), and all instants
+    stay UTC (`timestamptz`) — no Postgres `TZ`. Changing the operator timezone now
+    re-times every task. `computeNextRun` calls in the service (edit) and scheduler
+    (advance) read `getTimezone()`; the dashboard card formats next/last-run in that
+    zone (fixes the earlier label/value mismatch).
+  - **(3) Simulated fire — no bot, no live LLM (user: stop citing a bot-token
+    gate; we have the simulator).** Extracted the testable due-run core
+    `runDueScheduledTasks(deps)` from the scheduler (injected `complete`/`send`/
+    `recordReply`/`timezone`/`now`/`db`); `runTick` wires the real collaborators
+    (`chatCompletion`, the bot's `sendChatMessage`, `recordAssistantMessage`) under
+    the advisory lock. New `scheduler.integration.test.ts` (+5) drives the whole
+    tick against real Postgres with a capturing reply sink + deterministic
+    generator: proves delivery to the right chat, the history mirror, recurring
+    wording variation (2nd fire's directive carries the 1st delivery), one-shot
+    self-disable (`next_run_at`→null), empty-output skip (advances anyway, no
+    send), and nothing-due. No credentials — the only unexercised sliver is grammy
+    `sendChatMessage` hitting Telegram.
+  - **Tests:** new `mcp-tools.test.ts` (+6: `checkOwnership` allow/deny matrix —
+    own/other/no-userId/dashboard-task/other-chat/missing) → **243 unit**;
+    integration updated (author stored; timezone interpreted, not stored) +
+    `scheduler.integration.test.ts` (+5 simulated fire) → **116 integration** (+1
+    skipped live).
+  - **Verified live** (dev server on 3200): created a dashboard task → shows "via
+    dashboard" + "Next run … 9:00:00 AM (UTC)" (correctly UTC now); seeded a
+    user-authored row → shows "by <resolved user label>"; both deleted, dev DB left
+    clean; no console errors.
+  - Checks: lint ✓, typecheck ✓, unit 243 ✓, integration 116 ✓ (+1 skipped live),
+    `db:generate`/`db:migrate` ✓ (`0012_little_siren` drops the column).
+
+- 2026-07-14 (Priority 9): **Scheduled tasks feature (done)** + **Mood
+  de-prioritized to lowest (13)** (user, AskUserQuestion).
+  - **Reprioritization:** the user chose to de-prioritize Mood to the lowest
+    priority. New order: 9 Scheduled tasks → 10 Memory → 11 Image generation →
+    12 Browser agent → 13 Mood. Reflected in the Feature Progress table,
+    `NEXTJS_REWRITE_PLAN.md`, and `AGENTS.md`; recorded in Decision Notes.
+  - **Decisions (user, AskUserQuestion):** (1) creation surface = **MCP tools +
+    dashboard, NOT owner-gated** — any chat participant manages that chat's tasks
+    (MVP gated to owner); (2) fire trigger = **in-process periodic poller** over
+    external-cron→Route-Handler.
+  - **New shared primitive** `server/jobs/interval-scheduler.ts`
+    (`createIntervalScheduler` — fixed-interval ticker + overlap guard + status;
+    `start`/`stop`/`runNow`/`getStatus`, `unref`'d timer). The sibling of
+    `idle-scheduler.ts`: the idle scheduler *defers* while busy, but a task at
+    09:00 must fire regardless, so time-based jobs need a plain ticker.
+  - **Feature module** `features/scheduled-tasks/*`: client-safe `types.ts` +
+    `schedule.ts` (dependency-free `Intl` once/daily/weekly math + `describeSchedule`
+    + `normalizeSchedule`, ported from the MVP's best-shaped code, returning
+    `Date`); server `repository.ts` (Drizzle CRUD + `listDueScheduledTasks` +
+    `markScheduledTaskRun` + `nextRecentDeliveries` cap), `schema.ts` (zod),
+    `service.ts` (validation + next-run in the operator timezone + trace per
+    mutation), `fire.ts` (`fireScheduledTask` — base+persona prompt + directive →
+    `chatCompletion` → `formatReply` → deliver → mirror to history → trace under
+    `scheduled-tasks`; never throws, skips empty output; `buildTaskDirectiveMessage`
+    seeds wording variation from `recentDeliveries`), `scheduler.ts` (`globalThis`
+    singleton: each tick, under `withAdvisoryLock`, list-due → fire → advance
+    `next_run_at`; pauses on maintenance; LLM conn read fresh), `mcp-tools.ts`
+    (`tasks_create/update/delete/list/get`, chat-scoped via the tool context, not
+    owner-gated), `ui/ScheduledTasksManager.tsx`.
+  - **Data model** (migration `0011`): `scheduled_tasks` (chatId/threadId/
+    createdByUserId/instruction/scheduleKind/timeOfDay/weekdays int[]/runDate/
+    timezone/enabled/`recentDeliveries jsonb`/lastRunAt/nextRunAt/timestamps;
+    indexes on chatId and (enabled,nextRunAt) for the due scan) + `settings.timezone`
+    (IANA, default UTC).
+  - **Cross-cutting:** extended `McpToolContext` with `userId`+`threadId`
+    (process-update binds them via `runWithToolContext`); `bot-manager.sendChatMessage`
+    for out-of-band delivery; `register-node` starts/stops the poller;
+    `server/mcp/runtime.ts` registers the tools under owner `scheduled-tasks` (tool
+    calls trace as `mcp-tools-scheduled-tasks`); `lib/features.ts` gains
+    `scheduled-tasks` + `mcp-tools-scheduled-tasks`; `lib/realtime.ts` gains the
+    `tasks` topic; nav gains "Scheduled tasks"; settings schema/service/repository/
+    form gain `timezone` (+ `getTimezone()`, IANA-validated on write).
+  - **Tests:** unit `schedule.test.ts` (+12), `interval-scheduler.test.ts` (+5),
+    `fire.test.ts` (+6) → **237 unit**; integration `scheduled-tasks.integration.test.ts`
+    (+8: create/next-run/timezone/validation, edit/recompute, delete, search,
+    due-scan + markRun capped deliveries), settings-timezone (+1), mcp-tools
+    service (updated for the 5 new tools) → **110 integration** (+1 skipped live).
+  - **Verified live** (dev server on 3200): `/scheduled-tasks` renders (nav item,
+    LiveIndicator, Debug link, real chat dropdown — a DM + a group, timezone card,
+    Run-due-now); created a daily task → correct next-run + `success` create trace
+    on `/debug?feature=scheduled-tasks` (77ms) → deleted it (dev DB left clean); no
+    console errors. Fixed a display nuance found live: the next-run time is now
+    formatted in the task's timezone to match its `(tz)` label. **Not verified
+    live:** a real fire→Telegram delivery (boot-bound scheduler singleton + a real
+    bot token — operator gate; no credentials created).
+  - Checks: lint ✓ (0 warnings), typecheck ✓, unit 237 ✓, integration 110 ✓
+    (+1 skipped live), `db:generate`/`db:migrate` ✓ (`0011_rare_marvex`). `build`
+    **not run** — dev server live on 3200 (`dont-clobber-running-dev-server`);
+    typecheck covers type validity.
 
 - 2026-07-14 (Testing infrastructure): **Transport-boundary refactor + bot-less
   flow simulator + opt-in real-LLM flow test** (user: "improve testing — test flows
@@ -143,7 +290,7 @@ Next: **Priority 9 — Mood feature** (mood/personality state + injection into r
     `getMediaSuffixesForMessages` → ` [photo: a red car]` described / ` [photo]`
     pending). Fixed the `getChatHistory("5", ctx.db)` call sites for the new middle
     `options` arg. → **213 unit, 96 integration**.
-  - **Verified live** (dev server on 3200): `/history/312973896` Content column now
+  - **Verified live** (dev server on 3200): `/history/<chat-id>` Content column now
     shows recognized media, e.g. `[GIF: A sequence of seven video frames showing a
     person walking down a stone staircase…]` and `[GIF: …sequence of 10 consecutive
     frames…]` (was blank) — also confirms the sequence-describe is running. `/vision`
@@ -701,8 +848,8 @@ Next: **Priority 9 — Mood feature** (mood/personality state + injection into r
     build, empty/unknown→null) → **67**.
   - **Verified live** on the dev server (migration applied): seeded a "Family Chat"
     supergroup with two members → `/groups` lists it (2 members); `/groups/-1009999`
-    shows the notes editor + members table (George (@drumslave) with aliases
-    "Dad, Boss"; Alice Smith no aliases; ordered by last-seen); editing notes
+    shows the notes editor + members table (a member with aliases; another with
+    no aliases; ordered by last-seen); editing notes
     PATCHed 200, persisted on reload, and recorded a `known-groups`/`update-notes`
     **success** trace (102ms) on `/groups/debug`; no console errors. Seeded rows +
     traces deleted afterward — dev DB restored.
@@ -835,9 +982,9 @@ Next: **Priority 9 — Mood feature** (mood/personality state + injection into r
   The trace already carries both relations — input via `correlationId`, reply via
   the `send message` event's `messageId` — so no schema change was needed. Tests:
   history integration (+2: newest-first order, user+reply→same-trace / no-trace →
-  null). Verified live: chat 312973896's 4 rows render newest-first with Trace
+  null). Verified live: a chat's 4 rows render newest-first with Trace
   links; clicking one opened its `bot-messaging/reply` detail (correlation
-  `312973896:867`, reply `messageId:868`). Checks: lint ✓, typecheck ✓, unit 89
+  `<chat-id>:867`, reply `messageId:868`). Checks: lint ✓, typecheck ✓, unit 89
   ✓, integration 49 ✓, build ✓ (0 warnings).
 - 2026-07-12 (follow-up 5): **Live updates for data pages (user directive).**
   User set a **standing rule**: every data-display page (current and future) must
@@ -852,7 +999,7 @@ Next: **Priority 9 — Mood feature** (mood/personality state + injection into r
     history": the Telegram poller is a boot-time `globalThis` singleton, so HMR
     doesn't reload its handlers — a dashboard Stop/Start (or dev-server restart)
     is required after server-side bot changes. After restart, real messages
-    record correctly (verified: chat 312973896 has 4 rows; the 2nd reply
+    record correctly (verified: a chat has 4 rows; the 2nd reply
     referenced the 1st turn → history injection working; trace shows the
     `history window loaded` step).
   - Verified the live loop end-to-end: with `/users` open and untouched, an alias
@@ -928,7 +1075,7 @@ Next: **Priority 9 — Mood feature** (mood/personality state + injection into r
   Verified live (both DB-down and DB-up): `/users` renders the error-path
   "Database unavailable" fallback when the DB is down, and — after restarting the
   dev Postgres container — the card-per-section happy-path (the `Card` with title
-  + description wrapping the users table; row `@drumslave` with inline alias
+  + description wrapping the users table; a user row with inline alias
   editor). Overview renders the kit's `StatusCard`s (DATABASE/LLM/MODEL/TELEGRAM).
   Only console noise is the pre-existing benign `ThemeScript` pre-hydration dev
   warning.
@@ -1504,11 +1651,11 @@ Features not listed here are not v1 by default. Add any additional feature to th
 | 6 | Visit/read link MCP tool | todo | missing | no | no | no | MCP basic support | Define fetch/read/SSRF policy |
 | 7 | Bot messaging: vision | todo | missing | no | no | no | bot messaging, media schema, LLM provider | Define media intake and vision context |
 | 8 | Vision backfill background job | todo | missing | no | no | no | bot vision, background job model | Define backfill locking/status model |
-| 9 | Mood feature | todo | missing | no | no | no | prompts, history, settings | Define mood state and prompt injection |
-| 10 | Scheduled tasks feature | todo | missing | no | no | no | background job model, bot messaging | Define task scheduler operating model |
-| 11 | Memory feature | todo | missing | no | no | no | history, prompts, background job model | Define memory scope and extraction flow |
-| 12 | Image generation | todo | missing | no | no | no | settings, LLM/tool provider, shared traces | Define image provider boundary |
-| 13 | Browser agent feature | todo | missing | no | no | no | background job model, link/browser policies, shared artifacts | Decide v1 scope and operating model |
+| 9 | Scheduled tasks feature | done | defined (see 2026-07-14 log) | shared `/debug?feature=scheduled-tasks` (create/update/delete/**fire** traces) + tool scope `mcp-tools-scheduled-tasks` | yes (shared `/api/traces/**/bundle`) | yes (schedule math, interval-scheduler, fire unit, author rule; service/repository + settings-timezone integration; **full `runDueScheduledTasks` fire→deliver→mirror→advance integration via a capturing sink + deterministic generator — no bot**) | background job model, bot messaging | Complete + verified (create live; fire simulated end-to-end); next → priority 10 (memory) |
+| 10 | Memory feature | todo | missing | no | no | no | history, prompts, background job model | Define memory scope and extraction flow |
+| 11 | Image generation | todo | missing | no | no | no | settings, LLM/tool provider, shared traces | Define image provider boundary |
+| 12 | Browser agent feature | todo | missing | no | no | no | background job model, link/browser policies, shared artifacts | Decide v1 scope and operating model |
+| 13 | Mood feature | todo (de-prioritized) | missing | no | no | no | prompts, history, settings | **Lowest priority** (user, 2026-07-14). Define mood state and prompt injection. Builds on the personalities table (per-persona mood defaults were the MVP shape) |
 
 ## Foundation Progress
 
@@ -1580,6 +1727,9 @@ writing `docs/decisions/*.md`. This table is the lightweight record.
 | Image bytes in traces (priority 7) | done | agent | Inline base64 image data URLs are **redacted in trace bodies** (`sanitizeMessagesForTrace` → `data:<mime>;base64,<N bytes>`) — a deliberate exception to the full-raw-bodies rule (memory `debug-show-full-raw-bodies`) for binary blobs: a ~1 MB base64 per image would bloat the trace jsonb and make the Debug JSON unreadable. The actual image is shown on the `/vision` page (better UX than a base64 wall). All readable content (roles, text, structure) is kept verbatim. |
 | Vision recognition timing (priority 7 follow-up) | done | user | Media on an addressed message is **recognized before the reply** (inside `loadVision`, after the addressing/maintenance gates): describe → store the description on the `message_media` row + drop bytes → generate the reply. **Pass split (user, refined 2026-07-14): the describe pass ALWAYS runs (1 vision pass, stored in history); attaching the images to the reply is the CONDITIONAL second pass — only when the message also carries text** (a real question). So a media-only message = **1 vision pass** (reply generated from the recognition text, no images re-sent); media + text = **2 vision passes** (describe + reply-with-images, for a specific question). A replied-to media reference always attaches (explicit "look at this"). Nothing is left to backfill for the addressed message; unaddressed media still uses the backfill job. History display reads `message_media.description` (no `chat_messages.content` mutation). Original decision was recognize *after* the delivered reply. |
 | Video/GIF frame sampling (priority 7 follow-up) | done | user | Gifs and videos (Telegram delivers both as mp4, which sharp can't decode) are read by sampling frames with the **system `ffmpeg` binary** (chosen over bundled `ffmpeg-static` / WASM — smallest image; `apk add --no-cache ffmpeg` in the Docker runner stage, **done**). **Always 10 frames**, sampled **evenly across the whole clip, not the opening frames** (ffmpeg `fps=count/duration`; when Telegram gives no duration — a video sent as a document — it is **probed with ffprobe** so frames still span the full clip). **The frames are sent to the model as an ordered sequence of separate full-resolution images, NOT a contact-sheet montage** (user: "sequence of images, model has to vision in order and be told they are a sequence, not detached random images" — the montage approach was tried and replaced). Each frame is normalized individually; `format.toVisionParts` interleaves `Frame k of n:` labels before each image and `format.frameSequenceHint` prefaces them with an explicit "these are consecutive frames of one clip in chronological order, not separate images" instruction (used in both the live reply turn and the describe pass). Storage: `message_media.frames_base64 jsonb` (migration `0010`) holds the frame array (`data_base64` keeps the first frame for the `/vision` preview); both are dropped on describe. Telegram's single-frame thumbnail is the **fallback** when ffmpeg is unavailable/fails. Frames are extracted at ingestion, so backfill re-describes from the stored sequence with no re-download. Cost accepted: up to 10 image inputs per clip. |
+| Scheduled tasks creation surface (priority 9) | done | user | **MCP tools + dashboard, NOT owner-gated for creation — any chat participant can create tasks** (user: "just do not limit it to owner, any user can"). The bot exposes `tasks_*` MCP tools so it can set up/list/cancel reminders conversationally, plus a `/scheduled-tasks` dashboard page for CRUD. Diverges from the MVP (which gated the task tools to the owner). Tasks remain **chat-scoped** — the tools operate only on the current chat's tasks (bound via the tool context). **Author-scoped mutations (user follow-up):** every task records an **author** (`created_by_user_id`), and a participant may **edit/cancel only tasks they created** — the `tasks_update`/`tasks_delete` tools reject another user's task (`checkOwnership`). Listing/reading show all of the chat's tasks (with the author). The **dashboard is the operator surface** and is unrestricted (creates author-less tasks shown "via dashboard"). Dashboard-created tasks pick a target chat from known users/groups. |
+| Scheduled tasks fire trigger (priority 9) | done | user | **In-process periodic poller** (~30s tick) over external-cron→Route-Handler. The idle-debounced backfill scheduler does not fit (it *defers* while the bot is active, but tasks must fire at their wall-clock time regardless), so a **new sibling shared primitive** `server/jobs/interval-scheduler.ts` is added alongside `idle-scheduler.ts`: a fixed-interval ticker with an overlap guard, started from `register-node`, advisory-locked (`withAdvisoryLock`) so a redeploy can't double-fire. Same single-container in-process-scheduler model already signed off for background jobs. Firing pauses while maintenance mode is on (read fresh per tick). Schedule kinds = once/daily/weekly (cron deferred). **Timezone (user follow-up):** there is **no per-task timezone column** and no Postgres `TZ`; all instants are stored in UTC (`timestamptz`) and every schedule's wall-clock `time_of_day`/`run_date` is interpreted at **runtime against the single configured `settings.timezone`** (read fresh at create/edit/fire) — so changing the operator timezone re-times all tasks, and the dashboard renders next/last-run in that zone. |
+| Feature priority reorder (2026-07-14) | done | user | **Mood de-prioritized to lowest (13).** The remaining feature order is now: 9 Scheduled tasks → 10 Memory → 11 Image generation → 12 Browser agent → 13 Mood. Reflected in the Feature Progress table, `NEXTJS_REWRITE_PLAN.md`, and `AGENTS.md`. (The mood-feature design questions — global vs per-chat scope, per-personality vs global baseline, lazy-decay vs background tick — were surfaced but deferred with it; revisit when mood is picked up.) |
 | Background job operating model | done | user | **In-process scheduler started from `instrumentation.ts`**, same lifecycle as the existing bot-manager / MCP registry / Playwright / realtime-hub `globalThis` singletons — chosen over external cron→Route Handler, a separate worker, or on-demand-only. Rationale: single self-hosted container that already runs an in-process poller; a scheduler in the same process needs no new deploy unit, secret, or external cron, and is consistent with the recorded polling decision. Trade-off accepted (this is the required sign-off for an in-process scheduler): won't survive a move to multi-replica without change; isolated behind a shared scheduler primitive so a later move to a worker/cron is contained. DB-backed **locking** via a Postgres advisory lock (`server/jobs/lock.ts`) guards cross-process overlap (e.g. redeploy); **idempotency** is the existing per-row `status='pending'` gating (`describeAndStore` skips non-pending). **Trigger = idle-debounced (MVP parity):** a debounce timer (re)armed on bot activity, aborting the running batch when live traffic resumes so backfill never competes with a live reply. Debounce is a code constant, not a setting (matches `VISION_MAX_DIMENSION`). Establishes the shared model for priorities 8–13 (mood cooldown, scheduled tasks, memory extraction, browser-agent queue). |
 
 ## Blockers

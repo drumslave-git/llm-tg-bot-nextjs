@@ -27,6 +27,8 @@ export interface SettingsRecord {
   ownerUsername: string | null;
   ownerUserId: string | null;
   maintenanceModeEnabled: boolean;
+  /** Operator IANA timezone for wall-clock features (scheduled tasks). */
+  timezone: string;
   updatedAt: string | null;
 }
 
@@ -41,6 +43,7 @@ export interface SettingsPatch {
   ownerUsername?: string | null;
   ownerUserId?: string | null;
   maintenanceModeEnabled?: boolean;
+  timezone?: string;
 }
 
 function mapRow(row: SettingsRow): SettingsRecord {
@@ -54,6 +57,7 @@ function mapRow(row: SettingsRow): SettingsRecord {
     ownerUsername: row.ownerUsername,
     ownerUserId: row.ownerUserId,
     maintenanceModeEnabled: row.maintenanceModeEnabled,
+    timezone: row.timezone,
     updatedAt: row.updatedAt.toISOString(),
   };
 }

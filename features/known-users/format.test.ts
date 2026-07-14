@@ -5,8 +5,8 @@ import { formatKnownUserLabel, formatUserContext } from "./format";
 describe("formatKnownUserLabel", () => {
   it("combines name and @username when both are present", () => {
     expect(
-      formatKnownUserLabel({ firstName: "George", lastName: "T", username: "drumslave", userId: "1" }),
-    ).toBe("George T (@drumslave)");
+      formatKnownUserLabel({ firstName: "Ada", lastName: "L", username: "testuser", userId: "1" }),
+    ).toBe("Ada L (@testuser)");
   });
 
   it("falls back to name, then @username, then id", () => {
@@ -24,8 +24,8 @@ describe("formatKnownUserLabel", () => {
 
 describe("formatUserContext", () => {
   it("names who the bot is talking to, with identity facts only (no tool references)", () => {
-    const block = formatUserContext({ label: "George (@drumslave)", aliases: [] });
-    expect(block).toContain("private, one-on-one Telegram chat with George (@drumslave).");
+    const block = formatUserContext({ label: "Ada L (@testuser)", aliases: [] });
+    expect(block).toContain("private, one-on-one Telegram chat with Ada L (@testuser).");
     // No aliases → no "also known as" clause.
     expect(block).not.toContain("also known as");
     // Identity context stays tool-agnostic — the prompt must not name tools.
@@ -33,7 +33,7 @@ describe("formatUserContext", () => {
   });
 
   it("lists known aliases when present", () => {
-    const block = formatUserContext({ label: "George", aliases: ["Жора", "Гоша"] });
-    expect(block).toContain("They are also known as: Жора, Гоша.");
+    const block = formatUserContext({ label: "Ada", aliases: ["Ace", "Nova"] });
+    expect(block).toContain("They are also known as: Ace, Nova.");
   });
 });

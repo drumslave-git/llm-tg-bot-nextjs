@@ -528,11 +528,11 @@ Priority order:
 | 6 | Visit/read link MCP tool | Link reading tool exposed through the shared MCP/tool system with SSRF protections and traceable fetch/read output. |
 | 7 | Bot messaging: vision | Bot can receive image/sticker/media messages and include vision context in replies. |
 | 8 | Vision backfill background job | Background processing for older/unprocessed media with status, locking, debug traces, and log download. |
-| 9 | Mood feature | Mood/personality state, mood injection into replies, dashboard controls, and debug traces. |
-| 10 | Scheduled tasks feature | User-configurable scheduled tasks with execution traces, status, idempotency, and dashboard controls. |
-| 11 | Memory feature | Extract, store, edit, retrieve, and inject memories with traceable extraction and update flows. |
-| 12 | Image generation | Generate images through configured provider/tooling with dashboard/debug visibility and downloadable traces. |
-| 13 | Browser agent feature | Browser-agent runs with queue/status, step traces, artifacts/downloads, and a dedicated Debug page. |
+| 9 | Scheduled tasks feature | User-configurable scheduled tasks with execution traces, status, idempotency, and dashboard controls. |
+| 10 | Memory feature | Extract, store, edit, retrieve, and inject memories with traceable extraction and update flows. |
+| 11 | Image generation | Generate images through configured provider/tooling with dashboard/debug visibility and downloadable traces. |
+| 12 | Browser agent feature | Browser-agent runs with queue/status, step traces, artifacts/downloads, and a dedicated Debug page. |
+| 13 | Mood feature | Mood/personality state, mood injection into replies, dashboard controls, and debug traces. **De-prioritized to lowest by the user (2026-07-14).** |
 
 Feature dependency notes:
 

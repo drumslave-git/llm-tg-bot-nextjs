@@ -70,6 +70,13 @@ export const FEATURES = {
     relatedIdsKey: "personalities",
     path: "/personalities",
   },
+  "scheduled-tasks": {
+    id: "scheduled-tasks",
+    label: "Scheduled tasks",
+    realtimeTopic: "tasks",
+    relatedIdsKey: "scheduled_tasks",
+    path: "/scheduled-tasks",
+  },
   settings: {
     id: "settings",
     label: "Settings",
@@ -96,6 +103,11 @@ export const FEATURES = {
   "mcp-tools-link-fetch": {
     id: "mcp-tools-link-fetch",
     label: "Link reader tool",
+    path: "/tools",
+  },
+  "mcp-tools-scheduled-tasks": {
+    id: "mcp-tools-scheduled-tasks",
+    label: "Scheduled task tools",
     path: "/tools",
   },
 } as const satisfies Record<string, FeatureDescriptor>;

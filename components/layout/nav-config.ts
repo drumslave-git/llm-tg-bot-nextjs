@@ -1,5 +1,6 @@
 import {
   Bug,
+  CalendarClock,
   Image,
   LayoutDashboard,
   MessageSquare,
@@ -35,6 +36,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { href: "/", label: "Overview", icon: LayoutDashboard },
       { href: "/history", label: "History", icon: MessageSquare },
+      { href: "/scheduled-tasks", label: "Scheduled tasks", icon: CalendarClock },
       { href: "/vision", label: "Vision", icon: Image },
       { href: "/users", label: "Users", icon: Users },
       { href: "/groups", label: "Groups", icon: UsersRound },

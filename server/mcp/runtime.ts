@@ -13,6 +13,10 @@ import {
   registerLinkFetchMcpTools,
 } from "@/features/link-fetch/server/mcp-tools";
 import {
+  registerScheduledTasksMcpTools,
+  SCHEDULED_TASKS_TOOL_NAMES,
+} from "@/features/scheduled-tasks/server/mcp-tools";
+import {
   registerWebSearchMcpTools,
   WEB_SEARCH_TOOL_NAMES,
 } from "@/features/web-search/server/mcp-tools";
@@ -48,6 +52,11 @@ async function build(): Promise<BotMcpRegistry> {
   registry.registerTools("known-users", registerKnownUsersMcpTools, KNOWN_USERS_TOOL_NAMES);
   registry.registerTools("web-search", registerWebSearchMcpTools, WEB_SEARCH_TOOL_NAMES);
   registry.registerTools("link-fetch", registerLinkFetchMcpTools, LINK_FETCH_TOOL_NAMES);
+  registry.registerTools(
+    "scheduled-tasks",
+    registerScheduledTasksMcpTools,
+    SCHEDULED_TASKS_TOOL_NAMES,
+  );
   await registry.finishRegistration();
   return registry;
 }

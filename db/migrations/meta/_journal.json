@@ -78,6 +78,20 @@
       "when": 1783976621731,
       "tag": "0010_loud_inhumans",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1784029463783,
+      "tag": "0011_rare_marvex",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1784031936586,
+      "tag": "0012_little_siren",
+      "breakpoints": true
     }
   ]
 }

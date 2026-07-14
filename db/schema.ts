@@ -111,6 +111,12 @@ export const settings = pgTable(
      * groups the owner must @mention the bot directly.
      */
     maintenanceModeEnabled: boolean("maintenance_mode_enabled").notNull().default(false),
+    /**
+     * Operator timezone (IANA name, e.g. `Europe/Berlin`) for wall-clock features
+     * like scheduled tasks — a task at "09:00 daily" fires at 09:00 in this zone.
+     * Captured onto each task at creation. Defaults to `UTC`.
+     */
+    timezone: text("timezone").notNull().default("UTC"),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [check("settings_singleton", sql`${t.id} = 'singleton'`)],
@@ -336,6 +342,64 @@ export const messageMedia = pgTable(
 
 export type MessageMediaRow = typeof messageMedia.$inferSelect;
 export type MessageMediaInsert = typeof messageMedia.$inferInsert;
+
+/**
+ * A scheduled task: a chat-scoped standing directive ("remind me to call mom at
+ * 09:00") that, when its wall-clock schedule comes due, has the LLM generate an
+ * in-character message *performing* the directive and posts it to the chat.
+ *
+ * Schedules are once/daily/weekly at a local `time_of_day`, interpreted at
+ * runtime against the single configured operator timezone (`settings.timezone`) —
+ * not stored per row, so changing the operator timezone re-times every task.
+ * `next_run_at` is the absolute UTC instant of the next firing (all instant
+ * columns are `timestamptz`, i.e. stored in UTC) — the poller scans for enabled
+ * rows whose `next_run_at` is due, fires them, then advances it (null for a spent
+ * one-shot, which also flips `enabled` off). `recent_deliveries` keeps the last
+ * few delivered message texts so recurring fires can be told to vary their wording.
+ *
+ * Tasks are managed by any chat participant (MCP tools, chat-scoped) and by the
+ * operator (dashboard). Ids are app-generated UUIDs (entity convention).
+ */
+export const scheduledTasks = pgTable(
+  "scheduled_tasks",
+  {
+    id: text("id").primaryKey(),
+    /** The chat the task belongs to and fires into (Telegram chat id as a string). */
+    chatId: text("chat_id").notNull(),
+    /** Forum-topic thread to deliver into, or null (delivered to the chat root). */
+    threadId: bigint("thread_id", { mode: "number" }),
+    /** Numeric Telegram user id of whoever created it, or null (dashboard). */
+    createdByUserId: text("created_by_user_id"),
+    /** The self-contained directive the fire generates a message from. */
+    instruction: text("instruction").notNull(),
+    /** `once` | `daily` | `weekly`. */
+    scheduleKind: text("schedule_kind").notNull(),
+    /** Local time of day as `HH:MM` (24-hour) in `timezone`. */
+    timeOfDay: text("time_of_day").notNull(),
+    /** Weekdays for `weekly` (0=Sunday..6=Saturday); null otherwise. */
+    weekdays: integer("weekdays").array(),
+    /** Calendar date for `once` as `YYYY-MM-DD` (in the operator timezone); null otherwise. */
+    runDate: text("run_date"),
+    /** Whether the task is active (a spent one-shot flips this off). */
+    enabled: boolean("enabled").notNull().default(true),
+    /** The last few delivered message texts, newest first, for wording variation. */
+    recentDeliveries: jsonb("recent_deliveries").$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+    /** When the task last fired, or null. */
+    lastRunAt: timestamp("last_run_at", { withTimezone: true }),
+    /** Absolute UTC instant of the next firing; null disables the task. */
+    nextRunAt: timestamp("next_run_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("scheduled_tasks_chat_idx").on(t.chatId),
+    // The poller scans enabled rows ordered by their due instant.
+    index("scheduled_tasks_due_idx").on(t.enabled, t.nextRunAt),
+  ],
+);
+
+export type ScheduledTaskRow = typeof scheduledTasks.$inferSelect;
+export type ScheduledTaskInsert = typeof scheduledTasks.$inferInsert;
 
 export type TraceRow = typeof traces.$inferSelect;
 export type TraceInsert = typeof traces.$inferInsert;

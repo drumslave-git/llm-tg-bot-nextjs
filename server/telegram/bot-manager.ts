@@ -57,6 +57,25 @@ export function getBotStatus(): BotStatus {
   return { ...store().status };
 }
 
+/**
+ * Send an out-of-band message to a chat, outside any incoming update (used by the
+ * scheduled-tasks fire path). Requires the poller to be running — Telegram's `api`
+ * lives on the active bot. Throws when the bot is not running so the caller can
+ * record the failure. Resolves the delivered message id.
+ */
+export async function sendChatMessage(
+  chatId: string,
+  text: string,
+  opts: { threadId?: number | null } = {},
+): Promise<{ messageId: number }> {
+  const bot = store().bot;
+  if (!bot) throw new Error("Telegram bot is not running");
+  const sent = await bot.api.sendMessage(chatId, text, {
+    ...(opts.threadId != null ? { message_thread_id: opts.threadId } : {}),
+  });
+  return { messageId: sent.message_id };
+}
+
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }

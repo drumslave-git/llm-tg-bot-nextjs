@@ -35,6 +35,8 @@ export const settingsSchema = z.object({
   ownerUsername: z.string().nullable(),
   /** Whether maintenance mode is on. */
   maintenanceModeEnabled: z.boolean(),
+  /** Operator IANA timezone for wall-clock features (scheduled tasks). */
+  timezone: z.string(),
   /** Last write time, or null if never configured. */
   updatedAt: z.string().datetime().nullable(),
 });
@@ -55,6 +57,7 @@ export const updateSettingsSchema = z
     tavilyApiKey: apiKey.nullable(),
     ownerUserId: ownerUserId.nullable(),
     maintenanceModeEnabled: z.boolean(),
+    timezone: z.string().trim().min(1).max(64),
   })
   .partial()
   .refine((v) => Object.keys(v).length > 0, {

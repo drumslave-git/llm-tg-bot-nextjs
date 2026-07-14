@@ -44,7 +44,7 @@ export async function startTestDb(): Promise<TestDb> {
     connectionUri,
     async truncate() {
       await pool.query(
-        'TRUNCATE TABLE "trace_events", "traces", "settings", "known_users", "known_groups", "group_members", "personalities", "chat_messages", "message_media" CASCADE',
+        'TRUNCATE TABLE "trace_events", "traces", "settings", "known_users", "known_groups", "group_members", "personalities", "chat_messages", "message_media", "scheduled_tasks" CASCADE',
       );
     },
     async stop() {

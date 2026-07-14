@@ -7,6 +7,7 @@ import {
 } from "@/features/history/server/mcp-tools";
 import { UPDATE_USER_ALIASES_TOOL } from "@/features/known-users/server/mcp-tools";
 import { READ_PAGE_TOOL } from "@/features/link-fetch/server/mcp-tools";
+import { SCHEDULED_TASKS_TOOL_NAMES } from "@/features/scheduled-tasks/server/mcp-tools";
 import { SEARCH_WEB_TOOL } from "@/features/web-search/server/mcp-tools";
 import { getToolset, getToolsView } from "./service";
 
@@ -23,6 +24,7 @@ const ALL_TOOLS = [
   UPDATE_USER_ALIASES_TOOL,
   SEARCH_WEB_TOOL,
   READ_PAGE_TOOL,
+  ...SCHEDULED_TASKS_TOOL_NAMES,
 ].sort();
 
 describe("getToolsView", () => {
@@ -34,6 +36,7 @@ describe("getToolsView", () => {
     expect(featureOf(UPDATE_USER_ALIASES_TOOL)).toBe("known-users");
     expect(featureOf(SEARCH_WEB_TOOL)).toBe("web-search");
     expect(featureOf(READ_PAGE_TOOL)).toBe("link-fetch");
+    expect(featureOf(SCHEDULED_TASKS_TOOL_NAMES[0])).toBe("scheduled-tasks");
     expect(view.tools.every((t) => t.description.length > 0)).toBe(true);
   });
 });
