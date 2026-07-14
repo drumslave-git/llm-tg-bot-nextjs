@@ -12,7 +12,11 @@ import {
   PageHeader,
 } from "@/components/ui";
 import { featureDebugHref } from "@/lib/features";
-import { getSettings, listAvailableModels } from "@/features/settings/server/service";
+import {
+  getSettings,
+  listAvailableEmbeddingModels,
+  listAvailableModels,
+} from "@/features/settings/server/service";
 import type { Settings } from "@/features/settings/server/schema";
 import { listUsers } from "@/features/known-users/server/service";
 import type { KnownUser } from "@/features/known-users/server/schema";
@@ -30,12 +34,16 @@ export const dynamic = "force-dynamic";
 export default async function SettingsPage() {
   let settings: Settings | null = null;
   let initialModels: string[] = [];
+  let initialEmbeddingModels: string[] = [];
   let knownUsers: KnownUser[] = [];
   let dbError: string | null = null;
   try {
     settings = await getSettings();
-    // Preload the endpoint's models so the dropdown is populated on open.
-    initialModels = await listAvailableModels();
+    // Preload both endpoints' models so the dropdowns are populated on open.
+    [initialModels, initialEmbeddingModels] = await Promise.all([
+      listAvailableModels(),
+      listAvailableEmbeddingModels(),
+    ]);
     // Known users populate the owner dropdown.
     knownUsers = await listUsers();
   } catch (err) {
@@ -67,7 +75,12 @@ export default async function SettingsPage() {
         </CardHeader>
         <CardContent>
           {settings ? (
-            <SettingsForm initial={settings} initialModels={initialModels} knownUsers={knownUsers} />
+            <SettingsForm
+              initial={settings}
+              initialModels={initialModels}
+              initialEmbeddingModels={initialEmbeddingModels}
+              knownUsers={knownUsers}
+            />
           ) : (
             <EmptyState
               icon={Database}

@@ -8,12 +8,14 @@ import { Badge, Button, Field, Input, Select, Switch, Tabs, type TabItem } from 
 import { formatKnownUserLabel } from "@/features/known-users/format";
 import type { KnownUser } from "@/features/known-users/server/schema";
 import type { ApiErrorBody } from "@/lib/api-error";
+import { EMBEDDING_DIMENSIONS } from "@/lib/embeddings";
 import type { Settings } from "../server/schema";
 
 /**
- * Bot settings editor. Client Component with two tabs: **Core** (the LLM
+ * Bot settings editor. Client Component with three tabs: **Core** (the LLM
  * connection + model, Telegram token, owner, and maintenance mode — without which
- * the bot cannot run) and **Integrations** (optional feature keys like Tavily for
+ * the bot cannot run), **Embeddings** (the endpoint powering semantic recall over
+ * history summaries), and **Integrations** (optional feature keys like Tavily for
  * web search). One Save button below the tabs persists every changed field
  * regardless of the active tab. Secret keys are write-only — shown as
  * "configured" but their values never leave the server.
@@ -23,6 +25,13 @@ type Conn =
   | { kind: "idle" }
   | { kind: "testing" }
   | { kind: "connected"; count: number }
+  | { kind: "error"; message: string };
+
+/** Outcome of the embeddings probe — a real embed call, so it reports the width. */
+type Embed =
+  | { kind: "idle" }
+  | { kind: "testing" }
+  | { kind: "ok"; model: string; dimensions: number }
   | { kind: "error"; message: string };
 
 type Save =
@@ -43,12 +52,15 @@ async function readError(res: Response): Promise<string> {
 export function SettingsForm({
   initial,
   initialModels = [],
+  initialEmbeddingModels = [],
   knownUsers = [],
 }: {
   initial: Settings;
   /** Models preloaded server-side for the saved endpoint, so the dropdown is
    *  populated on open without a manual "Test connection". */
   initialModels?: string[];
+  /** Models preloaded from the embedding endpoint (or the LLM one, when it serves both). */
+  initialEmbeddingModels?: string[];
   /** Users who have messaged the bot — the owner is chosen from this list. */
   knownUsers?: KnownUser[];
 }) {
@@ -63,9 +75,17 @@ export function SettingsForm({
   const [ownerUserId, setOwnerUserId] = useState(initial.ownerUserId ?? "");
   const [maintenanceMode, setMaintenanceMode] = useState(initial.maintenanceModeEnabled);
   const [timezone, setTimezone] = useState(initial.timezone);
-  const [selfImprovementRunTime, setSelfImprovementRunTime] = useState(
-    initial.selfImprovementRunTime,
+  const [dailyJobsRunTime, setDailyJobsRunTime] = useState(initial.dailyJobsRunTime);
+  const [embeddingBaseUrl, setEmbeddingBaseUrl] = useState(initial.embeddingBaseUrl ?? "");
+  // A stored embedding URL *is* the "separate backend" flag — the two can never
+  // disagree, so the checkbox is derived from it rather than persisted alongside it.
+  const [separateEmbeddingBackend, setSeparateEmbeddingBackend] = useState(
+    Boolean(initial.embeddingBaseUrl),
   );
+  const [embeddingKey, setEmbeddingKey] = useState("");
+  const [embeddingKeyDirty, setEmbeddingKeyDirty] = useState(false);
+  const [embeddingModel, setEmbeddingModel] = useState(initial.embeddingModel ?? "");
+  const [embed, setEmbed] = useState<Embed>({ kind: "idle" });
   const [model, setModel] = useState(initial.model ?? "");
   // Seed with the server-preloaded list (falling back to just the saved model);
   // a successful "Test connection" replaces this with a fresh list.
@@ -102,6 +122,43 @@ export function SettingsForm({
     await runTest(llmBaseUrl, apiKeyDirty ? apiKey : undefined);
   }
 
+  // The embedding endpoint as configured right now: its own URL only when the
+  // operator asked for a separate backend, otherwise "reuse the LLM connection"
+  // (null). Used identically by the probe and the save, so a passing test is a
+  // test of what will actually be stored.
+  const resolvedEmbeddingUrl =
+    separateEmbeddingBackend && embeddingBaseUrl.trim() !== "" ? embeddingBaseUrl.trim() : null;
+  const embeddingUrlMissing = separateEmbeddingBackend && embeddingBaseUrl.trim() === "";
+
+  // Probe the embedding endpoint with a real embed call: it reports the vector
+  // width, which is the one thing a model listing cannot tell us and the one
+  // mismatch that would break every later write.
+  async function onTestEmbeddings() {
+    if (embeddingModel.trim() === "" || embeddingUrlMissing) return;
+    setEmbed({ kind: "testing" });
+    try {
+      const res = await fetch("/api/settings/test-embeddings", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          embeddingBaseUrl: resolvedEmbeddingUrl,
+          embeddingModel: embeddingModel,
+          // Only send the key when the operator typed one; otherwise the server
+          // tests with the stored key and the secret never round-trips.
+          ...(embeddingKeyDirty ? { embeddingApiKey: embeddingKey.trim() } : {}),
+        }),
+      });
+      if (!res.ok) {
+        setEmbed({ kind: "error", message: await readError(res) });
+        return;
+      }
+      const { data } = (await res.json()) as { data: { model: string; dimensions: number } };
+      setEmbed({ kind: "ok", model: data.model, dimensions: data.dimensions });
+    } catch {
+      setEmbed({ kind: "error", message: "Network error — could not reach the server" });
+    }
+  }
+
   async function onSave() {
     setSave({ kind: "saving" });
     const patch: Record<string, unknown> = {
@@ -120,11 +177,21 @@ export function SettingsForm({
     if (timezone.trim() !== initial.timezone && timezone.trim() !== "") {
       patch.timezone = timezone.trim();
     }
-    if (
-      selfImprovementRunTime.trim() !== initial.selfImprovementRunTime &&
-      selfImprovementRunTime.trim() !== ""
-    ) {
-      patch.selfImprovementRunTime = selfImprovementRunTime.trim();
+    if (dailyJobsRunTime.trim() !== initial.dailyJobsRunTime && dailyJobsRunTime.trim() !== "") {
+      patch.dailyJobsRunTime = dailyJobsRunTime.trim();
+    }
+    if (resolvedEmbeddingUrl !== (initial.embeddingBaseUrl ?? null)) {
+      patch.embeddingBaseUrl = resolvedEmbeddingUrl;
+    }
+    if (embeddingModel !== (initial.embeddingModel ?? "")) {
+      patch.embeddingModel = embeddingModel === "" ? null : embeddingModel;
+    }
+    // Turning the separate backend off clears its key too: it authenticated a host
+    // we are no longer calling, and leaving it behind would resurrect on re-enable.
+    if (!separateEmbeddingBackend && initial.embeddingApiKeyConfigured) {
+      patch.embeddingApiKey = null;
+    } else if (embeddingKeyDirty) {
+      patch.embeddingApiKey = embeddingKey.trim() === "" ? null : embeddingKey.trim();
     }
 
     try {
@@ -144,10 +211,15 @@ export function SettingsForm({
       setBotToken("");
       setTavilyKeyDirty(false);
       setTavilyKey("");
+      setEmbeddingKeyDirty(false);
+      setEmbeddingKey("");
       setOwnerUserId(data.ownerUserId ?? "");
       setMaintenanceMode(data.maintenanceModeEnabled);
       setTimezone(data.timezone);
-      setSelfImprovementRunTime(data.selfImprovementRunTime);
+      setDailyJobsRunTime(data.dailyJobsRunTime);
+      setEmbeddingBaseUrl(data.embeddingBaseUrl ?? "");
+      setSeparateEmbeddingBackend(Boolean(data.embeddingBaseUrl));
+      setEmbeddingModel(data.embeddingModel ?? "");
       setSave({ kind: "saved" });
       // Re-read server state so masked "configured" placeholders reflect the save.
       router.refresh();
@@ -158,6 +230,19 @@ export function SettingsForm({
 
   const connected = conn.kind === "connected";
   const canPickModel = models.length > 0;
+
+  // Embedding model options. When embeddings share the LLM endpoint (the common
+  // case — no separate URL), the endpoint's own model list is authoritative, so a
+  // "Test connection" on the Core tab refreshes this dropdown too. With a separate
+  // embedding host we fall back to what the server preloaded from that host. The
+  // saved model is always kept as an option, so an unreachable endpoint cannot
+  // silently blank out a working selection.
+  const listedEmbeddingModels =
+    !separateEmbeddingBackend && models.length > 0 ? models : initialEmbeddingModels;
+  const embeddingModels =
+    embeddingModel && !listedEmbeddingModels.includes(embeddingModel)
+      ? [embeddingModel, ...listedEmbeddingModels]
+      : listedEmbeddingModels;
 
   const coreTab = (
     <div className="space-y-5">
@@ -334,20 +419,155 @@ export function SettingsForm({
       </Field>
 
       <Field
-        id="selfImprovementRunTime"
-        label="Self-improvement run time"
-        hint="Local time (HH:MM, in the timezone above) the daily job distills user feedback into preferences and corrections."
+        id="dailyJobsRunTime"
+        label="Daily jobs run time"
+        hint="Local time (HH:MM, in the timezone above) the nightly jobs run: distilling user feedback into preferences, and compressing each finished chat-day into searchable topic summaries."
       >
         {({ id, describedBy }) => (
           <Input
             id={id}
             aria-describedby={describedBy}
-            value={selfImprovementRunTime}
-            onChange={(e) => setSelfImprovementRunTime(e.target.value)}
+            value={dailyJobsRunTime}
+            onChange={(e) => setDailyJobsRunTime(e.target.value)}
             placeholder="04:00"
           />
         )}
       </Field>
+    </div>
+  );
+
+  const embeddingsTab = (
+    <div className="space-y-5">
+      <p className="text-sm text-muted">
+        Embeddings power semantic recall over older conversations: the daily job turns each chat-day
+        into topic summaries and embeds them, so the bot can find what was discussed weeks ago even
+        when the wording differs. Without an embedding model the summaries are still written and
+        keyword-searchable — only the semantic half is off.
+      </p>
+
+      <Field
+        id="separateEmbeddingBackend"
+        label="Separate embedding backend"
+        hint="Off: embeddings are requested from the same backend as the LLM. On: they are served by a different host, which you give below."
+      >
+        {({ id, describedBy }) => (
+          <div className="flex items-center gap-3">
+            <Switch
+              id={id}
+              aria-describedby={describedBy}
+              checked={separateEmbeddingBackend}
+              onChange={(e) => {
+                setSeparateEmbeddingBackend(e.target.checked);
+                setEmbed({ kind: "idle" });
+              }}
+            />
+            <span className="text-sm text-muted">
+              {separateEmbeddingBackend ? "Own backend" : "Same backend as the LLM"}
+            </span>
+          </div>
+        )}
+      </Field>
+
+      {/* Only shown when the operator asked for a separate backend — otherwise there
+          is nothing to fill in, and an empty URL field would invite the question of
+          what a blank one means. */}
+      {separateEmbeddingBackend ? (
+        <>
+          <Field
+            id="embeddingBaseUrl"
+            label="Embedding API URL"
+            hint="Required — the host serving /v1/embeddings."
+            error={embeddingUrlMissing ? "An embedding API URL is required." : undefined}
+          >
+            {({ id, describedBy }) => (
+              <Input
+                id={id}
+                aria-describedby={describedBy}
+                type="url"
+                inputMode="url"
+                required
+                value={embeddingBaseUrl}
+                onChange={(e) => {
+                  setEmbeddingBaseUrl(e.target.value);
+                  setEmbed({ kind: "idle" });
+                }}
+                placeholder="https://embeddings.example.com/v1"
+              />
+            )}
+          </Field>
+
+          <Field
+            id="embeddingApiKey"
+            label="Embedding API key"
+            hint="Optional — required only if that host needs one. Stored securely; never shown again."
+          >
+            {({ id, describedBy }) => (
+              <Input
+                id={id}
+                aria-describedby={describedBy}
+                type="password"
+                autoComplete="off"
+                value={embeddingKey}
+                onChange={(e) => {
+                  setEmbeddingKey(e.target.value);
+                  setEmbeddingKeyDirty(true);
+                }}
+                placeholder={
+                  initial.embeddingApiKeyConfigured && !embeddingKeyDirty
+                    ? "•••••••• (configured)"
+                    : "optional"
+                }
+              />
+            )}
+          </Field>
+        </>
+      ) : null}
+
+      <Field
+        id="embeddingModel"
+        label="Embedding model"
+        hint={`Must emit ${EMBEDDING_DIMENSIONS}-dimensional vectors (e.g. bge-m3) — the width this database stores. Test below to confirm.`}
+      >
+        {({ id, describedBy }) => (
+          <Select
+            id={id}
+            aria-describedby={describedBy}
+            value={embeddingModel}
+            disabled={embeddingModels.length === 0}
+            onChange={(e) => {
+              setEmbeddingModel(e.target.value);
+              setEmbed({ kind: "idle" });
+            }}
+          >
+            <option value="">No embedding model (semantic recall off)</option>
+            {embeddingModels.map((m) => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))}
+          </Select>
+        )}
+      </Field>
+
+      <div className="flex flex-wrap items-center gap-3">
+        <Button
+          type="button"
+          variant="outline"
+          onClick={onTestEmbeddings}
+          disabled={embed.kind === "testing" || embeddingModel.trim() === "" || embeddingUrlMissing}
+          leftIcon={<Plug className="h-4 w-4" />}
+        >
+          {embed.kind === "testing" ? "Testing…" : "Test embeddings"}
+        </Button>
+        {embed.kind === "ok" ? (
+          <Badge tone="success" dot>
+            {embed.model} — {embed.dimensions} dimensions
+          </Badge>
+        ) : null}
+        {embed.kind === "error" ? (
+          <span className="text-sm text-danger">{embed.message}</span>
+        ) : null}
+      </div>
     </div>
   );
 
@@ -386,6 +606,7 @@ export function SettingsForm({
 
   const tabs: TabItem[] = [
     { id: "core", label: "Core", content: coreTab },
+    { id: "embeddings", label: "Embeddings", content: embeddingsTab },
     { id: "integrations", label: "Integrations", content: integrationsTab },
   ];
 

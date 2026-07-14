@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { isDailyRunDue, todaysRunInstant } from "./scheduler";
+import { isDailyRunDue, todaysRunInstant } from "@/server/jobs/daily-due";
 
 describe("todaysRunInstant", () => {
   it("resolves the local HH:MM to a UTC instant in the given zone", () => {

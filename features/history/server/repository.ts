@@ -1,6 +1,6 @@
 import "server-only";
 
-import { and, asc, desc, eq, gte, ilike, inArray, isNotNull, isNull, lte, ne, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, ilike, inArray, isNotNull, isNull, lt, lte, ne, sql } from "drizzle-orm";
 
 import type { DrizzleDb } from "@/db/drizzle";
 import { chatMessages, type ChatMessageRow } from "@/db/schema";
@@ -286,6 +286,34 @@ export async function getChatMessagesInRange(
         isNull(chatMessages.deletedAt),
         gte(chatMessages.sentAt, from),
         lte(chatMessages.sentAt, to),
+      ),
+    )
+    .orderBy(asc(chatMessages.id));
+  return rows.map(mapRow);
+}
+
+/**
+ * Non-deleted messages sent in `[from, to)`, oldest first — the summarizer's read.
+ * Half-open (unlike {@link getChatMessagesInRange}, which serves a user-facing
+ * "from this day to that day" tool and is inclusive): a calendar day ends exactly
+ * where the next begins, so an inclusive bound would file midnight's message under
+ * both days.
+ */
+export async function getChatMessagesForDay(
+  db: DrizzleDb,
+  chatId: string,
+  from: Date,
+  to: Date,
+): Promise<ChatMessageRecord[]> {
+  const rows = await db
+    .select()
+    .from(chatMessages)
+    .where(
+      and(
+        eq(chatMessages.chatId, chatId),
+        isNull(chatMessages.deletedAt),
+        gte(chatMessages.sentAt, from),
+        lt(chatMessages.sentAt, to),
       ),
     )
     .orderBy(asc(chatMessages.id));

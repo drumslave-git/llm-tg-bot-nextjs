@@ -5,6 +5,7 @@ import { z } from "zod";
 
 import { getDb } from "@/db/drizzle";
 import { getToolContext } from "@/server/mcp/context";
+import { recallChatTopics } from "./recall";
 import {
   getChatMessagesByTelegramIds,
   getChatMessagesInRange,
@@ -18,21 +19,31 @@ import {
  * is not enough. The chat is bound per turn via the tool context, so a tool only
  * ever reads the current conversation's messages; the model does not pass (and
  * cannot pick) a chat id.
+ *
+ * Two kinds of lookup, because they fail in opposite ways. The *literal* ones
+ * (search by substring, by date range, by id) are exact but blind: they only find
+ * what was worded the way the query words it. The *recall* one searches the daily
+ * topic summaries by meaning, so it finds a months-old subject the chat phrased
+ * differently — then hands back the message ids to read the originals verbatim.
  */
 
 export const HISTORY_SEARCH_TOOL = "history_search";
 export const HISTORY_GET_IN_RANGE_TOOL = "history_get_in_range";
 export const HISTORY_GET_BY_MESSAGE_IDS_TOOL = "history_get_by_message_ids";
+export const HISTORY_RECALL_TOOL = "history_recall_topics";
 
 export const HISTORY_TOOL_NAMES = [
   HISTORY_SEARCH_TOOL,
   HISTORY_GET_IN_RANGE_TOOL,
   HISTORY_GET_BY_MESSAGE_IDS_TOOL,
+  HISTORY_RECALL_TOOL,
 ];
 
 const SEARCH_LIMIT_DEFAULT = 50;
 const SEARCH_LIMIT_MAX = 200;
 const GET_BY_IDS_MAX = 50;
+const RECALL_LIMIT_DEFAULT = 8;
+const RECALL_LIMIT_MAX = 20;
 
 /** Structured payload returned alongside the text transcript. */
 const historyOutputSchema = {
@@ -192,6 +203,83 @@ export function registerHistoryMcpTools(server: McpServer): void {
       const { chatId } = getToolContext();
       const records = await getChatMessagesByTelegramIds(getDb(), chatId, ids);
       return buildResult(records);
+    },
+  );
+
+  server.registerTool(
+    HISTORY_RECALL_TOOL,
+    {
+      title: "Recall past conversation topics",
+      description:
+        "Recall what this conversation discussed in the past — days, weeks, or months ago. " +
+        "Searches short summaries of each past day's topics by meaning as well as wording, so it " +
+        "finds a subject even when the question phrases it differently than the chat did. This is " +
+        "the right way to answer 'what did we decide about X', 'when did we talk about Y', or any " +
+        "question about something older than the recent messages already shown to you. Each result " +
+        "gives the date, a summary of the topic, and the message ids it came from — fetch those ids " +
+        "to read what was actually said before relying on any detail.",
+      inputSchema: {
+        query: z
+          .union([z.string().min(1), z.array(z.string().min(1)).min(1)])
+          .describe(
+            "What to recall — a topic, question, name, or fact. Pass several phrasings as an " +
+              "array to search them all at once.",
+          ),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(RECALL_LIMIT_MAX)
+          .default(RECALL_LIMIT_DEFAULT)
+          .describe(`Max topics to return per query (max ${RECALL_LIMIT_MAX})`),
+      },
+      outputSchema: {
+        ok: z.boolean(),
+        count: z.number().int().nonnegative(),
+        topics: z.array(
+          z.object({
+            date: z.string(),
+            content: z.string(),
+            message_ids: z.array(z.number().int()),
+          }),
+        ),
+      },
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async ({ query, limit }) => {
+      const { chatId } = getToolContext();
+      const queries = Array.isArray(query) ? query : [query];
+      const cap = limit ?? RECALL_LIMIT_DEFAULT;
+      const matches = await recallChatTopics({ chatId, queries, limit: cap });
+
+      const text =
+        matches.length === 0
+          ? "(no matching topics — this may not have been discussed, or the day it was discussed " +
+            "has not been summarized yet)"
+          : matches
+              .map(
+                (m) =>
+                  `[${m.summaryDate}] ${m.content}\n  message_ids: ${m.messageIds.join(", ") || "(none)"}`,
+              )
+              .join("\n\n");
+
+      return {
+        content: [{ type: "text" as const, text }],
+        structuredContent: {
+          ok: true,
+          count: matches.length,
+          topics: matches.map((m) => ({
+            date: m.summaryDate,
+            content: m.content,
+            message_ids: m.messageIds,
+          })),
+        },
+      };
     },
   );
 }

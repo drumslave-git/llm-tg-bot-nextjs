@@ -11,8 +11,10 @@ import {
   text,
   timestamp,
   uniqueIndex,
+  vector,
 } from "drizzle-orm/pg-core";
 
+import { EMBEDDING_DIMENSIONS } from "@/lib/embeddings";
 import type { LlmUsage, Trace } from "@/lib/trace";
 
 /**
@@ -99,6 +101,25 @@ export const settings = pgTable(
     telegramBotToken: text("telegram_bot_token"),
     /** Tavily API key for the web-search MCP tool. Secret — never returned in plaintext. */
     tavilyApiKey: text("tavily_api_key"),
+    /**
+     * Base URL of the OpenAI-compatible endpoint serving `/v1/embeddings`. Blank
+     * means "reuse the LLM connection" — embeddings often run on the same host as
+     * chat, but may be served elsewhere.
+     */
+    embeddingBaseUrl: text("embedding_base_url"),
+    /**
+     * API key for the embedding endpoint. Secret — never returned in plaintext.
+     * Only consulted when {@link embeddingBaseUrl} is set; otherwise the LLM key
+     * is used along with the LLM base URL.
+     */
+    embeddingApiKey: text("embedding_api_key"),
+    /**
+     * Embedding model id (e.g. `bge-m3`). Must emit vectors of
+     * {@link EMBEDDING_DIMENSIONS} components — the width the vector columns are
+     * declared at. Null disables every embedding-backed capability (semantic
+     * summary search) rather than failing a reply.
+     */
+    embeddingModel: text("embedding_model"),
     /** Bot owner's Telegram @username (normalized: lowercase, no leading `@`). */
     ownerUsername: text("owner_username"),
     /**
@@ -118,11 +139,17 @@ export const settings = pgTable(
      */
     timezone: text("timezone").notNull().default("UTC"),
     /**
-     * Local wall-clock time (`HH:MM`, 24-hour, in `timezone`) at which the daily
-     * self-improvement job runs — distilling collected user feedback into
-     * per-user communication preferences and global self-corrections.
+     * Local wall-clock time (`HH:MM`, 24-hour, in `timezone`) at which the **daily
+     * background jobs** run — self-improvement (distilling user feedback into
+     * preferences and corrections) and history summarization (compressing each
+     * finished chat-day into embedded topic summaries), plus any future nightly
+     * job.
+     *
+     * One setting for all of them, deliberately (user decision): they are all
+     * "run overnight while nobody is talking to the bot", and an operator moving
+     * that window means it for every job, not one at a time.
      */
-    selfImprovementRunTime: text("self_improvement_run_time").notNull().default("04:00"),
+    dailyJobsRunTime: text("daily_jobs_run_time").notNull().default("04:00"),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [check("settings_singleton", sql`${t.id} = 'singleton'`)],
@@ -285,6 +312,78 @@ export const chatMessages = pgTable(
 
 export type ChatMessageRow = typeof chatMessages.$inferSelect;
 export type ChatMessageInsert = typeof chatMessages.$inferInsert;
+
+/**
+ * One topic discussed in one chat on one day, as distilled by the daily
+ * summarization job — the long-term half of history recall. The 24-hour window
+ * injected into every reply covers *today*; anything older is found by searching
+ * these summaries semantically (vector) and lexically (full text), then reading
+ * the exact original messages via `message_ids`.
+ *
+ * A day's rows are replaced wholesale on each summarization of that day, so a
+ * re-run is idempotent. `message_ids` holds Telegram message ids (the same
+ * `#<id>` anchors the transcript uses), not `chat_messages.id`.
+ */
+export const chatSummaries = pgTable(
+  "chat_summaries",
+  {
+    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    /** Telegram chat/group id this topic belongs to. */
+    chatId: text("chat_id").notNull(),
+    /** The summarized day (`YYYY-MM-DD`), as a wall-clock date in the operator timezone. */
+    summaryDate: text("summary_date").notNull(),
+    /** Self-contained summary of the topic: what was discussed, decisions, who was involved. */
+    content: text("content").notNull(),
+    /** Telegram message ids belonging to this topic, for reading the originals. */
+    messageIds: bigint("message_ids", { mode: "number" }).array().notNull().default([]),
+    /** Embedding of `content` for semantic recall. Null when embedding failed. */
+    embedding: vector("embedding", { dimensions: EMBEDDING_DIMENSIONS }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("chat_summaries_chat_date_idx").on(t.chatId, t.summaryDate),
+    // Approximate-nearest-neighbour index for cosine similarity — the vector half
+    // of the hybrid search. The full-text half uses a GIN index on
+    // `to_tsvector('simple', content)`, added in the migration (an expression
+    // index has no Drizzle column to hang off).
+    index("chat_summaries_embedding_idx").using(
+      "hnsw",
+      t.embedding.op("vector_cosine_ops"),
+    ),
+  ],
+);
+
+export type ChatSummaryRow = typeof chatSummaries.$inferSelect;
+export type ChatSummaryInsert = typeof chatSummaries.$inferInsert;
+
+/**
+ * Marker of a (chat, day) pair the summarization job has processed — including a
+ * day that produced *no* topics (pure noise), which would otherwise be rescanned
+ * on every run forever.
+ *
+ * `message_count` is what makes the job self-healing: the due-scan compares it to
+ * the day's live message count, so a day gains new rows later (a CSV import, a
+ * late edit) it is summarized again, and an unchanged day is never re-spent on
+ * the LLM.
+ */
+export const chatSummaryDays = pgTable(
+  "chat_summary_days",
+  {
+    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    chatId: text("chat_id").notNull(),
+    /** The summarized day (`YYYY-MM-DD`) in the operator timezone. */
+    summaryDate: text("summary_date").notNull(),
+    /** Messages the day held when it was summarized (the re-run trigger). */
+    messageCount: integer("message_count").notNull(),
+    /** Topics the day distilled into (0 for a day with nothing substantive). */
+    topicCount: integer("topic_count").notNull(),
+    summarizedAt: timestamp("summarized_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("chat_summary_days_chat_date_idx").on(t.chatId, t.summaryDate)],
+);
+
+export type ChatSummaryDayRow = typeof chatSummaryDays.$inferSelect;
+export type ChatSummaryDayInsert = typeof chatSummaryDays.$inferInsert;
 
 /**
  * Visual media attached to a Telegram message (photo, sticker, image document,

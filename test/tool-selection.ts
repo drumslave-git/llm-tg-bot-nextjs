@@ -50,6 +50,22 @@ const DEFAULT_CANNED: Record<string, McpToolCallResult> = {
     text: "[#500] [2026-07-01T09:00:00Z] user: The meeting is at noon on Friday.",
     structuredContent: { ok: true, count: 1, messages: [] },
   },
+  // A recalled topic carrying message ids, so a "recall then read the originals"
+  // two-step flow has ids to follow.
+  history_recall_topics: {
+    text: "[2026-06-02] The team argued about the database migration and settled on Drizzle.\n  message_ids: 311, 312",
+    structuredContent: {
+      ok: true,
+      count: 1,
+      topics: [
+        {
+          date: "2026-06-02",
+          content: "The team argued about the database migration and settled on Drizzle.",
+          message_ids: [311, 312],
+        },
+      ],
+    },
+  },
   update_user_aliases: {
     text: 'Noted "Sasha" as an alias for Alex.',
   },

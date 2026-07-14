@@ -30,9 +30,156 @@ Realtime: the dashboard now updates **live over SSE** (user decision — not pol
 
 **Self-improvement system (user-requested 2026-07-14, done):** the bot learns from 👍/👎 reactions on its replies. New `features/self-improvement/*`: a reaction on a bot reply opens a `users_feedbacks` row and posts an **inline options menu** (5 predefined like/dislike options + free-text "Other"; in groups only the reactor can answer — presses from others get a toast; "Other" → "reply to this message", captured by the pipeline and **not** answered by the LLM). A **daily incorporation job** (interval-scheduler singleton, due at `settings.self_improvement_run_time` in the operator timezone, default 04:00, advisory-locked, "Run now" on the dashboard) folds completed feedbacks — **one LLM call per feedback**, persona stated once per call, exchange text from the history mirror — into versioned **`users_communication_preferences`** (per user, seeded from the previous version) and versioned global **`self_corrections`**, stamping each feedback with the versions that incorporated it. Every reply then injects the **latest correction into the system prompt** (like the personality) and the **sender's latest preferences as a system context** (like the known-user block), both traced. `model` columns are informational and always a **clean model name** (`normalizeModelName` strips `docker.io/ai/…` prefixes; resolved from the reply trace's `usage.model`, falling back to settings). Tables in migration `0013`; features `user-feedback` + `self-improvement`; `feedback` SSE topic; `/self-improvement` page (job card, feedback table, preferences, correction) + `GET/POST /api/self-improvement(/run)`; Telegram intake via `allowed_updates` += `message_reaction`/`callback_query` (poller restart needed; groups additionally need the bot to be **admin** to receive reactions — Telegram constraint).
 
-Next: **Priority 10 — Memory feature** (user reprioritized 2026-07-14: **Mood moved to lowest priority (13)**, so the ordered list is now Memory → Image generation → Browser agent → Mood). Memory: extract/store/edit/retrieve/inject memories with traceable extraction and update flows, building on history + prompts + the shared background-job model. Flows are verified with the **bot-less simulation harness** (`simulateUpdate` / injected fire deps against real Postgres) — a real bot token is not a testing gate, only the live Telegram send/receive adapters remain out of in-process scope.
+**History is now feature-complete (2026-07-14, user-directed):** it gained **daily topic summarization, pgvector semantic recall, and the `history_recall_topics` MCP tool** — see the top session-log entry. Recall spans the whole conversation: the last 24 hours are injected verbatim, the literal tools (search / date range / by id) handle exact lookups, and the recall tool searches embedded daily topic summaries by meaning for anything older, handing back message ids to read the originals. Embeddings are DB-configured (own URL/key/model, falling back to the LLM connection) with a real probe that verifies the model's vector width against the stored column width.
+
+Next: **Priority 10 — Memory feature** (user reprioritized 2026-07-14: **Mood moved to lowest priority (13)**, so the ordered list is now Memory → Image generation → Browser agent → Mood). Memory can now build on the embeddings layer this session added (`server/llm/embeddings.ts`, pgvector, the hybrid-RRF search pattern in `features/history/server/summaries-repository.ts`). Memory: extract/store/edit/retrieve/inject memories with traceable extraction and update flows, building on history + prompts + the shared background-job model. Flows are verified with the **bot-less simulation harness** (`simulateUpdate` / injected fire deps against real Postgres) — a real bot token is not a testing gate, only the live Telegram send/receive adapters remain out of in-process scope.
 
 ### Session log
+
+- 2026-07-14 (Priority 3 follow-up — three user corrections to the summarization
+  work below): **separate-embedding-backend toggle, fully retroactive
+  summarization, and one shared run time for every daily job (done).**
+  - **(1) "Separate embedding backend" toggle.** The Embeddings tab now leads with
+    a switch: **off** (default) = embeddings are requested from the **same backend
+    as the LLM** and no URL/key fields are shown at all; **on** = the URL field
+    appears and is **required** (inline error + the probe/Save are blocked while it
+    is blank), with the optional key beside it. The toggle is **derived from the
+    stored URL**, not a new column — a stored embedding URL *is* the flag, so the
+    two can never drift out of sync. Turning it off clears the URL **and its key**
+    (that key authenticated a host we no longer call; leaving it would resurrect on
+    re-enable). The probe and the save resolve the endpoint through the same
+    expression, so a passing "Test embeddings" is a test of what will actually be
+    stored.
+  - **(2) Summarization is now fully retroactive.** It already scanned from the
+    oldest day (the due-scan asks "which finished days hold messages but have no
+    summary at their current message count" — equally true of yesterday, of a
+    CSV-imported day, and of a day predating the feature), but the run was **capped
+    at 25 days**, so a long history would have trickled in over many nights. The run
+    now **drains the entire backlog in one go**, oldest day first: the scan is
+    re-asked each iteration (summarizing a day removes it from the results, which is
+    also how the loop terminates), days that fail are excluded from further
+    iterations so they cannot spin the loop, and `MAX_DAYS_PER_RUN = 2000` remains
+    only as a safety valve. Proven by a new integration test that seeds **60 days**
+    (more than one scan page) and asserts one run summarizes all 60 back to the
+    oldest, leaving zero pending.
+  - **(3) One run time for all daily jobs.** `settings.self_improvement_run_time`
+    and `settings.history_summary_run_time` are replaced by a single
+    **`settings.daily_jobs_run_time`** (default 04:00, operator timezone), read by
+    both schedulers via `getDailyJobsRunTime()`; Settings shows one **"Daily jobs
+    run time"** field. Migrations **`0015_sticky_malcolm_colcord`** (add the column
+    + a hand-added `UPDATE` carrying the operator's existing self-improvement time
+    across, so a customized value is not silently reset) and
+    **`0016_dazzling_captain_cross`** (drop the two old columns) — split in two
+    because drizzle-kit's add+drop resolver prompts interactively for a possible
+    rename, which cannot be answered in a non-TTY shell. **Pitfall for future
+    schema work:** never add and drop columns on the same table in one generate.
+  - **Verified live** (dev server on 3200, migrations applied): Settings shows
+    exactly one run-time field ("Daily jobs run time"), and `GET /api/settings`
+    exposes only `dailyJobsRunTime` (both old keys gone); the Embeddings toggle
+    starts **off** with the URL/key fields absent, and switching it **on** reveals
+    the URL with its required error and disables the probe until filled; both job
+    APIs report the same `runTime: "04:00"` from the one setting; `/history` renders
+    "Runs daily at 04:00 · 11 chat-days awaiting a summary". No console errors (the
+    only entries are stale HMR messages from the pre-fix compile).
+  - Checks: lint ✓ (0 warnings), typecheck ✓, unit **323** ✓, integration —
+    summarize **19** ✓ (+1 retroactive 60-day drain), settings **19** ✓,
+    `db:generate`/`db:migrate` ✓ (`0015`, `0016`).
+
+- 2026-07-14 (Priority 3 completion, user-directed — "lets finish history feature
+  first, we need summarization, vector, tools"): **daily topic summarization +
+  pgvector semantic recall + the recall tool (done).** History had a 24-hour
+  window and three *literal* lookup tools (`history_search` was a plain `ILIKE`
+  substring scan); it had no summarization and no vectors at all, so anything
+  older than today was effectively unrecallable unless the query happened to use
+  the same words the chat did.
+  - **Decisions (user, AskUserQuestion — all four recommendations accepted;
+    recorded in Decision Notes):** (1) embed **daily topic summaries only**, not
+    every message; (2) embeddings get their **own base URL + key + model**,
+    falling back to the LLM connection when the URL is blank; (3) vector width is
+    a **code constant (1024)**, not a setting; (4) old context reaches a reply via
+    **tools-only recall**, not an always-injected block.
+  - **Data model (migration `0014_absurd_wither`):** `CREATE EXTENSION vector`
+    (hand-added — drizzle-kit emits the `vector(1024)` column but never the
+    extension, so a fresh DB would fail), `chat_summaries` (chat/date/content/
+    `message_ids bigint[]`/`embedding vector(1024)`, HNSW cosine index + a
+    hand-added GIN index on `to_tsvector('simple', content)` — an expression index
+    has no Drizzle column to hang off), and `chat_summary_days` (the processing
+    marker: `message_count`/`topic_count`, unique per chat+day). Settings gained
+    `embedding_base_url`/`embedding_api_key` (masked)/`embedding_model` and
+    `history_summary_run_time` (default **04:30**, offset from self-improvement's
+    04:00 so the two never contend for the LLM).
+  - **The marker table is what makes the job self-healing.** The due-scan compares
+    each finished day's *live* message count to the count recorded when it was
+    summarized, so a day that gains messages later (a CSV import, a late edit) is
+    re-summarized, an unchanged day is never re-spent on the LLM, and a day of
+    pure noise (0 topics) still stamps its marker instead of being rescanned
+    forever. There is no separate backfill path — normal operation *is* backfill.
+  - **New:** `lib/embeddings.ts` (`EMBEDDING_DIMENSIONS`, client-safe — schema,
+    server, and form all need it), `server/llm/embeddings.ts` (`embed`/`embedOne`/
+    `probeEmbeddings`; **validates the model's width against the column width** and
+    reports a mismatch as a clear bad-request instead of an opaque Postgres error
+    inside a background job), `features/history/summary.ts` (pure: prompt, lenient
+    topic parsing, operator-timezone day bounds, transcript batching —
+    `SUMMARY_BATCH_CHARS = 24_000`, since feeding a whole busy day at once overran
+    the MVP's model into a repetition loop), `server/summaries-repository.ts`
+    (idempotent day replace, due-scan, **hybrid RRF search** — cosine + full text
+    fused by rank, degrading to pure full text when no embedding model is set),
+    `server/summarize.ts` (traced per day, full request/response bodies; one bad
+    day never sinks the run), `server/recall.ts`, `server/summary-scheduler.ts`
+    (interval ticker + `withAdvisoryLock`, daily at the configured local time).
+  - **New MCP tool `history_recall_topics`** (feature `history`, so it traces under
+    the existing `mcp-tools-history` scope): searches the summaries by meaning
+    *and* wording, returns topics + the message ids to read the originals.
+    Self-describing, names no other tool (`tools-self-describe-atomic`).
+  - **Shared extractions (per `extract-shared-before-second-use`):**
+    `lib/json.ts` `extractJsonObject` (lenient LLM-JSON parsing — self-improvement's
+    `parsePrefsJson` was the first copy, this was about to be the second) and
+    `server/jobs/daily-due.ts` `todaysRunInstant`/`isDailyRunDue` (moved out of the
+    self-improvement scheduler, now shared by both daily jobs).
+  - **UI:** a Summaries job card on `/history` (next/last run, pending chat-days,
+    "Run now", a warning badge when no embedding model is configured), the topics
+    themselves on `/history/[chatId]` (grouped by day, message ids shown so a bad
+    recall can be checked against the mirror above), an **Embeddings tab** on
+    Settings with a **real probe** ("Test embeddings" actually embeds and reports
+    the width), and `GET /api/history/summaries` + `POST …/run`. Live over the
+    existing `history` SSE topic; new feature `history-summaries` in
+    `lib/features.ts`.
+  - **Tests:** unit `features/history/summary.test.ts` (+16: prompt/anchoring,
+    batching incl. an oversized single message, lenient parsing + junk-id
+    filtering, zoned day bounds, "never summarize today") → **323 unit**.
+    Integration `summarize.integration.test.ts` (+18, real Postgres **with
+    pgvector**: summarize/embed/store, idempotent re-run, embedding failure still
+    stores the summary, noise-day marker, multi-batch busy day, traces; due-scan
+    excludes today, buckets by the operator's clock, re-offers a day that gained
+    messages; whole-backlog run, no-op second run, one failing day doesn't stop
+    the rest; hybrid search — found by wording alone, by meaning alone, both-halves
+    ranked first, and never leaking another chat) + settings (+7: embedding
+    persistence/masking/trace-redaction, LLM-connection fallback, own-key path,
+    unconfigured-without-a-model, run-time) → **163 integration** (+15 skipped
+    live). `test/db.ts` now starts **`pgvector/pgvector:pg17`** (plain `postgres`
+    has no pgvector — every embedding test would have failed against it). A live
+    tool-selection case for `history_recall_topics` was added (opt-in `LLM_LIVE=1`).
+  - **Verified live** (operator's dev server on 3200, migration applied): `/history`
+    renders the Summaries card ("Idle", "No embedding model — keyword search only",
+    next run in Europe/Kyiv); `GET /api/history/summaries` reports **`pendingDays: 11`**
+    — the due-scan finding 11 real chat-days from the operator's own history;
+    the Settings **Embeddings tab** probe against their live endpoint returned
+    **`bge-m3 → 1024 dimensions`** (a real embed call, matching the column width
+    exactly), traced as `settings · test-embeddings · success · 1.6s`; `/debug`
+    lists **History summaries**. No console errors.
+  - **Not done (operator's call, deliberately not taken):** the embedding model was
+    **probed but not saved** — which model to run is the operator's decision; and no
+    real summarization run was triggered, since "Run now" would spend tokens
+    summarizing 11 days of their real conversations. Both are one click each on
+    `/settings` and `/history`. `history_recall_topics` will not appear on `/tools`
+    (nor be offered to the model) until the dev server restarts — the MCP registry
+    is a boot-bound `globalThis` singleton, the same restart gate link-fetch hit;
+    the registry wiring itself is proven by the `getToolsView` unit test, which
+    drives the real in-process registry.
+  - Checks: lint ✓ (0 warnings), typecheck ✓, unit 323 ✓, integration 163 ✓ (+15
+    skipped live), `db:generate`/`db:migrate` ✓ (`0014_absurd_wither`). `build`
+    **not run** — the operator's dev server is live on 3200
+    (`dont-clobber-running-dev-server`); typecheck covers type validity.
 
 - 2026-07-14 (Cross-cutting UI fix, user-requested): **every dashboard date/time
   now renders in the configured operator timezone (done)** — previously the UI
@@ -1912,7 +2059,7 @@ Features not listed here are not v1 by default. Add any additional feature to th
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 1 | Bot messaging: text receive/reply | in-progress | defined (see 2026-07-11 log) | yes (shared `/debug` + `/debug/[id]`, filter by feature) | yes (single + filtered `/api/traces/**/bundle`) | yes (addressing, **maintenance/owner policy**, service, chatCompletion, token masking, trace service/schema) | settings, health, Telegram intake, LLM provider, shared traces | Live run with a real token (operator-supplied) — then priority 2 |
 | 2 | System and personality prompts | done | defined (see 2026-07-12 log) | yes (`/personalities/debug` + shared `/debug`; `system prompt composed` step shows the full composed prompt) | yes (shared `/api/traces/**/bundle`) | yes (`prompt.ts` composition, personalities service/schema/integration, bot-messaging service) | settings, LLM provider | Live token run shares feature-1's gate; next → priority 3 (history) |
-| 3 | History feature | done | defined (see 2026-07-12 follow-up 4 log) | yes (`/history/debug` edit traces + `history window loaded` step on every reply) | yes (shared `/api/traces/**/bundle`) | yes (`format.ts`, history integration, bot-messaging injection) | bot messaging, shared traces, DB schema | Live token run shares the feature-1/2 gate; next → priority 4 (MCP tools). Note: user-initiated Telegram deletes can't be mirrored (Bot API limitation) |
+| 3 | History feature | done | defined (see 2026-07-12 follow-up 4 log; **completed 2026-07-14** with summarization + vectors + recall tool) | yes (`/history/debug` edit traces + `history window loaded` step on every reply; **`/debug?feature=history-summaries`** for summary runs, full bodies per batch) | yes (shared `/api/traces/**/bundle`) | yes (`format.ts`, `summary.ts` pure core, history + **summarize** integration incl. hybrid search against real pgvector, bot-messaging injection, live tool-selection) | bot messaging, shared traces, DB schema, embeddings, background job model | **Complete.** Recall now spans all of history: 24h window verbatim → literal tools (search/range/by-id) → **`history_recall_topics`** over daily embedded topic summaries. Notes: user-initiated Telegram deletes can't be mirrored (Bot API limitation); the recall tool needs a dev-server restart to enter the boot-bound MCP registry |
 | 4 | MCP tools basic support | done | defined (see 2026-07-12 follow-up 7/8 logs) | n/a (pure infra, no feature mutations) — tool **calls** appear as `external_call` events on the bot-messaging **reply** traces in `/debug` | yes (shared `/api/traces/**/bundle`) | yes (mcp registry/openai-tools/tool-loop/mcp-tools-service unit, history search/range integration, bot-messaging tool-event flow) | LLM core, shared traces, history | Live LLM tool round-trip shares the token gate; next → priority 5 (search) |
 | 5 | Search MCP tool | done | defined (see 2026-07-13 log) | n/a (read-only tool) — calls appear as `external_call` events on the bot-messaging **reply** traces in `/debug` | yes (shared `/api/traces/**/bundle`) | yes (web-search format/search unit, mcp-tools 4-tool service, settings Tavily-key integration) | MCP basic support | Live LLM + Tavily round-trip shares the token gate; next → priority 6 (visit/read link) |
 | 6 | Visit/read link MCP tool | todo | missing | no | no | no | MCP basic support | Define fetch/read/SSRF policy |
@@ -1934,6 +2081,7 @@ Foundation work supports features but is not a substitute for feature completion
 | Settings and health | in-progress | DB-backed settings (`features/settings/*`): LLM connection (base URL/key/model), **active personality** (`active_personality_id`, FK → personalities, `getActivePersonalityId`), Telegram token, and **owner (id chosen from known users, denormalized username) + maintenance mode**; `GET`/`PATCH` + `test-connection` real probe; secrets masked + trace-redacted; pure `getBotPolicy` read; unit + integration tests. Config source is the DB, not env (`config-in-db-not-env`); Overview + `/api/health` probe real state. **Tavily API key** (`tavily_api_key`, masked, `getWebSearchApiKey`) added for the web-search tool | Extend settings columns per feature |
 | History | done | `features/history/*` + `chat_messages` table (migration `0006`): 1:1 Telegram mirror (full metadata, unique `(chat_id, telegram_message_id)`); passive capture in `bot-manager.onMessage` + reply mirroring; `getConversationWindow` injects the current UTC-day's messages as structured prior turns (group speaker labels via known-users); `edited_message` mirrored + traced; `/history` (chat list), `/history/[chatId]` (mirror, **newest-first**, each row links to its handling trace via correlation id), `/history/debug`; live-updates over SSE (`history` topic); unit + integration tested; verified live | Vision rows layer here (priority 7); MCP history/search tools for deeper-than-today lookups (priority 4+) |
 | Personalities | done | `features/personalities/*` + `personalities` table (migration `0005`) + `settings.active_personality_id` (FK on-delete-set-null): CRUD service (create/edit/delete, CI name-uniqueness + max-32 guards), active selection, `getActivePersonalityPrompt` for composition; `/personalities` page (create/edit/delete/set-active) + `/personalities/debug`; `GET/POST /api/personalities`, `PATCH/DELETE /api/personalities/[id]`, `PUT /api/personalities/active`; every mutation traced; unit + integration tested; verified live | Mood (priority 9) extends this table with per-persona mood defaults |
+| Embeddings + vector search | done | `lib/embeddings.ts` (`EMBEDDING_DIMENSIONS = 1024`, client-safe) + `server/llm/embeddings.ts` (`embed`/`embedOne`/`probeEmbeddings` on the OpenAI-compatible `/v1/embeddings`; **width-checked against the column width**, so a wrong-size model fails with a clear message instead of an opaque Postgres error inside a job) + DB-backed connection (`embedding_base_url`/`embedding_api_key`/`embedding_model`, falling back to the LLM connection) + a **real** Settings probe. pgvector enabled (migration `0014`); first consumer is `chat_summaries` (HNSW cosine + GIN full-text), searched by the reusable **hybrid RRF** pattern in `features/history/server/summaries-repository.ts`. Verified live: `bge-m3 → 1024 dimensions` against the operator's endpoint. Integration-tested against real pgvector | Reuse for the memory feature (priority 10) — same client, same hybrid-search shape |
 | LLM provider core | in-progress | `server/llm/client.ts` (`openai`): `listModels`/health probe + `chatCompletion` (reply text + normalized usage + latency, empty-response→503), base-URL normalization, `ApiError` mapping; connection sourced from DB settings; unit-tested (incl. mocked completion) + verified live | Add context assembly (history/prompts) with priorities 2–3; tool-call loop at priority 4 |
 | Telegram intake foundation | in-progress | In-process long-polling `server/telegram/bot-manager.ts` (grammy) — singleton lifecycle, DB-backed token, autostart via `instrumentation.ts` + Start/Stop API; deterministic `features/bot-messaging/server/addressing.ts` + `policy.ts` (owner/maintenance, unit-tested); remembers every human sender to `known_users`; per-message Debug traces; verified live | Live run with a real token |
 | Known users | done | `features/known-users/*` + `known_users` table (migration `0004`): captured on every message (profile refresh, aliases preserved); `/users` page with inline alias editing (dedupe/trim), `/users/debug`; `GET /api/users` + `PATCH /api/users/[id]`; alias edits traced; owner is chosen from this list. Unit + integration tested; verified live | Use aliases for name-based addressing when the group analyzer lands |
@@ -2005,6 +2153,13 @@ writing `docs/decisions/*.md`. This table is the lightweight record.
 | Feedback menu options (self-improvement) | done | user | The proposed **5+5 code-constant lists** — 👍: Helpful & accurate · Right tone/personality · Good length & format · Funny/entertaining · Understood the context; 👎: Inaccurate or wrong · Wrong tone · Too long or rambling · Missed the point/context · Generic or boring — plus "Other — write your own" on each. Stored feedback is the option's text (renames don't corrupt stored rows). |
 | Model columns on feedback artifacts (self-improvement) | done | user | `model` on `users_feedbacks`/`users_communication_preferences`/`self_corrections` is **informational only** and always a **clean model name** (`gemma3:12b`, never `docker.io/ai/…` — `normalizeModelName` takes the segment after the last `/`, keeping the `:tag`). Resolved from the reply trace's `llm_response` `usage.model`, falling back to the configured model. |
 | Incorporation context discipline (self-improvement) | done | user | Prev version + feedbacks + related exchanges → new version, with **one LLM call per feedback** so a large backlog can never overflow the context, and shared data (persona/system prompt) **stated once per call, never repeated per exchange**. The exchange text (user message + bot reply) comes from the history mirror — same content as the trace bodies without the per-trace boilerplate; the full raw bodies stay one click away on the linked reply trace. A failed/unparseable fold leaves its feedback unstamped for the next run. |
+| Vector search scope (history completion) | done | user | **Embed daily topic summaries only** — not every message. The daily job compresses each finished chat-day into a few self-contained topics, each embedded and carrying the Telegram message ids it came from; search finds the topic, the ids lead back to the exact originals. Rejected: embedding every message (an embedding call per message incl. group chatter, a far larger vector table, and noisy hits on "ok"/"lol"), and messages-only-no-summaries (loses the compression that keeps old-context recall token-cheap). |
+| Daily job run time | done | user | **One `settings.daily_jobs_run_time` for every daily background job** (self-improvement, history summarization, and any future nightly job) — not a run time per job. They all run overnight for the same reason, so an operator moving that window means it for all of them. Migrations `0015`/`0016` collapse the two per-job columns into it, carrying the operator's existing value across. |
+| Embedding backend selection (UI) | done | user | A **"Separate embedding backend" switch** on the Embeddings tab: off (default) = use the same backend as the LLM, and the URL/key inputs are **not shown at all**; on = the URL input appears and is **required**. The switch is **derived from the stored `embedding_base_url`** rather than being its own column — the URL's presence *is* the flag, so they cannot disagree — and turning it off clears both the URL and its key. |
+| Retroactive summarization | done | user | The summarization run **drains the entire backlog to the oldest day in one run**, rather than capping at 25 days per night: "go to the very oldest day of history and validate a summary exists for every day since; if missing, make it". The due-scan already had these semantics (missing-or-stale day, oldest first); the cap was the only thing standing between it and full retroactivity. `MAX_DAYS_PER_RUN` survives at 2000 purely as a non-termination safety valve. |
+| Embedding endpoint configuration | done | user | Settings gains **its own embedding base URL + API key + model**; a blank URL means "reuse the LLM connection" (and with it the LLM key — a key belongs to the host it authenticates), which is the common case since chat and embeddings are usually served by the same host. A model is mandatory: without one, embedding-backed capabilities stay **off** rather than guessing a model id. Per `config-in-db-not-env` and `verify-real-state-not-env-presence`, the probe (Settings → **Test embeddings**) *actually embeds* a string and reports the returned width — proving reachability, key, model, **and** dimension fit, none of which a `/v1/models` listing establishes. |
+| Embedding vector width | done | user | **1024, a code constant** (`lib/embeddings.ts` `EMBEDDING_DIMENSIONS`), not a setting. pgvector cannot index a vector of unspecified width, so the column type itself commits to a size — a "configurable" dimension could not be honoured without recreating the column and re-embedding everything, so it would be a setting that lies. Fits `bge-m3` (which the operator's endpoint already serves — verified live at exactly 1024). Switching to a different-width model is a migration, and the mismatch is caught loudly by the probe/embed path. |
+| Old-context recall model (history completion) | done | user | **Tools-only recall**, not an always-injected summaries block. Every reply already carries the last 24 hours verbatim; anything older is fetched *on demand* by `history_recall_topics`, so the turns that need no history cost no tokens. Rejected: injecting recent summaries into every reply (continuity without a tool call, but a permanent per-turn token tax on every trivial message). |
 | Background job operating model | done | user | **In-process scheduler started from `instrumentation.ts`**, same lifecycle as the existing bot-manager / MCP registry / Playwright / realtime-hub `globalThis` singletons — chosen over external cron→Route Handler, a separate worker, or on-demand-only. Rationale: single self-hosted container that already runs an in-process poller; a scheduler in the same process needs no new deploy unit, secret, or external cron, and is consistent with the recorded polling decision. Trade-off accepted (this is the required sign-off for an in-process scheduler): won't survive a move to multi-replica without change; isolated behind a shared scheduler primitive so a later move to a worker/cron is contained. DB-backed **locking** via a Postgres advisory lock (`server/jobs/lock.ts`) guards cross-process overlap (e.g. redeploy); **idempotency** is the existing per-row `status='pending'` gating (`describeAndStore` skips non-pending). **Trigger = idle-debounced (MVP parity):** a debounce timer (re)armed on bot activity, aborting the running batch when live traffic resumes so backfill never competes with a live reply. Debounce is a code constant, not a setting (matches `VISION_MAX_DIMENSION`). Establishes the shared model for priorities 8–13 (mood cooldown, scheduled tasks, memory extraction, browser-agent queue). |
 
 ## Blockers

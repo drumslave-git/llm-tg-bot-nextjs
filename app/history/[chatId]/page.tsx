@@ -1,12 +1,18 @@
 import { ArrowLeft, Database, Download } from "lucide-react";
 import Link from "next/link";
 
+import { getDb } from "@/db/drizzle";
 import { Button, EmptyState, PageHeader } from "@/components/ui";
 import { LiveIndicator } from "@/components/realtime/LiveIndicator";
 import { getChatHistory } from "@/features/history/server/service";
 import type { ChatMessageWithTrace } from "@/features/history/server/schema";
+import {
+  listChatSummaries,
+  type ChatSummaryRecord,
+} from "@/features/history/server/summaries-repository";
 import { getMediaSuffixesForMessages } from "@/features/vision/server/service";
 import { ChatHistoryTable } from "@/features/history/ui/ChatHistoryTable";
+import { ChatSummariesList } from "@/features/history/ui/ChatSummariesList";
 
 // History is read from the database at request time.
 export const dynamic = "force-dynamic";
@@ -24,11 +30,15 @@ export default async function ChatHistoryPage({
   const chatId = decodeURIComponent(raw);
 
   let messages: ChatMessageWithTrace[] | null = null;
+  let summaries: ChatSummaryRecord[] = [];
   let dbError: string | null = null;
   try {
-    messages = await getChatHistory(chatId, {
-      loadMediaSuffixes: (ids) => getMediaSuffixesForMessages(chatId, ids),
-    });
+    [messages, summaries] = await Promise.all([
+      getChatHistory(chatId, {
+        loadMediaSuffixes: (ids) => getMediaSuffixesForMessages(chatId, ids),
+      }),
+      listChatSummaries(getDb(), chatId),
+    ]);
   } catch (err) {
     dbError = err instanceof Error ? err.message : "Could not read history from the database";
   }
@@ -65,7 +75,10 @@ export default async function ChatHistoryPage({
             description={`No stored history for chat ${chatId}.`}
           />
         ) : (
-          <ChatHistoryTable chatId={chatId} messages={messages} />
+          <div className="space-y-6">
+            <ChatHistoryTable chatId={chatId} messages={messages} />
+            <ChatSummariesList summaries={summaries} />
+          </div>
         )
       ) : (
         <EmptyState

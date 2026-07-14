@@ -6,6 +6,7 @@ import type { DrizzleDb } from "@/db/drizzle";
 import { getDb } from "@/db/drizzle";
 import { getChatMessageByTelegramId } from "@/features/history/server/repository";
 import { FEATURES } from "@/lib/features";
+import { extractJsonObject } from "@/lib/json";
 import type { ChatCompletionResult, ChatMessage } from "@/server/llm/client";
 import { publishEvent } from "@/server/realtime/hub";
 import { startTrace } from "@/server/trace";
@@ -106,20 +107,12 @@ async function renderExchange(db: DrizzleDb, feedback: UserFeedback): Promise<st
   return lines.join("\n");
 }
 
-/** Lenient JSON-object extraction: tolerates code fences and prose around it. */
+/** The preferences profile the model is asked to emit, or null when it did not. */
 export function parsePrefsJson(content: string): { likes: string; dislikes: string } | null {
-  const start = content.indexOf("{");
-  const end = content.lastIndexOf("}");
-  if (start < 0 || end <= start) return null;
-  try {
-    const parsed: unknown = JSON.parse(content.slice(start, end + 1));
-    if (typeof parsed !== "object" || parsed === null) return null;
-    const obj = parsed as Record<string, unknown>;
-    if (typeof obj.likes !== "string" || typeof obj.dislikes !== "string") return null;
-    return { likes: obj.likes, dislikes: obj.dislikes };
-  } catch {
-    return null;
-  }
+  const obj = extractJsonObject(content);
+  if (!obj) return null;
+  if (typeof obj.likes !== "string" || typeof obj.dislikes !== "string") return null;
+  return { likes: obj.likes, dislikes: obj.dislikes };
 }
 
 /** Group feedbacks by user, preserving order. */

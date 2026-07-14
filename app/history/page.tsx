@@ -6,7 +6,12 @@ import { LiveIndicator } from "@/components/realtime/LiveIndicator";
 import { featureDebugHref } from "@/lib/features";
 import { getHistoryOverview } from "@/features/history/server/service";
 import type { ChatSummaryView } from "@/features/history/server/schema";
+import {
+  getSummaryJobInfo,
+  type SummaryJobInfo,
+} from "@/features/history/server/summary-scheduler";
 import { ChatSummaryList } from "@/features/history/ui/ChatSummaryList";
+import { SummaryJobCard } from "@/features/history/ui/SummaryJobCard";
 
 // History is read from the database at request time.
 export const dynamic = "force-dynamic";
@@ -17,9 +22,10 @@ export const dynamic = "force-dynamic";
  */
 export default async function HistoryPage() {
   let chats: ChatSummaryView[] | null = null;
+  let summaryJob: SummaryJobInfo | null = null;
   let dbError: string | null = null;
   try {
-    chats = await getHistoryOverview();
+    [chats, summaryJob] = await Promise.all([getHistoryOverview(), getSummaryJobInfo()]);
   } catch (err) {
     dbError = err instanceof Error ? err.message : "Could not read history from the database";
   }
@@ -39,6 +45,12 @@ export default async function HistoryPage() {
               </Link>
             </Button>
             <Button asChild variant="outline" size="sm">
+              <Link href={featureDebugHref("history-summaries")}>
+                <Bug className="h-4 w-4" aria-hidden />
+                Summary runs
+              </Link>
+            </Button>
+            <Button asChild variant="outline" size="sm">
               <Link href={featureDebugHref("history")}>
                 <Bug className="h-4 w-4" aria-hidden />
                 Debug
@@ -49,7 +61,10 @@ export default async function HistoryPage() {
       />
 
       {chats ? (
-        <ChatSummaryList chats={chats} />
+        <div className="space-y-6">
+          {summaryJob ? <SummaryJobCard initial={summaryJob} /> : null}
+          <ChatSummaryList chats={chats} />
+        </div>
       ) : (
         <EmptyState
           icon={Database}

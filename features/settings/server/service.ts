@@ -7,6 +7,11 @@ import { ApiError } from "@/lib/api-error";
 import { FEATURES } from "@/lib/features";
 import type { TraceTrigger } from "@/lib/trace";
 import { listModels } from "@/server/llm/client";
+import {
+  probeEmbeddings,
+  type EmbeddingProbe,
+  type EmbeddingRuntime,
+} from "@/server/llm/embeddings";
 
 /** Short timeout so opening the Settings page stays responsive against a dead endpoint. */
 const MODELS_PRELOAD_TIMEOUT_MS = 5_000;
@@ -18,7 +23,7 @@ import {
   type SettingsPatch,
   type SettingsRecord,
 } from "./repository";
-import type { Settings, TestConnection, UpdateSettings } from "./schema";
+import type { Settings, TestConnection, TestEmbeddings, UpdateSettings } from "./schema";
 
 /**
  * Settings domain service — the boundary the Route Handlers and Server
@@ -37,11 +42,14 @@ function toClientSettings(record: SettingsRecord | null): Settings {
     apiKeyConfigured: Boolean(record?.llmApiKey),
     telegramBotTokenConfigured: Boolean(record?.telegramBotToken),
     webSearchConfigured: Boolean(record?.tavilyApiKey),
+    embeddingBaseUrl: record?.embeddingBaseUrl ?? null,
+    embeddingModel: record?.embeddingModel ?? null,
+    embeddingApiKeyConfigured: Boolean(record?.embeddingApiKey),
     ownerUsername: record?.ownerUsername ?? null,
     ownerUserId: record?.ownerUserId ?? null,
     maintenanceModeEnabled: record?.maintenanceModeEnabled ?? false,
     timezone: record?.timezone ?? "UTC",
-    selfImprovementRunTime: record?.selfImprovementRunTime ?? "04:00",
+    dailyJobsRunTime: record?.dailyJobsRunTime ?? DEFAULT_DAILY_JOBS_RUN_TIME,
     updatedAt: record?.updatedAt ?? null,
   };
 }
@@ -100,6 +108,55 @@ export async function getLlmRuntime(
 }
 
 /**
+ * Resolve the embedding connection from a settings record. The endpoint falls
+ * back to the LLM connection when no embedding base URL is configured (the common
+ * case: chat and embeddings served by the same host) — and with it the key, since
+ * a key belongs to the host it authenticates. A model is mandatory: without one
+ * there is nothing to call, and embedding-backed capabilities stay off rather
+ * than guessing a model id.
+ */
+function toEmbeddingRuntime(record: SettingsRecord | null): EmbeddingRuntime | null {
+  if (!record?.embeddingModel) return null;
+  const ownEndpoint = Boolean(record.embeddingBaseUrl);
+  const baseUrl = ownEndpoint ? record.embeddingBaseUrl : record.llmBaseUrl;
+  if (!baseUrl) return null;
+  return {
+    baseUrl,
+    apiKey: ownEndpoint ? record.embeddingApiKey : record.llmApiKey,
+    model: record.embeddingModel,
+  };
+}
+
+/**
+ * Server-only: the saved embedding connection + model, or null when embeddings
+ * are not configured. Read at call time (like the Tavily key) so a change takes
+ * effect without a restart. Callers must treat null as "semantic recall is
+ * unavailable" and degrade honestly, never throw.
+ */
+export async function getEmbeddingRuntime(
+  db: DrizzleDb = getDb(),
+): Promise<EmbeddingRuntime | null> {
+  return toEmbeddingRuntime(await getSettingsRecord(db));
+}
+
+/**
+ * Best-effort model list for the embedding endpoint, so the Settings page can
+ * populate its model dropdown. Uses the embedding base URL when set, else the LLM
+ * one. Never throws — an unreachable endpoint yields an empty list.
+ */
+export async function listAvailableEmbeddingModels(db: DrizzleDb = getDb()): Promise<string[]> {
+  const record = await getSettingsRecord(db);
+  const baseUrl = record?.embeddingBaseUrl || record?.llmBaseUrl;
+  if (!baseUrl) return [];
+  const apiKey = record?.embeddingBaseUrl ? record.embeddingApiKey : record?.llmApiKey;
+  try {
+    return await listModels({ baseUrl, apiKey }, MODELS_PRELOAD_TIMEOUT_MS);
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Server-only: the operator timezone (IANA name, defaulting to `UTC`). Used by
  * the scheduled-tasks feature to interpret wall-clock schedules.
  */
@@ -107,12 +164,18 @@ export async function getTimezone(db: DrizzleDb = getDb()): Promise<string> {
   return (await getSettingsRecord(db))?.timezone ?? "UTC";
 }
 
+
+/** Fallback run time for the daily jobs when settings have never been written. */
+export const DEFAULT_DAILY_JOBS_RUN_TIME = "04:00";
+
 /**
- * Server-only: the local `HH:MM` (in the operator timezone) at which the daily
- * self-improvement job runs. Defaults to `04:00`.
+ * Server-only: the local `HH:MM` (in the operator timezone) at which **every**
+ * daily background job runs — self-improvement, history summarization, and any
+ * future nightly job. One setting for all of them (user decision): they share the
+ * same reason for running overnight, so they share the window.
  */
-export async function getSelfImprovementRunTime(db: DrizzleDb = getDb()): Promise<string> {
-  return (await getSettingsRecord(db))?.selfImprovementRunTime ?? "04:00";
+export async function getDailyJobsRunTime(db: DrizzleDb = getDb()): Promise<string> {
+  return (await getSettingsRecord(db))?.dailyJobsRunTime ?? DEFAULT_DAILY_JOBS_RUN_TIME;
 }
 
 /**
@@ -156,6 +219,11 @@ function toPatch(input: UpdateSettings): SettingsPatch {
   if (input.tavilyApiKey !== undefined) {
     patch.tavilyApiKey = input.tavilyApiKey === "" ? null : input.tavilyApiKey;
   }
+  if (input.embeddingBaseUrl !== undefined) patch.embeddingBaseUrl = input.embeddingBaseUrl;
+  if (input.embeddingModel !== undefined) patch.embeddingModel = input.embeddingModel;
+  if (input.embeddingApiKey !== undefined) {
+    patch.embeddingApiKey = input.embeddingApiKey === "" ? null : input.embeddingApiKey;
+  }
   if (input.maintenanceModeEnabled !== undefined) {
     patch.maintenanceModeEnabled = input.maintenanceModeEnabled;
   }
@@ -165,8 +233,8 @@ function toPatch(input: UpdateSettings): SettingsPatch {
     }
     patch.timezone = input.timezone;
   }
-  if (input.selfImprovementRunTime !== undefined) {
-    patch.selfImprovementRunTime = input.selfImprovementRunTime;
+  if (input.dailyJobsRunTime !== undefined) {
+    patch.dailyJobsRunTime = input.dailyJobsRunTime;
   }
   return patch;
 }
@@ -198,11 +266,12 @@ async function ownerPatch(
 
 /** Redact secrets before they reach trace storage. */
 function redact(input: UpdateSettings): Record<string, unknown> {
-  const { apiKey, telegramBotToken, tavilyApiKey, ...rest } = input;
+  const { apiKey, telegramBotToken, tavilyApiKey, embeddingApiKey, ...rest } = input;
   const out: Record<string, unknown> = { ...rest };
   if (apiKey !== undefined) out.apiKey = "«redacted»";
   if (telegramBotToken !== undefined) out.telegramBotToken = "«redacted»";
   if (tavilyApiKey !== undefined) out.tavilyApiKey = "«redacted»";
+  if (embeddingApiKey !== undefined) out.embeddingApiKey = "«redacted»";
   return out;
 }
 
@@ -263,3 +332,92 @@ export async function testConnection(
     throw err;
   }
 }
+
+/**
+ * Probe the embedding configuration by actually embedding a short string, and
+ * report the vector width it produced. A real probe, not a config-presence check:
+ * it proves the endpoint answers, the key is accepted, the model exists, and — the
+ * failure this catches that nothing else would — that the model's width matches
+ * the `vector` columns. A mismatched model is reported as a bad request with the
+ * two numbers, since every later insert would fail deep inside a background job.
+ *
+ * Unsupplied fields fall back to what is stored, so the operator can test the
+ * saved configuration without re-sending the secret.
+ */
+export async function testEmbeddings(
+  input: TestEmbeddings,
+  trigger: TraceTrigger,
+  db: DrizzleDb = getDb(),
+): Promise<EmbeddingProbe> {
+  const record = await getSettingsRecord(db);
+  // Merge the submitted (possibly unsaved) values over the stored record, then
+  // resolve exactly as the runtime does — so a passing test means the *runtime*
+  // connection works, not some test-only variant of it.
+  const runtime = toEmbeddingRuntime({
+    ...(record ?? EMPTY_RECORD),
+    embeddingBaseUrl:
+      input.embeddingBaseUrl !== undefined
+        ? input.embeddingBaseUrl
+        : (record?.embeddingBaseUrl ?? null),
+    embeddingApiKey:
+      input.embeddingApiKey !== undefined
+        ? input.embeddingApiKey || null
+        : (record?.embeddingApiKey ?? null),
+    embeddingModel:
+      input.embeddingModel !== undefined
+        ? input.embeddingModel
+        : (record?.embeddingModel ?? null),
+  });
+
+  const trace = await startTrace(
+    {
+      feature: FEATURE.id,
+      action: "test-embeddings",
+      trigger,
+      inputSummary: input.embeddingModel ?? record?.embeddingModel ?? "(no model)",
+    },
+    db,
+  );
+  try {
+    if (!runtime) {
+      throw ApiError.badRequest(
+        "Choose an embedding model (and a base URL, unless the LLM connection serves embeddings).",
+      );
+    }
+    await trace.event({
+      type: "external_call",
+      message: `POST ${runtime.baseUrl} /embeddings`,
+      data: { model: runtime.model },
+    });
+    const probe = await probeEmbeddings(runtime);
+    await trace.event({
+      type: "output",
+      message: `${probe.dimensions}-dimensional vector returned`,
+      data: probe,
+    });
+    await trace.succeed({ outputSummary: `${probe.model} → ${probe.dimensions} dimensions` });
+    return probe;
+  } catch (err) {
+    await trace.fail(err);
+    throw err;
+  }
+}
+
+/** Field defaults for merging a partial probe input onto a never-written settings row. */
+const EMPTY_RECORD: SettingsRecord = {
+  llmBaseUrl: null,
+  llmApiKey: null,
+  model: null,
+  activePersonalityId: null,
+  telegramBotToken: null,
+  tavilyApiKey: null,
+  embeddingBaseUrl: null,
+  embeddingApiKey: null,
+  embeddingModel: null,
+  ownerUsername: null,
+  ownerUserId: null,
+  maintenanceModeEnabled: false,
+  timezone: "UTC",
+  dailyJobsRunTime: DEFAULT_DAILY_JOBS_RUN_TIME,
+  updatedAt: null,
+};

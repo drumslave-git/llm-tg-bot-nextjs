@@ -1,5 +1,9 @@
 import "server-only";
 
+import {
+  startSummaryScheduler,
+  stopSummaryScheduler,
+} from "@/features/history/server/summary-scheduler";
 import { startTaskScheduler, stopTaskScheduler } from "@/features/scheduled-tasks/server/scheduler";
 import {
   startSelfImprovementScheduler,
@@ -25,6 +29,7 @@ export function registerNode(): void {
     stopVisionBackfill();
     stopTaskScheduler();
     stopSelfImprovementScheduler();
+    stopSummaryScheduler();
     await Promise.race([
       stopBot().catch(() => undefined),
       new Promise((resolve) => setTimeout(resolve, 3000)),
@@ -49,6 +54,12 @@ export function registerNode(): void {
   // configured local run time has been reached and incorporates the feedback
   // backlog; a tick with nothing due or no LLM configured is a harmless no-op.
   startSelfImprovementScheduler();
+
+  // Start the daily history-summarization poller. At its configured local run
+  // time it compresses each finished chat-day into searchable topic summaries
+  // (including any days imported or edited since the last run); nothing due, or no
+  // LLM configured, settles as a no-op.
+  startSummaryScheduler();
 
   // Fire-and-forget: do not block server startup on the Telegram handshake.
   void startBot().then((status) => {

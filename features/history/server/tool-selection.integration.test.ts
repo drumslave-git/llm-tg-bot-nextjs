@@ -59,4 +59,16 @@ describe.skipIf(!LLM_LIVE)("history MCP tool selection (live)", () => {
     },
     TOOL_SELECTION_TIMEOUT,
   );
+
+  it(
+    "recalls a topic discussed months ago",
+    async () => {
+      const run = await runToolSelection({
+        userText:
+          "Months ago we had a long argument about which database library to use. What did we end up deciding?",
+      });
+      expectToolCalled(run, "history_recall_topics");
+    },
+    TOOL_SELECTION_TIMEOUT,
+  );
 });

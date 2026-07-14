@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   HISTORY_GET_BY_MESSAGE_IDS_TOOL,
   HISTORY_GET_IN_RANGE_TOOL,
+  HISTORY_RECALL_TOOL,
   HISTORY_SEARCH_TOOL,
 } from "@/features/history/server/mcp-tools";
 import { UPDATE_USER_ALIASES_TOOL } from "@/features/known-users/server/mcp-tools";
@@ -21,6 +22,7 @@ const ALL_TOOLS = [
   HISTORY_SEARCH_TOOL,
   HISTORY_GET_IN_RANGE_TOOL,
   HISTORY_GET_BY_MESSAGE_IDS_TOOL,
+  HISTORY_RECALL_TOOL,
   UPDATE_USER_ALIASES_TOOL,
   SEARCH_WEB_TOOL,
   READ_PAGE_TOOL,

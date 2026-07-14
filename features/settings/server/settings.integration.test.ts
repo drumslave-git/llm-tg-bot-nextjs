@@ -7,6 +7,8 @@ import { getSettingsRecord } from "./repository";
 import { updateSettingsSchema } from "./schema";
 import {
   getBotPolicy,
+  getDailyJobsRunTime,
+  getEmbeddingRuntime,
   getSettings,
   getTelegramBotToken,
   getWebSearchApiKey,
@@ -42,11 +44,14 @@ describe("getSettings", () => {
       apiKeyConfigured: false,
       telegramBotTokenConfigured: false,
       webSearchConfigured: false,
+      embeddingBaseUrl: null,
+      embeddingModel: null,
+      embeddingApiKeyConfigured: false,
       ownerUsername: null,
       ownerUserId: null,
       maintenanceModeEnabled: false,
       timezone: "UTC",
-      selfImprovementRunTime: "04:00",
+      dailyJobsRunTime: "04:00",
       updatedAt: null,
     });
   });
@@ -77,12 +82,15 @@ describe("updateSettings", () => {
     );
   });
 
-  it("persists the self-improvement run time (validated at the schema boundary)", async () => {
-    const set = await updateSettings({ selfImprovementRunTime: "05:30" }, trigger, ctx.db);
-    expect(set.selfImprovementRunTime).toBe("05:30");
+  it("persists the daily-jobs run time (validated at the schema boundary)", async () => {
+    const set = await updateSettings({ dailyJobsRunTime: "05:30" }, trigger, ctx.db);
+    expect(set.dailyJobsRunTime).toBe("05:30");
+    // One setting drives every nightly job — both schedulers read this same value.
+    expect(await getDailyJobsRunTime(ctx.db)).toBe("05:30");
     // The HH:MM shape is enforced by `updateSettingsSchema` before the service.
-    expect(updateSettingsSchema.safeParse({ selfImprovementRunTime: "25:99" }).success).toBe(false);
-    expect(updateSettingsSchema.safeParse({ selfImprovementRunTime: "23:45" }).success).toBe(true);
+    expect(updateSettingsSchema.safeParse({ dailyJobsRunTime: "25:99" }).success).toBe(false);
+    expect(updateSettingsSchema.safeParse({ dailyJobsRunTime: "3pm" }).success).toBe(false);
+    expect(updateSettingsSchema.safeParse({ dailyJobsRunTime: "23:45" }).success).toBe(true);
   });
 
   it("never exposes the API key but reports it as configured, and can clear it", async () => {
@@ -196,4 +204,87 @@ describe("getBotPolicy", () => {
       maintenanceModeEnabled: false,
     });
   });
+});
+
+describe("embedding configuration", () => {
+  it("stores the embedding endpoint and never returns its key", async () => {
+    const settings = await updateSettings(
+      {
+        embeddingBaseUrl: "https://embeddings.example.com/v1",
+        embeddingApiKey: "secret-embed-key",
+        embeddingModel: "bge-m3",
+      },
+      trigger,
+      ctx.db,
+    );
+
+    expect(settings.embeddingBaseUrl).toBe("https://embeddings.example.com/v1");
+    expect(settings.embeddingModel).toBe("bge-m3");
+    expect(settings.embeddingApiKeyConfigured).toBe(true);
+    // The value itself never round-trips to a client.
+    expect(JSON.stringify(settings)).not.toContain("secret-embed-key");
+    // …but it is stored, so the server can actually call the endpoint.
+    expect((await getSettingsRecord(ctx.db))?.embeddingApiKey).toBe("secret-embed-key");
+  });
+
+  it("redacts the embedding key from the trace", async () => {
+    await updateSettings({ embeddingApiKey: "secret-embed-key" }, trigger, ctx.db);
+
+    const { traces } = await listTraces(ctx.db, { feature: "settings" });
+    expect(JSON.stringify(traces)).not.toContain("secret-embed-key");
+  });
+
+  it("falls back to the LLM connection when no embedding endpoint is set", async () => {
+    await updateSettings(
+      {
+        llmBaseUrl: "https://llm.example.com/v1",
+        apiKey: "llm-key",
+        model: "gemma3",
+        embeddingModel: "bge-m3",
+      },
+      trigger,
+      ctx.db,
+    );
+
+    // Chat and embeddings share a host in the common case, so the LLM's URL *and*
+    // its key are used — a key belongs to the host it authenticates.
+    expect(await getEmbeddingRuntime(ctx.db)).toEqual({
+      baseUrl: "https://llm.example.com/v1",
+      apiKey: "llm-key",
+      model: "bge-m3",
+    });
+  });
+
+  it("uses the embedding endpoint's own key when it has its own URL", async () => {
+    await updateSettings(
+      {
+        llmBaseUrl: "https://llm.example.com/v1",
+        apiKey: "llm-key",
+        model: "gemma3",
+        embeddingBaseUrl: "https://embeddings.example.com/v1",
+        embeddingApiKey: "embed-key",
+        embeddingModel: "bge-m3",
+      },
+      trigger,
+      ctx.db,
+    );
+
+    expect(await getEmbeddingRuntime(ctx.db)).toEqual({
+      baseUrl: "https://embeddings.example.com/v1",
+      apiKey: "embed-key",
+      model: "bge-m3",
+    });
+  });
+
+  it("is unconfigured (not half-configured) without a model", async () => {
+    await updateSettings(
+      { llmBaseUrl: "https://llm.example.com/v1", model: "gemma3" },
+      trigger,
+      ctx.db,
+    );
+
+    // No embedding model → semantic recall is off, rather than guessing a model id.
+    expect(await getEmbeddingRuntime(ctx.db)).toBeNull();
+  });
+
 });

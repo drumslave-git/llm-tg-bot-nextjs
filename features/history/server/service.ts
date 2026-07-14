@@ -195,7 +195,7 @@ export interface ConversationWindow {
 }
 
 /** Resolve known-user labels for every sender in a set of rows. */
-async function resolveSpeakerLabels(
+export async function resolveSpeakerLabels(
   db: DrizzleDb,
   records: readonly ChatMessageRecord[],
 ): Promise<Map<string, string>> {

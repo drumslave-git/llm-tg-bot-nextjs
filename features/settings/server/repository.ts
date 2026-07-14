@@ -24,13 +24,19 @@ export interface SettingsRecord {
   activePersonalityId: string | null;
   telegramBotToken: string | null;
   tavilyApiKey: string | null;
+  /** Embedding endpoint base URL; null means "reuse the LLM connection". */
+  embeddingBaseUrl: string | null;
+  /** Embedding endpoint API key (only used with `embeddingBaseUrl`). */
+  embeddingApiKey: string | null;
+  /** Embedding model id; null disables embedding-backed capabilities. */
+  embeddingModel: string | null;
   ownerUsername: string | null;
   ownerUserId: string | null;
   maintenanceModeEnabled: boolean;
   /** Operator IANA timezone for wall-clock features (scheduled tasks). */
   timezone: string;
-  /** Local `HH:MM` (in `timezone`) the daily self-improvement job runs at. */
-  selfImprovementRunTime: string;
+  /** Local `HH:MM` (in `timezone`) every daily background job runs at. */
+  dailyJobsRunTime: string;
   updatedAt: string | null;
 }
 
@@ -42,11 +48,14 @@ export interface SettingsPatch {
   activePersonalityId?: string | null;
   telegramBotToken?: string | null;
   tavilyApiKey?: string | null;
+  embeddingBaseUrl?: string | null;
+  embeddingApiKey?: string | null;
+  embeddingModel?: string | null;
   ownerUsername?: string | null;
   ownerUserId?: string | null;
   maintenanceModeEnabled?: boolean;
   timezone?: string;
-  selfImprovementRunTime?: string;
+  dailyJobsRunTime?: string;
 }
 
 function mapRow(row: SettingsRow): SettingsRecord {
@@ -57,11 +66,14 @@ function mapRow(row: SettingsRow): SettingsRecord {
     activePersonalityId: row.activePersonalityId,
     telegramBotToken: row.telegramBotToken,
     tavilyApiKey: row.tavilyApiKey,
+    embeddingBaseUrl: row.embeddingBaseUrl,
+    embeddingApiKey: row.embeddingApiKey,
+    embeddingModel: row.embeddingModel,
     ownerUsername: row.ownerUsername,
     ownerUserId: row.ownerUserId,
     maintenanceModeEnabled: row.maintenanceModeEnabled,
     timezone: row.timezone,
-    selfImprovementRunTime: row.selfImprovementRunTime,
+    dailyJobsRunTime: row.dailyJobsRunTime,
     updatedAt: row.updatedAt.toISOString(),
   };
 }

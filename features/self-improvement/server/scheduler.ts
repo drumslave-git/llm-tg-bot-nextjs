@@ -1,14 +1,16 @@
 import "server-only";
 
 import { getActivePersonalityPrompt } from "@/features/personalities/server/service";
-import { computeNextRun, parseTimeOfDay, zonedDate, zonedWallClockToUtc } from "@/features/scheduled-tasks/schedule";
+import { computeNextRun } from "@/features/scheduled-tasks/schedule";
 import {
+  DEFAULT_DAILY_JOBS_RUN_TIME,
+  getDailyJobsRunTime,
   getLlmRuntime,
-  getSelfImprovementRunTime,
   getTimezone,
 } from "@/features/settings/server/service";
 import { FEATURES } from "@/lib/features";
 import { chatCompletion } from "@/server/llm/client";
+import { isDailyRunDue } from "@/server/jobs/daily-due";
 import {
   createIntervalScheduler,
   type IntervalJobStatus,
@@ -25,8 +27,9 @@ import { runSelfImprovement } from "./analyze";
  * is exactly one per process and it survives HMR.
  *
  * A fixed-interval ticker checks once a minute whether the configured local run
- * time (`settings.self_improvement_run_time`, in the operator timezone) has been
- * reached today and the job has not run since; when due it incorporates the
+ * time (`settings.daily_jobs_run_time` — shared by every daily job, in the
+ * operator timezone) has been reached today and the job has not run since; when
+ * due it incorporates the
  * feedback backlog under a cross-process advisory lock. The run is idempotent
  * (an empty backlog is a no-op), so an extra trigger after a restart is
  * harmless. The dashboard's "Run now" forces a run regardless of the clock.
@@ -49,33 +52,6 @@ interface SchedulerStore {
    * ticker's `lastSummary`, which the per-minute "waiting" ticks overwrite.
    */
   lastResult: { at: string; summary: string } | null;
-}
-
-/**
- * Today's run instant (UTC) for a local `HH:MM` in `timeZone`, or null for an
- * unparseable time. Exported for the due-math unit tests.
- */
-export function todaysRunInstant(timeOfDay: string, now: Date, timeZone: string): Date | null {
-  const time = parseTimeOfDay(timeOfDay);
-  if (!time) return null;
-  const today = zonedDate(now, timeZone);
-  return zonedWallClockToUtc(today.year, today.month, today.day, time.hour, time.minute, timeZone);
-}
-
-/**
- * Whether the daily run is due: today's run instant has passed and no run has
- * happened at/after it. Exported for the due-math unit tests.
- */
-export function isDailyRunDue(input: {
-  timeOfDay: string;
-  now: Date;
-  timeZone: string;
-  lastRunAt: Date | null;
-}): boolean {
-  const target = todaysRunInstant(input.timeOfDay, input.now, input.timeZone);
-  if (!target) return false;
-  if (input.now.getTime() < target.getTime()) return false;
-  return input.lastRunAt === null || input.lastRunAt.getTime() < target.getTime();
 }
 
 /** One incorporation run with the real collaborators, under the advisory lock. */
@@ -104,7 +80,7 @@ async function runTick(store: SchedulerStore): Promise<{ summary: string }> {
   if (!forced) {
     const [timezone, runTime] = await Promise.all([
       getTimezone().catch(() => "UTC"),
-      getSelfImprovementRunTime().catch(() => "04:00"),
+      getDailyJobsRunTime().catch(() => DEFAULT_DAILY_JOBS_RUN_TIME),
     ]);
     const now = new Date();
     if (!isDailyRunDue({ timeOfDay: runTime, now, timeZone: timezone, lastRunAt: store.lastDailyRunAt })) {
@@ -172,7 +148,7 @@ export async function getSelfImprovementJobInfo(): Promise<SelfImprovementJobInf
   const s = store();
   const [timezone, runTime] = await Promise.all([
     getTimezone().catch(() => "UTC"),
-    getSelfImprovementRunTime().catch(() => "04:00"),
+    getDailyJobsRunTime().catch(() => DEFAULT_DAILY_JOBS_RUN_TIME),
   ]);
   const now = new Date();
   const due = isDailyRunDue({ timeOfDay: runTime, now, timeZone: timezone, lastRunAt: s.lastDailyRunAt });

@@ -50,6 +50,13 @@ export const FEATURES = {
     relatedIdsKey: "chat_messages",
     path: "/history",
   },
+  "history-summaries": {
+    id: "history-summaries",
+    label: "History summaries",
+    realtimeTopic: "history",
+    relatedIdsKey: "chat_summaries",
+    path: "/history",
+  },
   "known-users": {
     id: "known-users",
     label: "Users",

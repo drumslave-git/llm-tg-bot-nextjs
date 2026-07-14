@@ -30,9 +30,16 @@ export interface TestDb {
   stop: () => Promise<void>;
 }
 
+/**
+ * Same image as production (docker-compose). Plain `postgres` has no pgvector, so
+ * the migration that enables the extension — and every embedding-backed test —
+ * would fail against it.
+ */
+const POSTGRES_IMAGE = "pgvector/pgvector:pg17";
+
 export async function startTestDb(): Promise<TestDb> {
   const container: StartedPostgreSqlContainer = await new PostgreSqlContainer(
-    "postgres:16-alpine",
+    POSTGRES_IMAGE,
   ).start();
   const connectionUri = container.getConnectionUri();
   const pool = new Pool({ connectionString: connectionUri });
@@ -44,7 +51,7 @@ export async function startTestDb(): Promise<TestDb> {
     connectionUri,
     async truncate() {
       await pool.query(
-        'TRUNCATE TABLE "trace_events", "traces", "settings", "known_users", "known_groups", "group_members", "personalities", "chat_messages", "message_media", "scheduled_tasks", "users_feedbacks", "users_communication_preferences", "self_corrections" CASCADE',
+        'TRUNCATE TABLE "trace_events", "traces", "settings", "known_users", "known_groups", "group_members", "personalities", "chat_messages", "chat_summaries", "chat_summary_days", "message_media", "scheduled_tasks", "users_feedbacks", "users_communication_preferences", "self_corrections" CASCADE',
       );
     },
     async stop() {

@@ -35,6 +35,12 @@ export const settingsSchema = z.object({
   telegramBotTokenConfigured: z.boolean(),
   /** Whether a Tavily API key is stored, enabling the web-search tool (value never exposed). */
   webSearchConfigured: z.boolean(),
+  /** Embedding endpoint base URL, or null to reuse the LLM connection. */
+  embeddingBaseUrl: baseUrl.nullable(),
+  /** Selected embedding model id, or null when none picked (semantic recall off). */
+  embeddingModel: model.nullable(),
+  /** Whether an embedding API key is stored (the value itself is never exposed). */
+  embeddingApiKeyConfigured: z.boolean(),
   /** Owner's numeric user id (chosen from known users), or null when unset. */
   ownerUserId: z.string().nullable(),
   /** Owner's @username, denormalized from the chosen known user (display only). */
@@ -43,8 +49,8 @@ export const settingsSchema = z.object({
   maintenanceModeEnabled: z.boolean(),
   /** Operator IANA timezone for wall-clock features (scheduled tasks). */
   timezone: z.string(),
-  /** Local `HH:MM` (in `timezone`) the daily self-improvement job runs at. */
-  selfImprovementRunTime: z.string(),
+  /** Local `HH:MM` (in `timezone`) every daily background job runs at. */
+  dailyJobsRunTime: z.string(),
   /** Last write time, or null if never configured. */
   updatedAt: z.string().datetime().nullable(),
 });
@@ -63,10 +69,13 @@ export const updateSettingsSchema = z
     apiKey: apiKey.nullable(),
     telegramBotToken: botToken.nullable(),
     tavilyApiKey: apiKey.nullable(),
+    embeddingBaseUrl: baseUrl.nullable(),
+    embeddingApiKey: apiKey.nullable(),
+    embeddingModel: model.nullable(),
     ownerUserId: ownerUserId.nullable(),
     maintenanceModeEnabled: z.boolean(),
     timezone: z.string().trim().min(1).max(64),
-    selfImprovementRunTime: timeOfDay,
+    dailyJobsRunTime: timeOfDay,
   })
   .partial()
   .refine((v) => Object.keys(v).length > 0, {
@@ -85,3 +94,17 @@ export const testConnectionSchema = z.object({
 });
 
 export type TestConnection = z.infer<typeof testConnectionSchema>;
+
+/**
+ * Input for the embeddings probe. Every field is optional: omitted ones fall back
+ * to what is stored, so the operator can test the saved configuration without
+ * re-entering it (and without the secret ever leaving the server). A blank base
+ * URL means "use the LLM connection", exactly as at runtime.
+ */
+export const testEmbeddingsSchema = z.object({
+  embeddingBaseUrl: baseUrl.nullable().optional(),
+  embeddingApiKey: apiKey.nullable().optional(),
+  embeddingModel: model.nullable().optional(),
+});
+
+export type TestEmbeddings = z.infer<typeof testEmbeddingsSchema>;
