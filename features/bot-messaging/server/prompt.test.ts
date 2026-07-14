@@ -4,6 +4,7 @@ import {
   BASE_SYSTEM_PROMPT,
   buildAddressingHint,
   buildSystemPrompt,
+  buildTimeContext,
   hasPersonality,
 } from "./prompt";
 
@@ -24,6 +25,36 @@ describe("buildSystemPrompt", () => {
   it("preserves internal formatting of the personality prompt", () => {
     const persona = "Line one.\nLine two.";
     expect(buildSystemPrompt({ personalityPrompt: persona })).toContain(persona);
+  });
+});
+
+describe("buildTimeContext", () => {
+  // A fixed instant: 2026-07-14T13:34:00Z.
+  const now = new Date("2026-07-14T13:34:00Z");
+
+  it("renders the local wall clock + weekday in the given timezone and the UTC instant", () => {
+    const out = buildTimeContext(now, "Europe/Kyiv");
+    // Kyiv is UTC+3 in July → 16:34, a Tuesday.
+    expect(out).toContain("2026-07-14 16:34 (Tuesday)");
+    expect(out).toContain("timezone Europe/Kyiv");
+    expect(out).toContain("UTC 2026-07-14T13:34:00.000Z");
+  });
+
+  it("renders UTC when the operator timezone is UTC", () => {
+    expect(buildTimeContext(now, "UTC")).toContain("2026-07-14 13:34 (Tuesday)");
+  });
+
+  it("names relative/named times as the thing to resolve, without naming any tool", () => {
+    const out = buildTimeContext(now, "UTC");
+    expect(out).toContain("in 5 minutes");
+    expect(out).toContain("tomorrow");
+    expect(out).not.toMatch(/tasks_create|search_web|read_page|history_/);
+  });
+
+  it("falls back to UTC for an unusable timezone instead of throwing", () => {
+    const out = buildTimeContext(now, "Not/AZone");
+    expect(out).toContain("2026-07-14 13:34 (Tuesday)");
+    expect(out).toContain("timezone UTC");
   });
 });
 

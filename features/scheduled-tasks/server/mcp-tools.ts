@@ -107,10 +107,15 @@ export function registerScheduledTasksMcpTools(server: McpServer): void {
     {
       title: "Create scheduled task",
       description:
-        "Schedule a standing task for THIS chat — a reminder/nudge the bot will deliver at a " +
-        "set time. Use when a user asks to be reminded or to have something happen on a " +
-        "schedule. 'instruction' is what to do (self-contained). Times are in the operator " +
-        "timezone. once=one date; daily=every day; weekly=given weekdays.",
+        "Schedule a task for THIS chat — a reminder/nudge the bot delivers at a set time. Use " +
+        "whenever a user asks to be reminded or to have something happen later or on a schedule, " +
+        "including one-off and relative requests like 'remind me in 5 minutes', 'in an hour', " +
+        "'tonight', or 'tomorrow at 9'. Resolve any relative/named time against the current " +
+        "date/time given in context, then pass a concrete time. 'instruction' is what to do " +
+        "(self-contained). Times are in the operator timezone. schedule_kind: once=a single " +
+        "run (give 'date' YYYY-MM-DD + 'time'); daily=every day at 'time'; weekly=given " +
+        "'weekdays' at 'time'. For a one-off 'in N minutes/hours' or 'tomorrow' reminder use " +
+        "once with the computed date and HH:MM time.",
       inputSchema: {
         instruction: z.string().min(2).describe("What the task should do, as a self-contained directive"),
         schedule_kind: scheduleKind.describe("once, daily, or weekly"),

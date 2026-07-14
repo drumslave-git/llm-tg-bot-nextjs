@@ -142,6 +142,13 @@ export interface BotMessagingDeps {
    * system prompt for this reply. Null/absent → base prompt only.
    */
   personalityPrompt?: string | null;
+  /**
+   * A system-message line giving the model the current date/time (see
+   * {@link import("./prompt").buildTimeContext}), injected right before the
+   * current message so it can resolve relative/named times ("in 5 minutes",
+   * "tomorrow"). Null/absent → no time line (older tests, or when unavailable).
+   */
+  timeContext?: string | null;
   db?: DrizzleDb;
 }
 
@@ -326,11 +333,23 @@ export async function handleIncomingMessage(
         });
       }
 
+      // Current date/time — injected as a system line right before the message
+      // being answered, so the model has a concrete "now" to resolve relative or
+      // named times against (e.g. "remind me in 5 minutes"). Recorded for debug.
+      if (deps.timeContext) {
+        await trace.event({
+          type: "step",
+          message: "time context",
+          data: { timeContext: deps.timeContext },
+        });
+      }
+
       const messages: ChatMessage[] = [
         { role: "system", content: systemPrompt },
         ...(chatContext ? [{ role: "system" as const, content: chatContext.content }] : []),
         ...(addressingHint ? [{ role: "system" as const, content: addressingHint }] : []),
         ...history.messages,
+        ...(deps.timeContext ? [{ role: "system" as const, content: deps.timeContext }] : []),
         { role: "user", content: userContent },
       ];
       // 4. LLM request — full request body (recorded before the call so the

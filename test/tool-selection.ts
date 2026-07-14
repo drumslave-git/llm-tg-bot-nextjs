@@ -2,9 +2,9 @@ import { loadEnvConfig } from "@next/env";
 import { afterAll, beforeAll, expect } from "vitest";
 
 import { closePool } from "@/db/pool";
-import { buildSystemPrompt } from "@/features/bot-messaging/server/prompt";
+import { buildSystemPrompt, buildTimeContext } from "@/features/bot-messaging/server/prompt";
 import { getToolset } from "@/features/mcp-tools/server/service";
-import { getLlmRuntime } from "@/features/settings/server/service";
+import { getLlmRuntime, getTimezone } from "@/features/settings/server/service";
 import type { ChatMessage } from "@/server/llm/client";
 import { chatCompletionWithTools } from "@/server/llm/tool-loop";
 import type { McpToolCallResult } from "@/server/mcp/tool-result";
@@ -141,10 +141,16 @@ export async function runToolSelection(testCase: ToolSelectionCase): Promise<Too
     return canned[name] ?? { text: `(${name} completed)` };
   };
 
+  // Mirror production: give the model a concrete "now" (in the operator timezone),
+  // so relative/named-time requests like "remind me in 5 minutes" are resolvable.
+  const timezone = await getTimezone().catch(() => "UTC");
+  const timeContext = buildTimeContext(new Date(), timezone);
+
   const messages: ChatMessage[] = [
     { role: "system", content: buildSystemPrompt() },
     ...(testCase.systemContext ?? []).map((content) => ({ role: "system" as const, content })),
     ...(testCase.priorTurns ?? []),
+    { role: "system", content: timeContext },
     { role: "user", content: testCase.userText },
   ];
 

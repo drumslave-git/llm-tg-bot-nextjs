@@ -5,9 +5,11 @@ import type { Message } from "@grammyjs/types";
 import {
   getBotPolicy,
   getLlmRuntime,
+  getTimezone,
 } from "@/features/settings/server/service";
 import type { BotPolicy } from "@/features/settings/server/service";
 import { getActivePersonalityPrompt } from "@/features/personalities/server/service";
+import { buildTimeContext } from "@/features/bot-messaging/server/prompt";
 import {
   handleIncomingMessage,
   type BotMessagingDeps,
@@ -88,6 +90,7 @@ function buildDeps(
   transport: ReplyTransport,
   policy: BotPolicy,
   personalityPrompt: string | null,
+  timeContext: string | null,
   visionAttachment: {
     imageParts: ChatContentPart[];
     note?: string;
@@ -115,6 +118,7 @@ function buildDeps(
     bot,
     policy,
     personalityPrompt,
+    timeContext,
     // Called only for an addressed message about to be answered (after the
     // addressing/maintenance gates), so recognition here runs exactly when the
     // flow wants it: recognize → store in history → reply with images + result.
@@ -381,10 +385,12 @@ export async function processUpdate(
     hasVision: visionAttachment != null,
   };
 
-  const [policy, personalityPrompt] = await Promise.all([
+  const [policy, personalityPrompt, timezone] = await Promise.all([
     getBotPolicy(),
     getActivePersonalityPrompt(),
+    getTimezone().catch(() => "UTC"),
   ]);
+  const timeContext = buildTimeContext(new Date(), timezone);
 
   // Recognition of the current message's media happens *before* the reply, inside
   // `loadVision` (only for an addressed message that also carries text): it is
@@ -393,7 +399,7 @@ export async function processUpdate(
   // by the backfill job.
   return handleIncomingMessage(
     incoming,
-    buildDeps(update, transport, policy, personalityPrompt, visionAttachment, overrides),
+    buildDeps(update, transport, policy, personalityPrompt, timeContext, visionAttachment, overrides),
   );
 }
 

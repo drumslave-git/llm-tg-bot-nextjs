@@ -32,6 +32,44 @@ Next: **Priority 10 — Memory feature** (user reprioritized 2026-07-14: **Mood 
 
 ### Session log
 
+- 2026-07-14 (Priority 9 bugfix): **Current time injected into the reply context —
+  relative-time reminders now create tasks** (user reported a real trace where
+  "remind me to stand up in 5m" produced a sarcastic reply and **no task**).
+  - **Root cause (from the trace's `reasoning_content`):** the model *wanted*
+    `tasks_create` but gave up — "I don't have the current time... `tasks_create`
+    requires `time` as HH:MM... I cannot carry out `tasks_create` without a time."
+    The whole reply context carried **no "now"**, so a relative/named time ("in 5m",
+    "tomorrow") — and even the date a `once` task needs — was unresolvable. **A
+    regression from the MVP**, which injected the current time into its `[SESSION]`
+    block (local wall clock in the bot timezone + UTC ISO). My live tool-selection
+    test missed it because it only used absolute times ("every day at 9am").
+  - **Fix (MVP parity):** new pure `buildTimeContext(now, timeZone)` in
+    `features/bot-messaging/server/prompt.ts` — a tool-agnostic system line ("Current
+    date and time: 2026-07-14 16:34 (Tuesday), timezone Europe/Kyiv (UTC …). Treat
+    this as 'now': resolve any relative or named time … against it."), falling back
+    to UTC for an unusable zone. The bot-messaging service injects it as a **system
+    message right before the current user turn** (new optional `deps.timeContext`;
+    recorded as a `time context` trace step for debug). `process-update` builds it
+    from `getTimezone()` + `new Date()` (added to the existing policy/personality
+    `Promise.all`). Tool-agnostic per `tools-self-describe-atomic` — names no tool.
+  - **Tool description:** `tasks_create` now explicitly covers one-off/relative
+    requests ("in 5 minutes", "tonight", "tomorrow at 9"), says to resolve them
+    against the current time in context, and documents `once` needs a computed
+    `date`+`time` (it previously read as recurring-only). No schedule-model change —
+    the MVP likewise had no relative-offset input; the model computes HH:MM/date from
+    the injected "now" (5-min granularity via `once`, scheduler ticks 30s).
+  - **The live harness now mirrors production** — `runToolSelection` injects the same
+    time context — and a **regression case** was added:
+    `features/scheduled-tasks/server/tool-selection.integration.test.ts` "creates a
+    one-off task from a relative-time reminder ('in 5 minutes')" → asserts
+    `tasks_create`. It **failed before the fix, passes after** against the real model.
+  - **Tests:** unit `prompt.test.ts` (+4: `buildTimeContext` local/UTC/relative-hint/
+    bad-zone), `service.test.ts` (+2: time line injected before the user turn +
+    traced; omitted when absent) → **249 unit**. Live tool-selection now **13 cases,
+    13/13** (`LLM_LIVE=1 npm run test:integration -- tool-selection`, ~47s).
+  - Checks: lint ✓, typecheck ✓, unit 249 ✓, process-update integration 5 ✓, live
+    tool-selection 13 ✓. `build` not run (test/prompt change; dev server may be live).
+
 - 2026-07-14 (Testing infrastructure): **Live tool-selection coverage — every MCP
   tool proven to be picked by the real LLM** (user: "each tool has to be covered by
   live LLM tests — that the model understands different request types and actually

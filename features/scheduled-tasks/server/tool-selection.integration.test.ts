@@ -32,6 +32,19 @@ describe.skipIf(!LLM_LIVE)("scheduled-tasks MCP tool selection (live)", () => {
   );
 
   it(
+    "creates a one-off task from a relative-time reminder ('in 5 minutes')",
+    async () => {
+      // Regression: without a current-time context the model cannot resolve "in 5m"
+      // and gives up without creating a task (real trace, 2026-07-14).
+      const run = await runToolSelection({
+        userText: "remind me to stand up in 5m",
+      });
+      expectToolCalled(run, "tasks_create");
+    },
+    TOOL_SELECTION_TIMEOUT,
+  );
+
+  it(
     "lists scheduled tasks when asked what's scheduled",
     async () => {
       const run = await runToolSelection({

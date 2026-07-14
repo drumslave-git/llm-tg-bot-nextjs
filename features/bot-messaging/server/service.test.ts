@@ -135,6 +135,31 @@ describe("handleIncomingMessage", () => {
     expect(stopTyping).toHaveBeenCalledOnce();
   });
 
+  it("injects the time context as a system message right before the current turn", async () => {
+    const timeContext = "Current date and time: 2026-07-14 16:34 (Tuesday), timezone Europe/Kyiv.";
+    const d = deps({ timeContext });
+    await handleIncomingMessage(incoming({ text: "remind me in 5m" }), d);
+
+    const messages = (d.generateReply as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    // [system prompt, time context, user] — the time line sits immediately before
+    // the message being answered so relative times resolve against it.
+    expect(messages.at(-2)).toEqual({ role: "system", content: timeContext });
+    expect(messages.at(-1)).toEqual({ role: "user", content: "remind me in 5m" });
+    // Recorded for debug.
+    const step = recorder.event.mock.calls.map((c) => c[0]).find((e) => e.message === "time context");
+    expect(step.data).toEqual({ timeContext });
+  });
+
+  it("omits the time line (and its trace step) when no time context is provided", async () => {
+    const d = deps();
+    await handleIncomingMessage(incoming({ text: "hello there" }), d);
+    const messages = (d.generateReply as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    // Just [system prompt, user] — no injected time line.
+    expect(messages).toHaveLength(2);
+    const step = recorder.event.mock.calls.map((c) => c[0]).find((e) => e.message === "time context");
+    expect(step).toBeUndefined();
+  });
+
   it("attaches vision image parts to the current user turn and traces the step", async () => {
     const imageParts = [imagePart("ABC")];
     const d = deps({
