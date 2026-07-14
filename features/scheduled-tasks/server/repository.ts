@@ -1,6 +1,6 @@
 import "server-only";
 
-import { and, asc, desc, eq, isNotNull, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, isNotNull, lte, sql } from "drizzle-orm";
 
 import type { DrizzleDb } from "@/db/drizzle";
 import { scheduledTasks, type ScheduledTaskRow } from "@/db/schema";
@@ -141,23 +141,25 @@ export async function updateScheduledTask(
 }
 
 /**
- * Record a firing: stamp `last_run_at` and the recomputed `next_run_at`, and
- * disable the task when there is no future run (a spent one-shot). When the fire
- * delivered a message, `recentDeliveries` carries the already-capped new list
- * (newest first); it is omitted for a fire that produced no message (a failure
- * that still advances the schedule so it doesn't busy-loop).
+ * Record a firing on a task that still has a future run: stamp `last_run_at` and
+ * the recomputed `next_run_at`. When the fire delivered a message,
+ * `recentDeliveries` carries the already-capped new list (newest first); it is
+ * omitted for a fire that produced no message (a failure that still advances the
+ * schedule so it doesn't busy-loop).
+ *
+ * A task with no future run — a spent one-shot — is *deleted* by the scheduler
+ * instead, so `nextRunAt` here is never null.
  */
 export async function markScheduledTaskRun(
   db: DrizzleDb,
   id: string,
-  input: { lastRunAt: Date; nextRunAt: Date | null; recentDeliveries?: string[] },
+  input: { lastRunAt: Date; nextRunAt: Date; recentDeliveries?: string[] },
 ): Promise<void> {
   await db
     .update(scheduledTasks)
     .set({
       lastRunAt: input.lastRunAt,
       nextRunAt: input.nextRunAt,
-      enabled: input.nextRunAt != null,
       ...(input.recentDeliveries !== undefined
         ? { recentDeliveries: input.recentDeliveries }
         : {}),
@@ -194,6 +196,17 @@ export async function listDueScheduledTasks(db: DrizzleDb, now: Date): Promise<S
     )
     .orderBy(asc(scheduledTasks.nextRunAt));
   return rows.map(mapRow);
+}
+
+/** Earliest upcoming run across enabled tasks (strictly after `now`), or null. */
+export async function nextUpcomingRunAt(db: DrizzleDb, now: Date): Promise<Date | null> {
+  const [row] = await db
+    .select({ nextRunAt: scheduledTasks.nextRunAt })
+    .from(scheduledTasks)
+    .where(and(eq(scheduledTasks.enabled, true), gt(scheduledTasks.nextRunAt, now)))
+    .orderBy(asc(scheduledTasks.nextRunAt))
+    .limit(1);
+  return row?.nextRunAt ?? null;
 }
 
 /** The recent delivered texts for a task (newest first), for wording variation. */

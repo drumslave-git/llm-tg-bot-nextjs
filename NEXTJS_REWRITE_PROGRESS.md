@@ -13,9 +13,9 @@ Status values:
 ## Current Summary
 
 Status: in-progress
-Owner: agent/2026-07-14
-Last updated: 2026-07-14
-Proof: `npm run lint` ✓, `npm run typecheck` ✓, `npm run test` ✓ (299 unit), `npm run test:integration` ✓ (136 + 14 skipped live, real Postgres via Testcontainers). `npm run build` not run this session — a dev server is live on 3200 and a production build would clobber it (see the Priority 6 log entry). **History CSV import/export (done, user-requested):** a `/history/transfer` page (linked from History) with operator-configurable column mapping + data preview on import, duplicate-skipping writes, chat-scoped or all-chats export, and traced imports — see the top session-log entry, which also records a **dev-environment fix**: the dev `DATABASE_URL` points at the old MVP database, whose pre-existing `chat_messages` table had silently blocked migration `0006` (`CREATE TABLE IF NOT EXISTS`) so history reads failed there; the operator dropped that table and `0006`'s DDL was replayed by hand, so the dev DB now serves history correctly (empty mirror). **Priority 2 — system & personality prompts (done):** the base system prompt is a fixed code constant (`BASE_SYSTEM_PROMPT` in `features/bot-messaging/server/prompt.ts`); the operator manages personas as a **full personalities CRUD feature** (user decision — corrected from an initial single-field approach). A `personalities` table (migration `0005`: id/name/prompt/timestamps) + `settings.active_personality_id` (FK, `on delete set null`). New `features/personalities/*` (repository/schema/service/ui) with a **`/personalities` page** (create/edit/delete + set-active) and **`/personalities/debug`**; routes `GET/POST /api/personalities`, `PATCH/DELETE /api/personalities/[id]`, `PUT /api/personalities/active`; every mutation traced. Composition (`buildSystemPrompt`/`hasPersonality`, pure) is unchanged: base alone, or base + `---\nAdditional instructions:\n<persona>`; the bot-messaging service records a **`system prompt composed`** step (`personalityApplied` + full composed prompt) between `addressing check` and `request`; the runtime injects the **active** personality's prompt via `getActivePersonalityPrompt()`. Verified live: created a persona on `/personalities`, set it active (Active badge + `activeId` via API), deleted it (list emptied and active auto-cleared via the FK), all four mutations traced `success` on `/personalities/debug`; no console errors. **Known users + owner-by-dropdown**: a `known_users` table (migration `0004`) capturing everyone who messages the bot, a `/users` page with inline alias editing, and the owner is now chosen from a **dropdown of known users** (id stored directly — the earlier lazy @username→id resolution is removed). **Maintenance mode + owner checks** built and verified live (a pure `bot-messaging/policy.ts`; blocked-but-addressed messages traced as skipped). The **shared Debug UI** is now built and verified live — the last feature-contract gap for both `settings` and priority-1 `bot-messaging`. A global `/debug` page (filter by feature/status, pagination, "Download all") plus a shared `/debug/[id]` detail view (metadata panel, error panel, ordered event timeline with LLM usage, per-trace JSON download) and a feature-scoped `/settings/debug`. Backed by `server/trace/service.ts` (list/detail/bundle) over the existing recorder/repository, thin `app/api/traces/**` handlers, and reusable `components/debug/*`. Verified live against the running dev server on real recorded traces: list renders 11 traces; a bot reply detail shows LLM usage (`prompt 38 · completion 184 · total 222 · 5741ms`); an error trace shows the error panel + timeline; `/settings/debug` shows only settings traces; single + filtered bundle downloads return the `llm-tg-bot/trace-bundle@1` envelope with attachment headers; no console errors.
+Owner: agent/2026-07-15
+Last updated: 2026-07-15
+Proof: `npm run lint` ✓, `npm run typecheck` ✓, `npm run test` ✓ (323 unit), `npm run test:integration` ✓ (real Postgres via Testcontainers; the only skips are the opt-in live-LLM tests). `npm run build` not run this session — a dev server is live on 3200 and a production build would clobber it (see the Priority 6 log entry). **Scheduled-tasks bug fix (2026-07-15, user-reported "never got a message"):** the poller was ticking fine but **maintenance mode pauses every fire**, and that was invisible on the dashboard — an enabled task with an elapsed run time simply never arrived and the page gave no reason. Per user decision the blanket pause **stays** (maintenance means no scheduled message reaches any chat); what changed is that `/scheduled-tasks` now shows a **Task poller card** (Paused badge, overdue count, a notice naming maintenance as the cause and Settings as the fix) and badges each overdue row "Overdue — firing paused / Was due: … — not delivered". The four background-job status cards (vision backfill, summaries, self-improvement, tasks) are now **one shared `components/jobs/JobStatusCard.tsx`** with a `notice` slot for "why this job is not doing its work". The fire path itself was never broken — its simulated-fire integration tests pass — so the operator's overdue tasks fire on the next tick once maintenance is off. **History CSV import/export (done, user-requested):** a `/history/transfer` page (linked from History) with operator-configurable column mapping + data preview on import, duplicate-skipping writes, chat-scoped or all-chats export, and traced imports — see the top session-log entry, which also records a **dev-environment fix**: the dev `DATABASE_URL` points at the old MVP database, whose pre-existing `chat_messages` table had silently blocked migration `0006` (`CREATE TABLE IF NOT EXISTS`) so history reads failed there; the operator dropped that table and `0006`'s DDL was replayed by hand, so the dev DB now serves history correctly (empty mirror). **Priority 2 — system & personality prompts (done):** the base system prompt is a fixed code constant (`BASE_SYSTEM_PROMPT` in `features/bot-messaging/server/prompt.ts`); the operator manages personas as a **full personalities CRUD feature** (user decision — corrected from an initial single-field approach). A `personalities` table (migration `0005`: id/name/prompt/timestamps) + `settings.active_personality_id` (FK, `on delete set null`). New `features/personalities/*` (repository/schema/service/ui) with a **`/personalities` page** (create/edit/delete + set-active) and **`/personalities/debug`**; routes `GET/POST /api/personalities`, `PATCH/DELETE /api/personalities/[id]`, `PUT /api/personalities/active`; every mutation traced. Composition (`buildSystemPrompt`/`hasPersonality`, pure) is unchanged: base alone, or base + `---\nAdditional instructions:\n<persona>`; the bot-messaging service records a **`system prompt composed`** step (`personalityApplied` + full composed prompt) between `addressing check` and `request`; the runtime injects the **active** personality's prompt via `getActivePersonalityPrompt()`. Verified live: created a persona on `/personalities`, set it active (Active badge + `activeId` via API), deleted it (list emptied and active auto-cleared via the FK), all four mutations traced `success` on `/personalities/debug`; no console errors. **Known users + owner-by-dropdown**: a `known_users` table (migration `0004`) capturing everyone who messages the bot, a `/users` page with inline alias editing, and the owner is now chosen from a **dropdown of known users** (id stored directly — the earlier lazy @username→id resolution is removed). **Maintenance mode + owner checks** built and verified live (a pure `bot-messaging/policy.ts`; blocked-but-addressed messages traced as skipped). The **shared Debug UI** is now built and verified live — the last feature-contract gap for both `settings` and priority-1 `bot-messaging`. A global `/debug` page (filter by feature/status, pagination, "Download all") plus a shared `/debug/[id]` detail view (metadata panel, error panel, ordered event timeline with LLM usage, per-trace JSON download) and a feature-scoped `/settings/debug`. Backed by `server/trace/service.ts` (list/detail/bundle) over the existing recorder/repository, thin `app/api/traces/**` handlers, and reusable `components/debug/*`. Verified live against the running dev server on real recorded traces: list renders 11 traces; a bot reply detail shows LLM usage (`prompt 38 · completion 184 · total 222 · 5741ms`); an error trace shows the error panel + timeline; `/settings/debug` shows only settings traces; single + filtered bundle downloads return the `llm-tg-bot/trace-bundle@1` envelope with attachment headers; no console errors.
 Realtime: the dashboard now updates **live over SSE** (user decision — not polling/WebSockets). Shared layer: in-process `server/realtime/hub.ts` pub/sub, `GET /api/events` SSE stream, `useLiveRefresh`/`LiveIndicator` client; the trace recorder publishes on create/settle. Verified live: with the page untouched, a newly recorded `test-connection` trace appeared at the top of `/debug` on its own; the `/api/events` stream stays open (200); no console errors. Debug rows are now fully clickable (stretched link) — clicking any cell opens the trace.
 **Priority 3 — History feature (done):** a **1:1 conversation mirror** (`chat_messages`, migration `0006`) capturing every human message and every bot reply with full metadata (chat id, Telegram message id, sender id, reply-to pointer, content, sent/edited/deleted timestamps). New `features/history/*` (repository/schema/format/service/ui). Messages are captured **passively** on every incoming message (even un-addressed group chatter) in `bot-manager.onMessage`; the delivered reply is mirrored via a `recordReply` dep. Per reply, `getConversationWindow` loads the **current UTC day's** messages and injects them as **structured prior turns** (`user`/`assistant`) between the cache-stable system prompt and the current message — the bot-messaging service records a `history window loaded` step. In groups, human turns are prefixed with the sender's known-user label. **Edits** are mirrored (`bot.on("edited_message")` → `applyMessageEdit`, traced). **Deletes:** the Telegram Bot API delivers no deletion update for ordinary chats, so user-initiated deletes cannot be mirrored — a `deleted_at` column exists to represent deletions we *can* know about (bot's own / Business-connection events) and the constraint is recorded in Decision Notes. Pages: `/history` (chat list), `/history/[chatId]` (full mirror with edited/deleted badges), `/history/debug` (shared `TraceExplorer`, edit traces). Verified live: seeded two chats → `/history` lists both (most-recent first, correct counts), `/history/777` shows the metadata mirror incl. reply pointer + an `edited` badge, `/history/debug` renders; no console errors; dev DB left clean. Base system prompt gained a short Conversation section (history-awareness).
 **Priority 4 — MCP tools basic support (done):** tools use the **real MCP SDK** (`@modelcontextprotocol/sdk`, in-process — user decision, MVP parity): one shared `McpServer` with per-feature tool registrars, linked to a `Client` over an in-process transport pair (`server/mcp/*`: `in-process-transport`, `registry` `BotMcpRegistry`, `openai-tools` conversion, `context` per-turn `AsyncLocalStorage` chat binding, `runtime` `globalThis` singleton). A **bounded, stall-guarded tool-call loop** (`server/llm/tool-loop.ts` — pure `runToolLoop` core + `chatCompletionWithTools`) appends tool results to the same `messages` array the history window feeds, so a reply that needs no tool is still a single cache-friendly inference. The **first history MCP tools** ship (user decision): `history_search` + `history_get_in_range` (`features/history/server/mcp-tools.ts`) — deeper-than-today lookups scoped to the current chat via the tool context (the model never passes a chat id). **All registered tools are always available** — there is **no per-tool on/off** (user decision, follow-up 8): the runtime always offers every registered tool via `getToolset()`. The **`/tools` page** is a read-only registry listing (grouped by feature); `GET /api/tools`. Tool **calls** are recorded as full `external_call` events on the bot-messaging **reply** trace (args + result), so they show in `/debug` — the MCP-tools feature owns no traces of its own, so it has no dedicated Debug page. Verified via the test suite (the `getToolsView`/`getToolset` unit test drives the real in-process registry end to end) + typecheck/build; an earlier live check confirmed the page renders and traces record before the on/off mechanism was removed. The remaining feature-1..4 gate is an operator-run live LLM+token round-trip.
@@ -35,6 +35,87 @@ Realtime: the dashboard now updates **live over SSE** (user decision — not pol
 Next: **Priority 10 — Memory feature** (user reprioritized 2026-07-14: **Mood moved to lowest priority (13)**, so the ordered list is now Memory → Image generation → Browser agent → Mood). Memory can now build on the embeddings layer this session added (`server/llm/embeddings.ts`, pgvector, the hybrid-RRF search pattern in `features/history/server/summaries-repository.ts`). Memory: extract/store/edit/retrieve/inject memories with traceable extraction and update flows, building on history + prompts + the shared background-job model. Flows are verified with the **bot-less simulation harness** (`simulateUpdate` / injected fire deps against real Postgres) — a real bot token is not a testing gate, only the live Telegram send/receive adapters remain out of in-process scope.
 
 ### Session log
+
+- 2026-07-15 (user bug report — "scheduled tasks do not work, had 2 tasks, never
+  got a message"): **diagnosed as maintenance mode silently pausing every fire;
+  behavior kept, the pause made visible; the four job cards extracted into one
+  shared component (done).**
+  - **Diagnosis.** The poller was healthy — `GET /api/scheduled-tasks/run`
+    reported `{running: true, ticking: false, lastSummary: "paused
+    (maintenance)"}` with `lastTickAt` seconds old — but **every tick
+    short-circuited**: `runTick` returns early while
+    `settings.maintenance_mode_enabled` is on, and the operator's settings had it
+    on. Confirmed from the trace log: the `scheduled-tasks` feature had only
+    `create` traces and **zero `fire` traces, ever**. Both of the operator's tasks
+    were still `enabled` with `next_run_at` in the past — due tasks are *skipped,
+    not advanced*, so they stay due indefinitely.
+  - **Decision (user, asked): keep the blanket pause.** Maintenance genuinely
+    means "no scheduled fire reaches any chat", including the owner's own DM. The
+    firing behavior is therefore **unchanged**. The defect being fixed is that the
+    pause was **invisible**: `/scheduled-tasks` showed a green "Enabled" badge and
+    a next-run time for a task whose message would never arrive, with nothing on
+    the page explaining why. (The alternative — letting owner-chat tasks fire
+    during maintenance, mirroring `bot-messaging/policy.ts` — was considered and
+    declined.)
+  - **Pause is now surfaced.** New `getTaskSchedulerInfo()` on the feature
+    scheduler returns the ticker status **plus the policy/backlog around it**:
+    `paused` (maintenance is on), `overdue` (enabled tasks whose instant has
+    passed), `nextRunAt` (earliest upcoming run across enabled tasks, via a new
+    `nextUpcomingRunAt` repository query), and `asOf` (the snapshot instant that
+    "overdue" is measured against — so the flag can never disagree between the
+    server render and hydration). `GET/POST /api/scheduled-tasks/run` now return
+    this info instead of a bare status. `/scheduled-tasks` renders a **Task poller
+    card**: a `Paused` badge, an `N overdue tasks` badge, and a warning notice
+    naming the cause and the fix ("Firing is paused: maintenance mode is on … due
+    tasks are skipped, not dropped … turn maintenance off in Settings"). Each
+    overdue task row is badged **"Overdue — firing paused"** and its line reads
+    **"Was due: <time> — not delivered"** instead of "Next run".
+  - **Shared job card (`components/jobs/JobStatusCard.tsx`).** Vision backfill,
+    history summaries, and self-improvement each had their own near-identical
+    status card; scheduled tasks would have been the fourth. Per the "shared by the
+    third use" rule they are now **one component** — activity badge, "Run now"
+    mechanics (POST + error body + `router.refresh()`), and the next/last/result
+    grid — with a `notice` slot for *why a job is not doing its work*, which is the
+    generalizable lesson from this bug. `JobActivity` adds `paused`/`stopped` to
+    the idle scheduler's existing `idle`/`scheduled`/`running` phases;
+    `intervalJobActivity()` maps the interval scheduler's status onto it. The three
+    old cards are now thin wrappers (each ~35 lines, down from ~120). Vision gained
+    a "Next run" row it previously dropped despite having the data.
+  - **Proof.** `npm run lint` ✓, `npm run typecheck` ✓, `npm run test` ✓ (323
+    unit). `npm run test:integration` ✓ for scheduled-tasks (17 passed, 6 skipped —
+    the skips are the opt-in live-LLM tool-selection tests), including **3 new
+    `getTaskSchedulerInfo` tests** (upcoming run + no pause by default; an elapsed
+    instant counts as overdue and is excluded from the next run; maintenance
+    reports `paused` while the task stays due). The pre-existing 5
+    `runDueScheduledTasks` simulated-fire tests still pass, so **the fire path
+    itself is proven working** — delivery, history mirror, schedule advance,
+    one-shot self-disable — meaning the operator's two tasks will fire on the next
+    tick once maintenance is off. Verified live on the dev server: `/scheduled-tasks`
+    renders "Task poller · Paused · 2 overdue tasks", the maintenance notice, "Last
+    result: paused (maintenance)", and both tasks badged "Overdue — firing paused"
+    with "Was due: … — not delivered"; `/vision`, `/history`, and
+    `/self-improvement` still render their (now shared) cards at 200 with the right
+    activity; no console errors. `npm run build` **not run** — a dev server is live
+    on 3200 and a production build would clobber it
+    (`dont-clobber-running-dev-server`).
+  - **Follow-up (user directive): a spent one-shot is now DELETED, not disabled.**
+    Previously a fired `once` task was left as a row with `next_run_at = null` and
+    `enabled = false` — a permanent corpse on the dashboard that could never be
+    revived anyway (creation/edit reject a one-shot whose date has passed). The
+    fire loop now settles a task one of two ways: a recurring task is advanced via
+    `markScheduledTaskRun` (whose `nextRunAt` is consequently **non-null** — the
+    `enabled: nextRunAt != null` flip is gone), and a task with **no future run**
+    is `deleteScheduledTask`d. Deletion happens **even when the fire failed**: the
+    task can never fire again, so keeping it would leave a permanently-due row
+    retried on every 30s tick forever — the attempt is preserved in its `fire`
+    trace either way. A user *disabling* a task still keeps its row
+    (`updateScheduledTask` with `nextRunAt: null`) — that path is untouched. Proof:
+    the one-shot integration test now asserts the row is **gone**, plus a new test
+    covering the failed-fire deletion; `npm run test:integration` for
+    scheduled-tasks ✓ (18 passed, 6 skipped live).
+  - **Not done (deliberately):** maintenance mode was **not** turned off and the
+    two overdue tasks were **not** fired — that delivers real Telegram messages to
+    the operator's chat and flips a settings toggle, both the operator's call.
 
 - 2026-07-14 (Priority 3 follow-up — three user corrections to the summarization
   work below): **separate-embedding-backend toggle, fully retroactive

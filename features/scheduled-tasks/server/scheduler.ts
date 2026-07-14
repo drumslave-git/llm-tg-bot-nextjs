@@ -19,9 +19,11 @@ import { sendChatMessage } from "@/server/telegram/bot-manager";
 import { computeNextRun } from "../schedule";
 import { fireScheduledTask } from "./fire";
 import {
+  deleteScheduledTask,
   listDueScheduledTasks,
   markScheduledTaskRun,
   nextRecentDeliveries,
+  nextUpcomingRunAt,
 } from "./repository";
 
 /**
@@ -33,8 +35,9 @@ import {
  * ({@link import("@/server/jobs/interval-scheduler")}): a task must fire at its
  * wall-clock instant regardless of whether the bot is busy. Each tick, under a
  * cross-process advisory lock, it scans for due tasks, fires each, then advances
- * `next_run_at` (a spent one-shot gets `null`, which disables the row). Firing is
- * paused while maintenance mode is on. The LLM connection is read fresh per tick.
+ * `next_run_at` — or deletes the task outright once it is spent (a one-shot that
+ * has fired). Firing is paused while maintenance mode is on. The LLM connection
+ * is read fresh per tick.
  */
 
 /** Poll period. A code constant, not a setting. */
@@ -65,11 +68,12 @@ export interface DueRunDeps {
 }
 
 /**
- * Fire every currently-due task and advance its schedule. Pure of scheduling
+ * Fire every currently-due task and settle its schedule. Pure of scheduling
  * mechanics (the caller owns the lock/interval): scans due rows, fires each via
- * the injected collaborators, then stamps `last_run_at`/`next_run_at` (a spent
- * one-shot → null → disabled) and the capped `recent_deliveries`. Never throws
- * per task — a failing fire still advances so it doesn't busy-loop.
+ * the injected collaborators, then either stamps `last_run_at`/`next_run_at` +
+ * the capped `recent_deliveries` (a recurring task) or deletes the row (a spent
+ * one-shot — it has had its turn and can never fire again). Never throws per task
+ * — a failing fire still settles so it doesn't busy-loop.
  */
 export async function runDueScheduledTasks(deps: DueRunDeps): Promise<{ fired: number; failed: number }> {
   const db = deps.db ?? getDb();
@@ -89,12 +93,24 @@ export async function runDueScheduledTasks(deps: DueRunDeps): Promise<{ fired: n
     }).catch(() => ({ ok: false as const }));
     if (result.ok) fired += 1;
     else failed += 1;
-    // Advance regardless of fire success so a failing task doesn't busy-loop.
-    await markScheduledTaskRun(db, task.id, {
-      lastRunAt: now,
-      nextRunAt: computeNextRun(task, now, deps.timezone),
-      recentDeliveries: result.ok ? nextRecentDeliveries(task.recentDeliveries ?? [], result.text!) : undefined,
-    }).catch(() => undefined);
+
+    // Settle the schedule regardless of fire success, so a failing task doesn't
+    // busy-loop. A task with no future run is spent — a one-shot that has now
+    // had its turn — and is *deleted*: it can never fire again (creation rejects
+    // a past one-shot), so keeping the row would only leave a dead entry on the
+    // dashboard. The fire is still recorded in its trace either way.
+    const nextRunAt = computeNextRun(task, now, deps.timezone);
+    if (nextRunAt) {
+      await markScheduledTaskRun(db, task.id, {
+        lastRunAt: now,
+        nextRunAt,
+        recentDeliveries: result.ok
+          ? nextRecentDeliveries(task.recentDeliveries ?? [], result.text!)
+          : undefined,
+      }).catch(() => undefined);
+    } else {
+      await deleteScheduledTask(db, task.id).catch(() => undefined);
+    }
     publishEvent(FEATURE.realtimeTopic);
   }
   return { fired, failed };
@@ -164,7 +180,38 @@ export function runTaskSchedulerNow(): Promise<void> {
   return scheduler().runNow();
 }
 
-/** Current scheduler status — cheap and synchronous, safe for status probes. */
-export function getTaskSchedulerStatus(): IntervalJobStatus {
-  return scheduler().getStatus();
+/** Job info for the dashboard card. */
+export interface TaskSchedulerJobInfo {
+  status: IntervalJobStatus;
+  /**
+   * True when maintenance mode is pausing every fire. The poller keeps ticking
+   * and due tasks stay due — they are skipped, not advanced — so they deliver
+   * once maintenance is turned off. Without this the dashboard shows a healthy
+   * "Enabled" task whose message never arrives and gives no reason why.
+   */
+  paused: boolean;
+  /** Enabled tasks whose scheduled instant has already passed. */
+  overdue: number;
+  /** Earliest upcoming run across enabled tasks, or null when nothing is scheduled. */
+  nextRunAt: string | null;
+  /** The instant this snapshot was taken — the baseline "overdue" is measured against. */
+  asOf: string;
+}
+
+/** Current job info — the ticker's status plus the policy/backlog around it. */
+export async function getTaskSchedulerInfo(db: DrizzleDb = getDb()): Promise<TaskSchedulerJobInfo> {
+  const now = new Date();
+  const [policy, due, next] = await Promise.all([
+    getBotPolicy(db).catch(() => null),
+    listDueScheduledTasks(db, now).catch(() => []),
+    nextUpcomingRunAt(db, now).catch(() => null),
+  ]);
+
+  return {
+    status: scheduler().getStatus(),
+    paused: policy?.maintenanceModeEnabled ?? false,
+    overdue: due.length,
+    nextRunAt: next?.toISOString() ?? null,
+    asOf: now.toISOString(),
+  };
 }

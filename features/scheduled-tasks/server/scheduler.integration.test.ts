@@ -147,7 +147,7 @@ describe("runDueScheduledTasks (simulated fire — no bot, no live LLM)", () => 
     expect(captured).toContain("Drink some water!");
   });
 
-  it("a due one-shot fires once then disables itself (next run null)", async () => {
+  it("a due one-shot fires once, then deletes itself", async () => {
     const task = await createScheduledTaskService(
       { chatId: "555", instruction: "one-time ping", scheduleKind: "once", timeOfDay: "09:00", runDate: tomorrowIso() },
       trigger,
@@ -164,8 +164,39 @@ describe("runDueScheduledTasks (simulated fire — no bot, no live LLM)", () => 
       recordReply,
     });
     expect(sink.sent).toHaveLength(1);
-    const [after] = await getScheduledTasks("555", ctx.db);
-    expect(after).toMatchObject({ enabled: false, nextRunAt: null });
+    // Spent: the row is gone, not left behind disabled.
+    expect(await getScheduledTasks("555", ctx.db)).toEqual([]);
+    // The delivery is still on the record, in the fire trace.
+    const traces = await listTraces(ctx.db, { feature: "scheduled-tasks" });
+    expect(traces.traces.some((t) => t.action === "fire" && t.status === "success")).toBe(true);
+  });
+
+  it("deletes a spent one-shot even when the fire failed — it can never fire again", async () => {
+    const task = await createScheduledTaskService(
+      { chatId: "555", instruction: "one-time ping", scheduleKind: "once", timeOfDay: "09:00", runDate: tomorrowIso() },
+      trigger,
+      ctx.db,
+    );
+    const sink = captureSink();
+    const res = await runDueScheduledTasks({
+      db: ctx.db,
+      now: new Date(new Date(task.nextRunAt!).getTime() + 60_000),
+      timezone: "UTC",
+      personalityPrompt: null,
+      complete: async () => {
+        throw new Error("LLM unreachable");
+      },
+      send: sink.send,
+      recordReply,
+    });
+
+    expect(res).toEqual({ fired: 0, failed: 1 });
+    expect(sink.sent).toEqual([]);
+    // Removed rather than left as a permanently-stuck due row (it would otherwise
+    // be retried on every tick forever). The failure is recorded in its trace.
+    expect(await getScheduledTasks("555", ctx.db)).toEqual([]);
+    const traces = await listTraces(ctx.db, { feature: "scheduled-tasks" });
+    expect(traces.traces.some((t) => t.action === "fire" && t.status !== "success")).toBe(true);
   });
 
   it("does not deliver empty model output but still advances the schedule", async () => {

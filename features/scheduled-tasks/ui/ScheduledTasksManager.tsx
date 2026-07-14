@@ -1,6 +1,6 @@
 "use client";
 
-import { CalendarClock, Check, Pencil, Play, Plus, Trash2, X } from "lucide-react";
+import { CalendarClock, Check, Pencil, Plus, Trash2, X } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
@@ -25,7 +25,9 @@ import { useTimezone } from "@/components/time/TimezoneProvider";
 import type { ApiErrorBody } from "@/lib/api-error";
 
 import { describeSchedule } from "../schedule";
+import type { TaskSchedulerJobInfo } from "../server/scheduler";
 import type { ScheduledTask, ScheduleKind } from "../types";
+import { TaskSchedulerCard } from "./TaskSchedulerCard";
 
 /**
  * Scheduled-tasks manager. Client Component: create, edit, enable/disable, and
@@ -256,10 +258,16 @@ function TaskCard({
   task,
   chatLabel,
   authorLabel,
+  overdue,
+  paused,
 }: {
   task: ScheduledTask;
   chatLabel: string;
   authorLabel: string;
+  /** The task's run instant has passed and it still has not fired. */
+  overdue: boolean;
+  /** Firing is paused for every task (maintenance mode) — the likely reason. */
+  paused: boolean;
 }) {
   const router = useRouter();
   const [editing, setEditing] = useState(false);
@@ -369,6 +377,11 @@ function TaskCard({
             ) : (
               <Badge tone="neutral">Disabled</Badge>
             )}
+            {overdue ? (
+              <Badge tone={paused ? "danger" : "warning"}>
+                {paused ? "Overdue — firing paused" : "Overdue"}
+              </Badge>
+            ) : null}
           </div>
           <p className="text-sm text-muted">
             {describeSchedule(task)} · {chatLabel} · {authorLabel}
@@ -398,7 +411,13 @@ function TaskCard({
       <CardContent>
         <p className="text-sm text-muted">
           {task.nextRunAt ? (
-            <>Next run: <Timestamp iso={task.nextRunAt} /></>
+            overdue ? (
+              <span className={paused ? "text-danger" : "text-warning"}>
+                Was due: <Timestamp iso={task.nextRunAt} /> — not delivered
+              </span>
+            ) : (
+              <>Next run: <Timestamp iso={task.nextRunAt} /></>
+            )
           ) : (
             <span className="text-faint">No upcoming run.</span>
           )}
@@ -416,16 +435,17 @@ export function ScheduledTasksManager({
   tasks,
   chats,
   authors,
+  job,
 }: {
   tasks: ScheduledTask[];
   chats: ChatOption[];
   /** Map of creator user id → display label, for showing each task's author. */
   authors: Record<string, string>;
+  /** Poller status — including whether firing is currently paused. */
+  job: TaskSchedulerJobInfo;
 }) {
   useLiveRefresh("tasks");
   const timezone = useTimezone();
-  const router = useRouter();
-  const [running, setRunning] = useState(false);
 
   const chatLabelOf = (chatId: string) =>
     chats.find((c) => c.chatId === chatId)?.label ?? `Chat ${chatId}`;
@@ -433,30 +453,19 @@ export function ScheduledTasksManager({
   const authorLabelOf = (userId: string | null) =>
     userId ? `by ${authors[userId] ?? `user ${userId}`}` : "via dashboard";
 
-  async function runDueNow() {
-    setRunning(true);
-    try {
-      await fetch("/api/scheduled-tasks/run", { method: "POST" });
-      router.refresh();
-    } finally {
-      setRunning(false);
-    }
-  }
+  // "Overdue" is measured against the server's snapshot instant, not the browser
+  // clock, so the flag matches the count on the card and never differs between
+  // the server render and hydration.
+  const isOverdue = (task: ScheduledTask) =>
+    task.enabled &&
+    task.nextRunAt != null &&
+    Date.parse(task.nextRunAt) <= Date.parse(job.asOf);
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between gap-3">
-        <p className="text-sm text-muted">Operator timezone: {timezone}</p>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={runDueNow}
-          disabled={running}
-          leftIcon={<Play className="h-4 w-4" />}
-        >
-          {running ? "Running…" : "Run due now"}
-        </Button>
-      </div>
+      <TaskSchedulerCard initial={job} />
+
+      <p className="text-sm text-muted">Operator timezone: {timezone}</p>
 
       <CreateForm chats={chats} />
 
@@ -474,6 +483,8 @@ export function ScheduledTasksManager({
               task={t}
               chatLabel={chatLabelOf(t.chatId)}
               authorLabel={authorLabelOf(t.createdByUserId)}
+              overdue={isOverdue(t)}
+              paused={job.paused}
             />
           ))}
         </div>

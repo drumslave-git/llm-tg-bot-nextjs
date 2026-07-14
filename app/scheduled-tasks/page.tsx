@@ -6,6 +6,10 @@ import { LiveIndicator } from "@/components/realtime/LiveIndicator";
 import { formatKnownUserLabel } from "@/features/known-users/format";
 import { listUsers } from "@/features/known-users/server/service";
 import { listGroups } from "@/features/known-groups/server/service";
+import {
+  getTaskSchedulerInfo,
+  type TaskSchedulerJobInfo,
+} from "@/features/scheduled-tasks/server/scheduler";
 import { getScheduledTasks } from "@/features/scheduled-tasks/server/service";
 import type { ScheduledTask } from "@/features/scheduled-tasks/types";
 import {
@@ -25,16 +29,19 @@ export const dynamic = "force-dynamic";
  */
 export default async function ScheduledTasksPage() {
   let tasks: ScheduledTask[] | null = null;
+  let job: TaskSchedulerJobInfo | null = null;
   let chats: ChatOption[] = [];
   let authors: Record<string, string> = {};
   let dbError: string | null = null;
   try {
-    const [taskList, users, groups] = await Promise.all([
+    const [taskList, users, groups, jobInfo] = await Promise.all([
       getScheduledTasks(),
       listUsers(),
       listGroups(),
+      getTaskSchedulerInfo(),
     ]);
     tasks = taskList;
+    job = jobInfo;
     chats = [
       ...users.map((u) => ({
         chatId: u.userId,
@@ -68,8 +75,8 @@ export default async function ScheduledTasksPage() {
         }
       />
 
-      {tasks ? (
-        <ScheduledTasksManager tasks={tasks} chats={chats} authors={authors} />
+      {tasks && job ? (
+        <ScheduledTasksManager tasks={tasks} chats={chats} authors={authors} job={job} />
       ) : (
         <EmptyState
           icon={Database}

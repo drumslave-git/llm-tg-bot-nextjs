@@ -10,6 +10,7 @@ import {
   markScheduledTaskRun,
   nextRecentDeliveries,
 } from "./repository";
+import { getTaskSchedulerInfo } from "./scheduler";
 import {
   createScheduledTaskService,
   editScheduledTaskService,
@@ -171,9 +172,47 @@ describe("due scan + markScheduledTaskRun", () => {
     const stored = await getRecentDeliveries(ctx.db, task.id);
     expect(stored).toEqual(["msg 6", "msg 5", "msg 4", "msg 3", "msg 2"]);
 
-    // A null next run disables the task.
-    await markScheduledTaskRun(ctx.db, task.id, { lastRunAt: new Date(), nextRunAt: null });
+    // Advancing leaves the task enabled and armed — a task with no future run is
+    // deleted by the scheduler instead, so it never reaches this call.
     const after = await getScheduledTasks("555", ctx.db);
-    expect(after[0]).toMatchObject({ enabled: false, nextRunAt: null });
+    expect(after[0]).toMatchObject({ enabled: true });
+    expect(after[0].nextRunAt).not.toBeNull();
+  });
+});
+
+describe("getTaskSchedulerInfo", () => {
+  /** Push a task's run instant into the past, leaving it enabled and unfired. */
+  const makeOverdue = (id: string) =>
+    markScheduledTaskRun(ctx.db, id, {
+      lastRunAt: new Date(Date.now() - 2 * 86_400_000),
+      nextRunAt: new Date(Date.now() - 86_400_000),
+    });
+
+  it("reports the next upcoming run, nothing overdue, and no pause by default", async () => {
+    const task = await createScheduledTaskService(base, trigger, ctx.db);
+    const info = await getTaskSchedulerInfo(ctx.db);
+    expect(info).toMatchObject({ paused: false, overdue: 0 });
+    expect(info.nextRunAt).toBe(task.nextRunAt);
+  });
+
+  it("counts a task whose run instant has passed as overdue, and leaves it out of the next run", async () => {
+    const task = await createScheduledTaskService(base, trigger, ctx.db);
+    await makeOverdue(task.id);
+
+    const info = await getTaskSchedulerInfo(ctx.db);
+    expect(info.overdue).toBe(1);
+    // The only task's run is in the past, so there is no *upcoming* run to show.
+    expect(info.nextRunAt).toBeNull();
+  });
+
+  it("reports paused while maintenance mode is on — the reason a due task never fires", async () => {
+    const task = await createScheduledTaskService(base, trigger, ctx.db);
+    await makeOverdue(task.id);
+    await upsertSettings(ctx.db, { maintenanceModeEnabled: true });
+
+    const info = await getTaskSchedulerInfo(ctx.db);
+    // The task is still due (it is skipped, not advanced) and the dashboard can
+    // now say why it has not been delivered.
+    expect(info).toMatchObject({ paused: true, overdue: 1 });
   });
 });
