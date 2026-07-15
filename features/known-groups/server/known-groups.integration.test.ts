@@ -6,9 +6,11 @@ import { startTestDb, type TestDb } from "@/test/db";
 import { getGroupMembers, getKnownGroup } from "./repository";
 import {
   getGroupContext,
+  getGroupLanguage,
   getGroupWithMembers,
   listGroups,
   rememberGroupActivity,
+  updateLanguage,
   updateNotes,
 } from "./service";
 
@@ -148,6 +150,44 @@ describe("updateNotes", () => {
     );
     const { traces } = await listTraces(ctx.db, { feature: "known-groups" });
     expect(traces[0].status).toBe("error");
+  });
+});
+
+describe("updateLanguage / getGroupLanguage", () => {
+  it("sets and clears the language, recording a trace and preserving it across profile upserts", async () => {
+    await rememberGroupActivity({ chatId: "-1", title: "G", type: "group", userId: null }, ctx.db);
+
+    // Unset → null (the runtime falls back to the default).
+    expect(await getGroupLanguage("-1", ctx.db)).toBeNull();
+
+    const set = await updateLanguage("-1", { language: "Ukrainian" }, trigger, ctx.db);
+    expect(set.language).toBe("Ukrainian");
+    expect(await getGroupLanguage("-1", ctx.db)).toBe("Ukrainian");
+
+    // A later message must not wipe the operator-configured language.
+    await rememberGroupActivity({ chatId: "-1", title: "G renamed", type: "group", userId: null }, ctx.db);
+    expect(await getGroupLanguage("-1", ctx.db)).toBe("Ukrainian");
+
+    const cleared = await updateLanguage("-1", { language: null }, trigger, ctx.db);
+    expect(cleared.language).toBeNull();
+    expect(await getGroupLanguage("-1", ctx.db)).toBeNull();
+
+    const { traces } = await listTraces(ctx.db, { feature: "known-groups" });
+    const langTraces = traces.filter((t) => t.action === "update-language");
+    expect(langTraces).toHaveLength(2);
+    expect(langTraces.every((t) => t.status === "success")).toBe(true);
+  });
+
+  it("fails for an unknown group and records an error trace", async () => {
+    await expect(
+      updateLanguage("-404", { language: "Ukrainian" }, trigger, ctx.db),
+    ).rejects.toThrow(/unknown group/i);
+    const { traces } = await listTraces(ctx.db, { feature: "known-groups" });
+    expect(traces[0].status).toBe("error");
+  });
+
+  it("returns null language for an unknown group", async () => {
+    expect(await getGroupLanguage("-404", ctx.db)).toBeNull();
   });
 });
 

@@ -7,6 +7,7 @@ import { LiveIndicator } from "@/components/realtime/LiveIndicator";
 import { formatKnownGroupLabel } from "@/features/known-groups/format";
 import { getGroupWithMembers } from "@/features/known-groups/server/service";
 import type { GroupWithMembers } from "@/features/known-groups/server/schema";
+import { GroupLanguageEditor } from "@/features/known-groups/ui/GroupLanguageEditor";
 import { GroupMembersCard } from "@/features/known-groups/ui/GroupMembersCard";
 import { GroupNotesEditor } from "@/features/known-groups/ui/GroupNotesEditor";
 
@@ -55,6 +56,7 @@ export default async function GroupDetailPage({
 
       {detail ? (
         <div className="flex flex-col gap-6">
+          <GroupLanguageEditor group={detail.group} />
           <GroupNotesEditor group={detail.group} />
           <GroupMembersCard members={detail.members} />
         </div>

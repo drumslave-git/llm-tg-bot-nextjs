@@ -1,9 +1,11 @@
 import { z } from "zod";
 
+import { languageField } from "@/lib/language";
+
 /**
  * Known-users validation contract — the single source of truth for the shape of
- * a known user and for alias edits. Shared by the service, Route Handlers, and
- * the dashboard.
+ * a known user and for alias/language edits. Shared by the service, Route
+ * Handlers, and the dashboard.
  */
 
 /** A known user as returned to clients. */
@@ -13,6 +15,7 @@ export const knownUserSchema = z.object({
   firstName: z.string().nullable(),
   lastName: z.string().nullable(),
   aliases: z.array(z.string()),
+  language: z.string().nullable(),
   firstSeenAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
 });
@@ -52,3 +55,11 @@ export const updateAliasesSchema = z.object({
 });
 
 export type UpdateAliases = z.infer<typeof updateAliasesSchema>;
+
+/**
+ * Language-edit input for a user's DM: a free-text language name. Normalized;
+ * an empty result clears the configuration (stored null → default language).
+ */
+export const updateUserLanguageSchema = z.object({ language: languageField });
+
+export type UpdateUserLanguage = z.infer<typeof updateUserLanguageSchema>;

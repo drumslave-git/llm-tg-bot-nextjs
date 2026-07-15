@@ -199,6 +199,12 @@ export const knownUsers = pgTable(
     lastName: text("last_name"),
     /** Operator-curated alternate names/nicknames. */
     aliases: text("aliases").array().notNull().default(sql`ARRAY[]::text[]`),
+    /**
+     * Operator-configured reply language for this user's private (DM) chat, as a
+     * free-text language name (e.g. `Ukrainian`). Null → the bot replies in the
+     * default language. Never touched by the passive profile upsert.
+     */
+    language: text("language"),
     firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -224,6 +230,12 @@ export const knownGroups = pgTable("known_groups", {
   type: text("type"),
   /** Operator-curated free-text description of the group. */
   notes: text("notes"),
+  /**
+   * Operator-configured reply language for this group, as a free-text language
+   * name (e.g. `Ukrainian`). Null → the bot replies in the default language.
+   * Never touched by the passive profile upsert.
+   */
+  language: text("language"),
   firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });

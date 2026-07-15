@@ -4,7 +4,14 @@ import { recordIncomingMessage } from "@/features/history/server/service";
 import { listTraces } from "@/server/trace/repository";
 import { startTestDb, type TestDb } from "@/test/db";
 import { getKnownUser, upsertKnownUser } from "./repository";
-import { addAliasByReference, listUsers, rememberUser, updateAliases } from "./service";
+import {
+  addAliasByReference,
+  getUserLanguage,
+  listUsers,
+  rememberUser,
+  updateAliases,
+  updateLanguage,
+} from "./service";
 
 let ctx: TestDb;
 
@@ -73,6 +80,41 @@ describe("listUsers", () => {
 
     const users = await listUsers(ctx.db);
     expect(users.map((u) => u.userId)).toEqual(["2", "1"]);
+  });
+});
+
+describe("updateLanguage / getUserLanguage", () => {
+  it("sets and clears the DM language, recording a trace and surviving profile upserts", async () => {
+    await upsertKnownUser(ctx.db, { userId: "1", username: "ann", firstName: "Ann", lastName: null });
+
+    // Unset → null (the runtime falls back to the default).
+    expect(await getUserLanguage("1", ctx.db)).toBeNull();
+
+    const set = await updateLanguage("1", { language: "Ukrainian" }, trigger, ctx.db);
+    expect(set.language).toBe("Ukrainian");
+    expect(await getUserLanguage("1", ctx.db)).toBe("Ukrainian");
+
+    // A later message must not wipe the operator-configured language.
+    await rememberUser({ userId: "1", username: "ann2", firstName: "Ann", lastName: null }, ctx.db);
+    expect(await getUserLanguage("1", ctx.db)).toBe("Ukrainian");
+
+    const cleared = await updateLanguage("1", { language: null }, trigger, ctx.db);
+    expect(cleared.language).toBeNull();
+
+    const { traces } = await listTraces(ctx.db, { feature: "known-users" });
+    const langTraces = traces.filter((t) => t.action === "update-language");
+    expect(langTraces).toHaveLength(2);
+    expect(langTraces.every((t) => t.status === "success")).toBe(true);
+  });
+
+  it("fails for an unknown user and records an error trace", async () => {
+    await expect(
+      updateLanguage("404", { language: "Ukrainian" }, trigger, ctx.db),
+    ).rejects.toThrow(/unknown user/i);
+  });
+
+  it("returns null language for an unknown user", async () => {
+    expect(await getUserLanguage("404", ctx.db)).toBeNull();
   });
 });
 

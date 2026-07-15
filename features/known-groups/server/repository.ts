@@ -18,6 +18,8 @@ export interface KnownGroupRecord {
   title: string | null;
   type: string | null;
   notes: string | null;
+  /** Operator-configured reply language for this group, or null (default). */
+  language: string | null;
   firstSeenAt: string;
   updatedAt: string;
 }
@@ -51,6 +53,7 @@ function mapRow(row: KnownGroupRow): KnownGroupRecord {
     title: row.title,
     type: row.type,
     notes: row.notes,
+    language: row.language,
     firstSeenAt: row.firstSeenAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -64,6 +67,7 @@ export async function listKnownGroups(db: DrizzleDb): Promise<KnownGroupSummaryR
       title: knownGroups.title,
       type: knownGroups.type,
       notes: knownGroups.notes,
+      language: knownGroups.language,
       firstSeenAt: knownGroups.firstSeenAt,
       updatedAt: knownGroups.updatedAt,
       memberCount: sql<number>`count(${groupMembers.userId})::int`,
@@ -77,6 +81,7 @@ export async function listKnownGroups(db: DrizzleDb): Promise<KnownGroupSummaryR
     title: row.title,
     type: row.type,
     notes: row.notes,
+    language: row.language,
     firstSeenAt: row.firstSeenAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
     memberCount: row.memberCount,
@@ -130,6 +135,23 @@ export async function setKnownGroupNotes(
   const [row] = await db
     .update(knownGroups)
     .set({ notes, updatedAt: new Date() })
+    .where(eq(knownGroups.chatId, chatId))
+    .returning();
+  return row ? mapRow(row) : null;
+}
+
+/**
+ * Set (or clear, with null) a group's operator-configured reply language.
+ * Returns the updated record, or null if the group is unknown.
+ */
+export async function setKnownGroupLanguage(
+  db: DrizzleDb,
+  chatId: string,
+  language: string | null,
+): Promise<KnownGroupRecord | null> {
+  const [row] = await db
+    .update(knownGroups)
+    .set({ language, updatedAt: new Date() })
     .where(eq(knownGroups.chatId, chatId))
     .returning();
   return row ? mapRow(row) : null;

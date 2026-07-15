@@ -199,6 +199,35 @@ describe("handleIncomingMessage", () => {
     expect(userTurn.content[0].text).toContain("replied to");
   });
 
+  it("injects the required-language directive as the final system message before the turn", async () => {
+    const d = deps({ requiredLanguage: "Ukrainian" });
+    await handleIncomingMessage(incoming({ text: "hello there" }), d);
+
+    const messages = (d.generateReply as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    // [system prompt, language directive, user] — the directive sits last so it
+    // overrides the language of the message/history/personality.
+    const directive = messages.at(-2);
+    expect(directive.role).toBe("system");
+    expect(directive.content).toContain("Ukrainian");
+    expect(messages.at(-1)).toEqual({ role: "user", content: "hello there" });
+    // Recorded for debug.
+    const step = recorder.event.mock.calls
+      .map((c) => c[0])
+      .find((e) => e.message === "language directive");
+    expect(step.data.requiredLanguage).toBe("Ukrainian");
+  });
+
+  it("omits the language directive (and its trace step) when none is provided", async () => {
+    const d = deps();
+    await handleIncomingMessage(incoming({ text: "hello there" }), d);
+    const messages = (d.generateReply as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(messages).toHaveLength(2);
+    const step = recorder.event.mock.calls
+      .map((c) => c[0])
+      .find((e) => e.message === "language directive");
+    expect(step).toBeUndefined();
+  });
+
   it("injects the loaded history window as prior turns between system and current", async () => {
     const priorTurns = [
       { role: "user", content: "earlier question" },

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { updateAliasesSchema } from "./schema";
+import { updateAliasesSchema, updateUserLanguageSchema } from "./schema";
 
 describe("updateAliasesSchema", () => {
   it("trims entries and drops blanks", () => {
@@ -26,5 +26,15 @@ describe("updateAliasesSchema", () => {
 
   it("rejects an overly long alias", () => {
     expect(updateAliasesSchema.safeParse({ aliases: ["x".repeat(61)] }).success).toBe(false);
+  });
+});
+
+describe("updateUserLanguageSchema", () => {
+  it("normalizes a language name", () => {
+    expect(updateUserLanguageSchema.parse({ language: "  Ukrainian " }).language).toBe("Ukrainian");
+  });
+
+  it("clears blank language to null", () => {
+    expect(updateUserLanguageSchema.parse({ language: "" }).language).toBeNull();
   });
 });

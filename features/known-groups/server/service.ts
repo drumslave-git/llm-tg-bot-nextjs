@@ -15,6 +15,7 @@ import {
   groupMembershipExists,
   listKnownGroups,
   recordGroupMembership,
+  setKnownGroupLanguage,
   setKnownGroupNotes,
   upsertKnownGroup,
   type GroupMemberRecord,
@@ -27,6 +28,7 @@ import type {
   GroupWithMembers,
   KnownGroup,
   KnownGroupSummary,
+  UpdateGroupLanguage,
   UpdateGroupNotes,
 } from "./schema";
 
@@ -198,6 +200,50 @@ export async function updateNotes(
     await trace.fail(err);
     throw err;
   }
+}
+
+/** Replace a group's operator-configured reply language, recorded as a trace. */
+export async function updateLanguage(
+  chatId: string,
+  input: UpdateGroupLanguage,
+  trigger: TraceTrigger,
+  db: DrizzleDb = getDb(),
+): Promise<KnownGroup> {
+  const trace = await startTrace(
+    { feature: FEATURE.id, action: "update-language", trigger, inputSummary: `group ${chatId}` },
+    db,
+  );
+  try {
+    await trace.event({
+      type: "input",
+      message: "language update",
+      data: { chatId, language: input.language },
+    });
+    const record = await setKnownGroupLanguage(db, chatId, input.language);
+    if (!record) throw ApiError.notFound("Unknown group");
+    await trace.event({ type: "db", message: "language updated" });
+    publishEvent(FEATURE.realtimeTopic);
+    await trace.succeed({
+      outputSummary: input.language ? `language set to ${input.language}` : "language cleared",
+      relatedIds: { [FEATURE.relatedIdsKey]: [chatId] },
+    });
+    return toClientGroup(record);
+  } catch (err) {
+    await trace.fail(err);
+    throw err;
+  }
+}
+
+/**
+ * Server-only: the operator-configured reply language for a group, or null when
+ * none is set (the runtime falls back to the default). Read on the message path.
+ */
+export async function getGroupLanguage(
+  chatId: string,
+  db: DrizzleDb = getDb(),
+): Promise<string | null> {
+  const group = await getKnownGroup(db, chatId);
+  return group?.language ?? null;
 }
 
 /** The current-day group context block injected into a group reply, or null. */

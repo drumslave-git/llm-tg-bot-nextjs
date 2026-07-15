@@ -77,15 +77,18 @@ export function toApiError(err: unknown): ApiError {
   return ApiError.internal("Internal server error", { cause: err });
 }
 
-/** Parse and validate a JSON request body, throwing `bad_request` on invalid JSON. */
-export async function parseJson<T>(request: Request, schema: ZodType<T>): Promise<T> {
-  let raw: unknown;
+/** Read a JSON request body, throwing `bad_request` on invalid JSON. */
+export async function readJsonBody(request: Request): Promise<unknown> {
   try {
-    raw = await request.json();
+    return await request.json();
   } catch {
     throw ApiError.badRequest("Request body must be valid JSON");
   }
-  return schema.parse(raw);
+}
+
+/** Parse and validate a JSON request body, throwing `bad_request` on invalid JSON. */
+export async function parseJson<T>(request: Request, schema: ZodType<T>): Promise<T> {
+  return schema.parse(await readJsonBody(request));
 }
 
 /** Validate URL search params against a schema. */

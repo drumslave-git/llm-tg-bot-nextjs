@@ -20,13 +20,15 @@ import {
   TableRow,
 } from "@/components/ui";
 import type { ApiErrorBody } from "@/lib/api-error";
+import { DEFAULT_CHAT_LANGUAGE } from "@/lib/language";
 import type { KnownUser } from "../server/schema";
 
 /**
- * Known-users table with inline alias editing. Client Component: aliases are
- * edited as a comma-separated list per row and saved via `PATCH /api/users/[id]`.
- * The server normalizes (trims, drops blanks, de-dupes), and the returned record
- * replaces the row so the input reflects the stored result.
+ * Known-users table with inline alias + language editing. Client Component: each
+ * field is edited per row and saved via `PATCH /api/users/[id]` (aliases as a
+ * comma-separated list, language as free text). The server normalizes and the
+ * returned record replaces the row so the input reflects the stored result. A
+ * user's language governs the bot's reply language in their private (DM) chat.
  */
 
 const aliasesToText = (aliases: string[]) => aliases.join(", ");
@@ -105,7 +107,66 @@ function AliasRow({ user }: { user: KnownUser }) {
           <p className="mt-1 text-xs text-danger">{state.error}</p>
         ) : null}
       </TableCell>
+      <LanguageCell user={user} />
     </TableRow>
+  );
+}
+
+/**
+ * Inline editor for a user's DM reply language: free text saved via
+ * `PATCH /api/users/[id]` with a `{ language }` body. Empty clears to the default.
+ */
+function LanguageCell({ user }: { user: KnownUser }) {
+  const [stored, setStored] = useState(user.language ?? "");
+  const [text, setText] = useState(user.language ?? "");
+  const [state, setState] = useState<"idle" | "saving" | "saved" | { error: string }>("idle");
+
+  const dirty = stored.trim() !== text.trim();
+
+  async function save() {
+    setState("saving");
+    try {
+      const res = await fetch(`/api/users/${encodeURIComponent(user.userId)}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ language: text }),
+      });
+      if (!res.ok) {
+        setState({ error: await readError(res) });
+        return;
+      }
+      const { data } = (await res.json()) as { data: KnownUser };
+      const next = data.language ?? "";
+      setStored(next);
+      setText(next);
+      setState("saved");
+    } catch {
+      setState({ error: "Network error" });
+    }
+  }
+
+  return (
+    <TableCell>
+      <div className="flex items-center gap-2">
+        <Input
+          value={text}
+          onChange={(e) => {
+            setText(e.target.value);
+            setState("idle");
+          }}
+          placeholder={DEFAULT_CHAT_LANGUAGE}
+          className="min-w-[8rem]"
+          aria-label={`DM reply language for ${fullName(user)}`}
+        />
+        <Button size="sm" variant="outline" onClick={save} disabled={!dirty || state === "saving"}>
+          {state === "saving" ? "Saving…" : "Save"}
+        </Button>
+        {state === "saved" ? (
+          <Check className="h-4 w-4 shrink-0 text-success" aria-label="Saved" />
+        ) : null}
+      </div>
+      {typeof state === "object" ? <p className="mt-1 text-xs text-danger">{state.error}</p> : null}
+    </TableCell>
   );
 }
 
@@ -116,7 +177,8 @@ export function KnownUsersTable({ users }: { users: KnownUser[] }) {
         <div>
           <CardTitle>Users</CardTitle>
           <CardDescription>
-            Captured automatically on each message. Aliases are alternate names you add.
+            Captured automatically on each message. Aliases are alternate names you add; DM language
+            is the language the bot must reply in for that user&apos;s private chat (empty = default).
           </CardDescription>
         </div>
       </CardHeader>
@@ -128,13 +190,14 @@ export function KnownUsersTable({ users }: { users: KnownUser[] }) {
             description="Users appear here once they message the bot. Start the bot and send it a message."
           />
         ) : (
-          <Table minWidth={720}>
+          <Table minWidth={900}>
             <TableHead>
               <TableRow header>
                 <TableHeaderCell>Name</TableHeaderCell>
                 <TableHeaderCell>Username</TableHeaderCell>
                 <TableHeaderCell>User ID</TableHeaderCell>
                 <TableHeaderCell>Aliases</TableHeaderCell>
+                <TableHeaderCell>DM language</TableHeaderCell>
               </TableRow>
             </TableHead>
             <TableBody>

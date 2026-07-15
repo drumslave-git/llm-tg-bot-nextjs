@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { updateGroupNotesSchema } from "./schema";
+import { updateGroupLanguageSchema, updateGroupNotesSchema } from "./schema";
 
 describe("updateGroupNotesSchema", () => {
   it("trims notes and keeps non-empty content", () => {
@@ -16,5 +16,16 @@ describe("updateGroupNotesSchema", () => {
   it("rejects notes longer than the limit", () => {
     const result = updateGroupNotesSchema.safeParse({ notes: "x".repeat(2001) });
     expect(result.success).toBe(false);
+  });
+});
+
+describe("updateGroupLanguageSchema", () => {
+  it("normalizes a language name", () => {
+    expect(updateGroupLanguageSchema.parse({ language: "  Ukrainian " }).language).toBe("Ukrainian");
+  });
+
+  it("clears blank language to null", () => {
+    expect(updateGroupLanguageSchema.parse({ language: "" }).language).toBeNull();
+    expect(updateGroupLanguageSchema.parse({ language: "   " }).language).toBeNull();
   });
 });

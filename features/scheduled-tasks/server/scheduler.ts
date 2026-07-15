@@ -3,9 +3,12 @@ import "server-only";
 import type { DrizzleDb } from "@/db/drizzle";
 import { getDb } from "@/db/drizzle";
 import { recordAssistantMessage } from "@/features/history/server/service";
+import { getGroupLanguage } from "@/features/known-groups/server/service";
+import { getUserLanguage } from "@/features/known-users/server/service";
 import { getActivePersonalityPrompt } from "@/features/personalities/server/service";
 import { getBotPolicy, getLlmRuntime, getTimezone } from "@/features/settings/server/service";
 import { FEATURES } from "@/lib/features";
+import { resolveRequiredLanguage } from "@/lib/language";
 import { chatCompletion, type ChatCompletionResult, type ChatMessage } from "@/server/llm/client";
 import {
   createIntervalScheduler,
@@ -84,8 +87,15 @@ export async function runDueScheduledTasks(deps: DueRunDeps): Promise<{ fired: n
   let fired = 0;
   let failed = 0;
   for (const task of due) {
+    // The fired message must be in the chat's configured language, like a normal
+    // reply. A private chat's id is the user id (positive); a group's is negative,
+    // so the sign selects which registry to read. Unset → the default language.
+    const storedLanguage = await (
+      task.chatId.startsWith("-") ? getGroupLanguage(task.chatId) : getUserLanguage(task.chatId)
+    ).catch(() => null);
     const result = await fireScheduledTask(task, {
       personalityPrompt: deps.personalityPrompt,
+      requiredLanguage: resolveRequiredLanguage(storedLanguage),
       complete: deps.complete,
       send: (text) => deps.send(task.chatId, text, { threadId: task.threadId }),
       recordReply: deps.recordReply,

@@ -1,9 +1,11 @@
 import { z } from "zod";
 
+import { languageField } from "@/lib/language";
+
 /**
  * Known-groups validation contract — the single source of truth for the shape of
- * a known group, its members, and operator note edits. Shared by the service,
- * Route Handlers, and the dashboard. Mirrors the known-users contract.
+ * a known group, its members, and operator note/language edits. Shared by the
+ * service, Route Handlers, and the dashboard. Mirrors the known-users contract.
  */
 
 /** A known group as returned to clients. */
@@ -12,6 +14,7 @@ export const knownGroupSchema = z.object({
   title: z.string().nullable(),
   type: z.string().nullable(),
   notes: z.string().nullable(),
+  language: z.string().nullable(),
   firstSeenAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
 });
@@ -58,3 +61,11 @@ export const updateGroupNotesSchema = z.object({
 });
 
 export type UpdateGroupNotes = z.infer<typeof updateGroupNotesSchema>;
+
+/**
+ * Language-edit input for a group: a free-text language name. Normalized; an
+ * empty result clears the configuration (stored null → default language).
+ */
+export const updateGroupLanguageSchema = z.object({ language: languageField });
+
+export type UpdateGroupLanguage = z.infer<typeof updateGroupLanguageSchema>;

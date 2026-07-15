@@ -18,6 +18,8 @@ export interface KnownUserRecord {
   firstName: string | null;
   lastName: string | null;
   aliases: string[];
+  /** Operator-configured reply language for this user's DM, or null (default). */
+  language: string | null;
   firstSeenAt: string;
   updatedAt: string;
 }
@@ -37,6 +39,7 @@ function mapRow(row: KnownUserRow): KnownUserRecord {
     firstName: row.firstName,
     lastName: row.lastName,
     aliases: row.aliases,
+    language: row.language,
     firstSeenAt: row.firstSeenAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -102,6 +105,23 @@ export async function setKnownUserAliases(
   const [row] = await db
     .update(knownUsers)
     .set({ aliases, updatedAt: new Date() })
+    .where(eq(knownUsers.userId, userId))
+    .returning();
+  return row ? mapRow(row) : null;
+}
+
+/**
+ * Set (or clear, with null) a user's operator-configured DM reply language.
+ * Returns the updated record, or null if the user is unknown.
+ */
+export async function setKnownUserLanguage(
+  db: DrizzleDb,
+  userId: string,
+  language: string | null,
+): Promise<KnownUserRecord | null> {
+  const [row] = await db
+    .update(knownUsers)
+    .set({ language, updatedAt: new Date() })
     .where(eq(knownUsers.userId, userId))
     .returning();
   return row ? mapRow(row) : null;

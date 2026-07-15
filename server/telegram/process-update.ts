@@ -24,9 +24,14 @@ import {
   recordIncomingMessage,
 } from "@/features/history/server/service";
 import { formatKnownUserLabel } from "@/features/known-users/format";
-import { getUserContext, rememberUser } from "@/features/known-users/server/service";
+import {
+  getUserContext,
+  getUserLanguage,
+  rememberUser,
+} from "@/features/known-users/server/service";
 import {
   getGroupContext,
+  getGroupLanguage,
   rememberGroupActivity,
 } from "@/features/known-groups/server/service";
 import { getMemoryContext } from "@/features/memory/server/service";
@@ -46,6 +51,7 @@ import {
 } from "@/features/self-improvement/server/service";
 import { pokeVisionBackfill } from "@/features/vision/server/backfill-scheduler";
 import { ApiError } from "@/lib/api-error";
+import { resolveRequiredLanguage } from "@/lib/language";
 import { chatCompletion, type ChatContentPart, type ChatMessage } from "@/server/llm/client";
 import { chatCompletionWithTools } from "@/server/llm/tool-loop";
 import { runWithToolContext } from "@/server/mcp/context";
@@ -104,6 +110,7 @@ function buildDeps(
   personalityPrompt: string | null,
   selfCorrection: string | null,
   timeContext: string | null,
+  requiredLanguage: string | null,
   visionAttachment: {
     imageParts: ChatContentPart[];
     note?: string;
@@ -133,6 +140,7 @@ function buildDeps(
     personalityPrompt,
     selfCorrection,
     timeContext,
+    requiredLanguage,
     // Called only for an addressed message about to be answered (after the
     // addressing/maintenance gates), so recognition here runs exactly when the
     // flow wants it: recognize → store in history → reply with images + result.
@@ -439,13 +447,19 @@ export async function processUpdate(
     hasVision: visionAttachment != null,
   };
 
-  const [policy, personalityPrompt, selfCorrection, timezone] = await Promise.all([
+  // The reply language for this chat: the group's setting for a group, the user's
+  // DM setting for a private chat (a private chat's id equals the user id). Falls
+  // back to the default when unset — the bot is always given a language directive.
+  const isGroup = chat.type !== "private";
+  const [policy, personalityPrompt, selfCorrection, timezone, storedLanguage] = await Promise.all([
     getBotPolicy(),
     getActivePersonalityPrompt(),
     getLatestSelfCorrectionPrompt().catch(() => null),
     getTimezone().catch(() => "UTC"),
+    (isGroup ? getGroupLanguage(chatId) : getUserLanguage(chatId)).catch(() => null),
   ]);
   const timeContext = buildTimeContext(new Date(), timezone);
+  const requiredLanguage = resolveRequiredLanguage(storedLanguage);
 
   // Recognition of the current message's media happens *before* the reply, inside
   // `loadVision` (only for an addressed message that also carries text): it is
@@ -461,6 +475,7 @@ export async function processUpdate(
       personalityPrompt,
       selfCorrection,
       timeContext,
+      requiredLanguage,
       visionAttachment,
       overrides,
     ),

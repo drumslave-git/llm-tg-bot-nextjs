@@ -5,6 +5,7 @@ import type { Message } from "@grammyjs/types";
 import type { DrizzleDb } from "@/db/drizzle";
 import { getDb } from "@/db/drizzle";
 import { FEATURES } from "@/lib/features";
+import { buildLanguageInstruction } from "@/lib/language";
 import type { ChatContentPart, ChatMessage, ChatUsage } from "@/server/llm/client";
 import { sanitizeMessagesForTrace } from "@/server/llm/client";
 import { startTrace } from "@/server/trace";
@@ -170,6 +171,13 @@ export interface BotMessagingDeps {
    * "tomorrow"). Null/absent → no time line (older tests, or when unavailable).
    */
   timeContext?: string | null;
+  /**
+   * The reply language required for this chat (the operator-configured language,
+   * or the default). Injected as a strict system directive as the final message
+   * before the current turn, so the bot always replies in this language. Null/
+   * absent → no directive (older tests); the runtime always resolves a value.
+   */
+  requiredLanguage?: string | null;
   db?: DrizzleDb;
 }
 
@@ -401,6 +409,23 @@ export async function handleIncomingMessage(
         });
       }
 
+      // Required reply language — a strict directive injected as the final system
+      // message before the current turn (maximum recency, so it overrides the
+      // language of the message, history, tool output, and personality). The
+      // runtime always resolves a value (operator-configured or the default), so
+      // the bot's reply language is controlled by configuration, not by whatever
+      // language the user wrote in. Recorded for debug.
+      const languageInstruction = deps.requiredLanguage?.trim()
+        ? buildLanguageInstruction(deps.requiredLanguage)
+        : null;
+      if (languageInstruction) {
+        await trace.event({
+          type: "step",
+          message: "language directive",
+          data: { requiredLanguage: deps.requiredLanguage, instruction: languageInstruction },
+        });
+      }
+
       const messages: ChatMessage[] = [
         { role: "system", content: systemPrompt },
         ...(chatContext ? [{ role: "system" as const, content: chatContext.content }] : []),
@@ -411,6 +436,9 @@ export async function handleIncomingMessage(
         ...(addressingHint ? [{ role: "system" as const, content: addressingHint }] : []),
         ...history.messages,
         ...(deps.timeContext ? [{ role: "system" as const, content: deps.timeContext }] : []),
+        ...(languageInstruction
+          ? [{ role: "system" as const, content: languageInstruction }]
+          : []),
         { role: "user", content: userContent },
       ];
       // 4. LLM request — full request body (recorded before the call so the

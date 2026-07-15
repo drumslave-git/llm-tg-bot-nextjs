@@ -15,11 +15,17 @@ import {
   getKnownUsersByIds,
   listKnownUsers,
   setKnownUserAliases,
+  setKnownUserLanguage,
   upsertKnownUser,
   type KnownUserRecord,
   type TelegramUserProfile,
 } from "./repository";
-import { updateAliasesSchema, type KnownUser, type UpdateAliases } from "./schema";
+import {
+  updateAliasesSchema,
+  type KnownUser,
+  type UpdateAliases,
+  type UpdateUserLanguage,
+} from "./schema";
 
 /**
  * Known-users domain service — the boundary Route Handlers, Server Components,
@@ -229,6 +235,51 @@ export async function addAliasByReference(
     await trace.fail(err);
     throw err;
   }
+}
+
+/** Replace a user's operator-configured DM reply language, recorded as a trace. */
+export async function updateLanguage(
+  userId: string,
+  input: UpdateUserLanguage,
+  trigger: TraceTrigger,
+  db: DrizzleDb = getDb(),
+): Promise<KnownUser> {
+  const trace = await startTrace(
+    { feature: FEATURE.id, action: "update-language", trigger, inputSummary: `user ${userId}` },
+    db,
+  );
+  try {
+    await trace.event({
+      type: "input",
+      message: "language update",
+      data: { userId, language: input.language },
+    });
+    const record = await setKnownUserLanguage(db, userId, input.language);
+    if (!record) throw ApiError.notFound("Unknown user");
+    await trace.event({ type: "db", message: "language updated" });
+    publishEvent(FEATURE.realtimeTopic);
+    await trace.succeed({
+      outputSummary: input.language ? `language set to ${input.language}` : "language cleared",
+      relatedIds: { [FEATURE.relatedIdsKey]: [userId] },
+    });
+    return toClient(record);
+  } catch (err) {
+    await trace.fail(err);
+    throw err;
+  }
+}
+
+/**
+ * Server-only: the operator-configured reply language for a user's private (DM)
+ * chat, or null when none is set (the runtime falls back to the default). Read on
+ * the message path — a private chat's id equals the user id.
+ */
+export async function getUserLanguage(
+  userId: string,
+  db: DrizzleDb = getDb(),
+): Promise<string | null> {
+  const user = await getKnownUser(db, userId);
+  return user?.language ?? null;
 }
 
 /** Replace a known user's alias list, recorded as a trace. */

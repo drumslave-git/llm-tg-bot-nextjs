@@ -5,6 +5,7 @@ import { getDb } from "@/db/drizzle";
 import { formatReply } from "@/features/bot-messaging/server/reply";
 import { buildSystemPrompt } from "@/features/bot-messaging/server/prompt";
 import { FEATURES } from "@/lib/features";
+import { buildLanguageInstruction } from "@/lib/language";
 import type { ChatCompletionResult, ChatMessage } from "@/server/llm/client";
 import { sanitizeMessagesForTrace } from "@/server/llm/client";
 import { startTrace } from "@/server/trace";
@@ -30,6 +31,12 @@ const FEATURE = FEATURES["scheduled-tasks"];
 export interface FireDeps {
   /** The active personality prompt to compose into the system prompt, or null. */
   personalityPrompt: string | null;
+  /**
+   * The reply language required for this task's chat (operator-configured, or the
+   * default). Injected as a strict directive before the task directive so the
+   * fired message is in the chat's language. Null/absent → no directive.
+   */
+  requiredLanguage?: string | null;
   /** Generate the task message. Throws on provider/config failure. */
   complete: (messages: ChatMessage[]) => Promise<ChatCompletionResult>;
   /** Deliver the message to the chat; resolves the delivered Telegram message id. */
@@ -100,8 +107,14 @@ export async function fireScheduledTask(task: ScheduledTask, deps: FireDeps): Pr
     db,
   );
   try {
+    const languageInstruction = deps.requiredLanguage?.trim()
+      ? buildLanguageInstruction(deps.requiredLanguage)
+      : null;
     const messages: ChatMessage[] = [
       { role: "system", content: buildSystemPrompt({ personalityPrompt: deps.personalityPrompt }) },
+      ...(languageInstruction
+        ? [{ role: "system" as const, content: languageInstruction }]
+        : []),
       { role: "user", content: buildTaskDirectiveMessage(task.instruction, task.recentDeliveries ?? []) },
     ];
     await trace.event({
