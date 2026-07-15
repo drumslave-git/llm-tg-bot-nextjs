@@ -1,6 +1,10 @@
 import "server-only";
 
 import {
+  startAnalyticsScheduler,
+  stopAnalyticsScheduler,
+} from "@/features/analytics/server/scheduler";
+import {
   startSummaryScheduler,
   stopSummaryScheduler,
 } from "@/features/history/server/summary-scheduler";
@@ -32,6 +36,7 @@ export function registerNode(): void {
     stopSelfImprovementScheduler();
     stopSummaryScheduler();
     stopMemoryScheduler();
+    stopAnalyticsScheduler();
     await Promise.race([
       stopBot().catch(() => undefined),
       new Promise((resolve) => setTimeout(resolve, 3000)),
@@ -69,6 +74,12 @@ export function registerNode(): void {
   // this runs — replies fold the pending queue in — so nothing due, or no LLM
   // configured, settles as a harmless no-op.
   startMemoryScheduler();
+
+  // Start the daily analytics-insight poller. At its configured local run time it
+  // scores each finished chat-day's mood + top topic and rolls up the touched
+  // month/year/all-time periods (word of the period, top topic). The numeric
+  // charts don't wait for it; nothing due, or no LLM configured, is a no-op.
+  startAnalyticsScheduler();
 
   // Fire-and-forget: do not block server startup on the Telegram handshake.
   void startBot().then((status) => {

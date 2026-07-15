@@ -530,9 +530,10 @@ Priority order:
 | 8 | Vision backfill background job | Background processing for older/unprocessed media with status, locking, debug traces, and log download. |
 | 9 | Scheduled tasks feature | User-configurable scheduled tasks with execution traces, status, idempotency, and dashboard controls. |
 | 10 | Memory feature | Extract, store, edit, retrieve, and inject memories with traceable extraction and update flows. |
-| 11 | Image generation | Generate images through configured provider/tooling with dashboard/debug visibility and downloadable traces. |
-| 12 | Browser agent feature | Browser-agent runs with queue/status, step traces, artifacts/downloads, and a dedicated Debug page. |
-| 13 | Mood feature | Mood/personality state, mood injection into replies, dashboard controls, and debug traces. **De-prioritized to lowest by the user (2026-07-14).** |
+| 11 | Analytics dashboard | Rich stats dashboard (ECharts): message/character/user/model metrics live per hour/day/month/year/all-time with per-chat and per-user drill-down, plus LLM-derived chat mood, deterministic health, word of the period, and most-discussed topic from a nightly insight job. **Inserted ahead of Image generation by the user (2026-07-15).** |
+| 12 | Image generation | Generate images through configured provider/tooling with dashboard/debug visibility and downloadable traces. |
+| 13 | Browser agent feature | Browser-agent runs with queue/status, step traces, artifacts/downloads, and a dedicated Debug page. |
+| 14 | Mood feature | Mood/personality state, mood injection into replies, dashboard controls, and debug traces. **De-prioritized to lowest by the user (2026-07-14).** |
 
 Feature dependency notes:
 
@@ -541,6 +542,7 @@ Feature dependency notes:
 - Vision backfill depends on bot vision/media persistence.
 - Mood and memory both depend on prompt composition and history.
 - Scheduled tasks must use the shared background-job operating model from Phase 8.
+- Analytics dashboard depends on history (message mirror + daily summaries), shared traces (for model speed/token usage), the shared background-job model (nightly insight job), and shared Debug/SSE/job-card UI. Numeric metrics are aggregated live from the base tables; only the LLM-derived insight (mood/word/topic) is precomputed.
 - Browser agent must not be started until the shared job/status/debug/log-export patterns exist.
 - Features not listed in this priority table are not v1 by default. If another MVP capability, such as summaries or maintenance controls, is needed in v1, add it to this table with an explicit priority, acceptance criteria, and dependencies before implementation.
 

@@ -134,6 +134,13 @@
       "when": 1784126443651,
       "tag": "0018_small_baron_strucker",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1784132691139,
+      "tag": "0019_crazy_skullbuster",
+      "breakpoints": true
     }
   ]
 }

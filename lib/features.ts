@@ -110,6 +110,19 @@ export const FEATURES = {
     relatedIdsKey: "memory",
     path: "/memory",
   },
+  analytics: {
+    id: "analytics",
+    label: "Analytics",
+    realtimeTopic: "analytics",
+    path: "/analytics",
+  },
+  "analytics-insights": {
+    id: "analytics-insights",
+    label: "Analytics insights",
+    realtimeTopic: "analytics",
+    relatedIdsKey: "chat_day_insights",
+    path: "/analytics",
+  },
 
   // Per-tool trace scopes. Every MCP tool call is recorded under
   // `mcp-tools-<owning-feature>` (see `server/mcp/tool-trace.ts`), so each tool

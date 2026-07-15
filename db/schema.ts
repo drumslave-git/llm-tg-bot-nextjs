@@ -743,6 +743,100 @@ export const generalMemories = pgTable(
 export type GeneralMemoryRow = typeof generalMemories.$inferSelect;
 export type GeneralMemoryInsert = typeof generalMemories.$inferInsert;
 
+/**
+ * One chat's LLM-derived analytics insight for one day — the base grain of the
+ * analytics feature's expensive pass (mood + top topic), computed by the nightly
+ * insights job from that day's transcript (and the existing {@link chatSummaries}).
+ *
+ * Numeric analytics (message/char/token/latency volumes) are NOT stored — they are
+ * aggregated live with SQL over the base tables, which is exact and self-healing.
+ * Only these LLM-derived fields, which cost tokens and cannot be recomputed per
+ * page view, are precomputed here.
+ *
+ * `message_count` is the self-heal trigger (mirrors {@link chatSummaryDays}): the
+ * job recomputes a day whose live message count no longer matches the stored one
+ * (a late edit or CSV import), and skips an unchanged day. The job fails closed —
+ * an unusable model response leaves the existing row untouched. `model` is the
+ * clean model name (`normalizeModelName`); informational only.
+ */
+export const chatDayInsights = pgTable(
+  "chat_day_insights",
+  {
+    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    /** Telegram chat/group id this insight belongs to. */
+    chatId: text("chat_id").notNull(),
+    /** The insight day (`YYYY-MM-DD`) as a wall-clock date in the operator timezone. */
+    insightDate: text("insight_date").notNull(),
+    /** Mood score 0 (very negative) – 100 (very positive) for the day's conversation. */
+    moodScore: integer("mood_score").notNull(),
+    /** Short mood label (e.g. `positive`, `tense`). */
+    moodLabel: text("mood_label").notNull(),
+    /** One-sentence justification of the mood, for the dashboard. */
+    moodSummary: text("mood_summary").notNull(),
+    /** The single most-discussed topic of the day, as named by the model. */
+    topTopic: text("top_topic").notNull(),
+    /** Messages the day held when it was scored (the re-run trigger). */
+    messageCount: integer("message_count").notNull(),
+    /** Clean model name that produced this insight (informational). */
+    model: text("model").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("chat_day_insights_chat_date_idx").on(t.chatId, t.insightDate)],
+);
+
+export type ChatDayInsightRow = typeof chatDayInsights.$inferSelect;
+export type ChatDayInsightInsert = typeof chatDayInsights.$inferInsert;
+
+/**
+ * The period roll-up of analytics insight — "word of the period", top topic, and
+ * an aggregate mood — for a month / year / all-time bucket, either globally or for
+ * one chat. Produced by the same nightly job after the day rows are fresh: the
+ * mood is a message-weighted average of the period's {@link chatDayInsights}
+ * (deterministic), while the word and topic are one cheap LLM pass over the
+ * period (user decision: both via LLM).
+ *
+ * `chat_id` is `''` for a global row (scope `global`) and the real chat id for a
+ * per-chat row (scope `chat`) — an empty sentinel rather than null so the unique
+ * key is a clean upsert target. `message_count` self-heals the period like the day
+ * rows.
+ */
+export const periodInsights = pgTable(
+  "period_insights",
+  {
+    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    /** `month` | `year` | `all`. */
+    granularity: text("granularity").notNull(),
+    /** Bucket key: `YYYY-MM` (month), `YYYY` (year), or `all`. */
+    bucket: text("bucket").notNull(),
+    /** `global` (all chats) or `chat` (one chat). */
+    scope: text("scope").notNull(),
+    /** Real chat id for scope `chat`; `''` for scope `global`. */
+    chatId: text("chat_id").notNull().default(""),
+    /** The standout word of the period, as named by the model. */
+    wordOfPeriod: text("word_of_period").notNull(),
+    /** The most-discussed topic across the period, as named by the model. */
+    topTopic: text("top_topic").notNull(),
+    /** Message-weighted average mood 0–100 across the period's day rows. */
+    moodScore: integer("mood_score").notNull(),
+    /** Aggregate mood label. */
+    moodLabel: text("mood_label").notNull(),
+    /** Day rows that fed this roll-up. */
+    sourceDays: integer("source_days").notNull(),
+    /** Messages across the period when it was computed (the re-run trigger). */
+    messageCount: integer("message_count").notNull(),
+    /** Clean model name that produced the word/topic (informational). */
+    model: text("model").notNull(),
+    computedAt: timestamp("computed_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("period_insights_key_idx").on(t.granularity, t.bucket, t.scope, t.chatId),
+  ],
+);
+
+export type PeriodInsightRow = typeof periodInsights.$inferSelect;
+export type PeriodInsightInsert = typeof periodInsights.$inferInsert;
+
 export type TraceRow = typeof traces.$inferSelect;
 export type TraceInsert = typeof traces.$inferInsert;
 export type TraceEventRow = typeof traceEvents.$inferSelect;

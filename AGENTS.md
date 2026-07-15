@@ -104,9 +104,10 @@ Current priority order:
 8. Vision backfill background job
 9. Scheduled tasks feature
 10. Memory feature
-11. Image generation
-12. Browser agent feature
-13. Mood feature (de-prioritized to lowest by the user, 2026-07-14)
+11. Analytics dashboard (inserted ahead of Image generation by the user, 2026-07-15)
+12. Image generation
+13. Browser agent feature
+14. Mood feature (de-prioritized to lowest by the user, 2026-07-14)
 
 Features not listed there are not v1 by default. Add a feature to the tracker
 with explicit priority, acceptance criteria, and dependencies before

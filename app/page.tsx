@@ -1,4 +1,4 @@
-import { Bug, Settings as SettingsIcon } from "lucide-react";
+import { BarChart3, Settings as SettingsIcon } from "lucide-react";
 import Link from "next/link";
 
 import {
@@ -9,7 +9,6 @@ import {
   CardDescription,
   CardHeader,
   CardTitle,
-  EmptyState,
   PageHeader,
   StatusCard,
   type StatusTone,
@@ -134,14 +133,24 @@ export default async function OverviewPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Recent activity</CardTitle>
+          <div>
+            <CardTitle>Activity & insights</CardTitle>
+            <CardDescription>
+              Traffic, model performance, mood, and health — with per-chat and per-user drill-down.
+            </CardDescription>
+          </div>
+          <Button asChild variant="outline" size="sm" leftIcon={<BarChart3 className="h-4 w-4" />}>
+            <Link href="/analytics">Open Analytics</Link>
+          </Button>
         </CardHeader>
         <CardContent>
-          <EmptyState
-            icon={Bug}
-            title="No trace viewer yet"
-            description="Settings changes and connection tests are already recorded as traces; a Debug page to browse them is coming next."
-          />
+          <p className="text-sm text-muted">
+            Every traced action is also browsable on the{" "}
+            <Link href="/debug" className="text-primary hover:underline">
+              Debug
+            </Link>{" "}
+            page.
+          </p>
         </CardContent>
       </Card>
     </>
