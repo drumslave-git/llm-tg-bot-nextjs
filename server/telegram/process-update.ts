@@ -260,7 +260,7 @@ function buildDeps(
     },
     generateReply:
       overrides?.generateReply ??
-      (async (messages: ChatMessage[], onToolCall) => {
+      (async (messages: ChatMessage[], onToolCall, onRequest) => {
         const runtime = await getLlmRuntime();
         if (!runtime) {
           throw ApiError.serviceUnavailable(
@@ -272,7 +272,7 @@ function buildDeps(
         // that needs no tool still costs one inference even when tools are offered.
         const toolset = await getToolset();
         if (!toolset) {
-          return chatCompletion(conn, { model: runtime.model, messages });
+          return chatCompletion(conn, { model: runtime.model, messages, onRequest });
         }
         // Run the tool-call loop with the current chat bound, so tools only ever
         // read this conversation's data. The sender + thread are bound too, so a
@@ -283,6 +283,7 @@ function buildDeps(
             messages,
             tools: toolset.tools,
             callTool: toolset.callTool,
+            onRequest,
             onToolCall: (rec) =>
               onToolCall?.({ name: rec.name, args: rec.args, result: rec.result, ok: rec.ok }),
           }),

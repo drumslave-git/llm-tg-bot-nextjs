@@ -2,6 +2,7 @@ import { describe, it } from "vitest";
 
 import {
   expectToolCalled,
+  expectToolNotCalled,
   LLM_LIVE,
   runToolSelection,
   TOOL_SELECTION_TIMEOUT,
@@ -25,6 +26,20 @@ describe.skipIf(!LLM_LIVE)("link-fetch MCP tool selection (live)", () => {
         userText: "Have a look at https://example.com/article and tell me what it's about.",
       });
       expectToolCalled(run, "read_page");
+    },
+    TOOL_SELECTION_TIMEOUT,
+  );
+
+  it(
+    "reads (not searches) a bare URL the user drops in with 'what's this'",
+    async () => {
+      // Regression: a bare URL + "tell me what's there" must read the page,
+      // not fire a web search for it (the URL is already known).
+      const run = await runToolSelection({
+        userText: "https://example.com/package/some-lib tell me what's there",
+      });
+      expectToolCalled(run, "read_page");
+      expectToolNotCalled(run, "search_web");
     },
     TOOL_SELECTION_TIMEOUT,
   );

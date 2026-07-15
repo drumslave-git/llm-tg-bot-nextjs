@@ -40,7 +40,12 @@ function deps(over: Partial<BotMessagingDeps> = {}): BotMessagingDeps {
   return {
     bot: BOT,
     policy: OPEN_POLICY,
-    generateReply: vi.fn().mockResolvedValue({ content: "hi back", model: "m", latencyMs: 5 }),
+    // Mirror the real generator: report the request body (via onRequest) before
+    // returning, so the reply trace records the "request" event like production.
+    generateReply: vi.fn().mockImplementation(async (messages, _onToolCall, onRequest) => {
+      await onRequest?.({ model: "m", messages });
+      return { content: "hi back", model: "m", latencyMs: 5 };
+    }),
     sendReply: vi.fn().mockResolvedValue({ messageId: 99 }),
     loadHistory: vi.fn().mockResolvedValue({ messages: [], count: 0 }),
     recordReply: vi.fn().mockResolvedValue(undefined),
@@ -461,9 +466,10 @@ describe("handleIncomingMessage", () => {
     const reply = "y".repeat(300);
     const responseBody = { id: "cmpl-1", choices: [{ message: { content: reply } }] };
     const d = deps({
-      generateReply: vi
-        .fn()
-        .mockResolvedValue({ content: reply, model: "m", latencyMs: 5, responseBody }),
+      generateReply: vi.fn().mockImplementation(async (messages, _onToolCall, onRequest) => {
+        await onRequest?.({ model: "m", messages });
+        return { content: reply, model: "m", latencyMs: 5, responseBody };
+      }),
     });
     await handleIncomingMessage(incoming({ text: longText }), d);
 
@@ -486,7 +492,9 @@ describe("handleIncomingMessage", () => {
     // Addressing check is a passed check (green).
     expect(byMessage("addressing check").level).toBe("success");
     expect(byMessage("addressing check").data).toEqual({ addressed: true, reason: "private" });
-    // Request body carries the full messages payload.
+    // Request event carries the whole request body (model + full messages), not
+    // just the messages — the exact object the generator sent to the provider.
+    expect(byMessage("request").data.model).toBe("m");
     expect(byMessage("request").data.messages[1]).toEqual({ role: "user", content: longText });
     // Response step records the raw provider body verbatim.
     expect(byMessage("response").data).toEqual(responseBody);
@@ -497,7 +505,10 @@ describe("handleIncomingMessage", () => {
   it("records tool calls reported by the generator as external_call events on the reply trace", async () => {
     // A generator that runs one tool before answering, via the onToolCall sink.
     const d = deps({
-      generateReply: vi.fn().mockImplementation(async (_messages, onToolCall) => {
+      generateReply: vi.fn().mockImplementation(async (messages, onToolCall, onRequest) => {
+        // Report the request first (as production does), then the tool call, so the
+        // trace order is request → tool → response.
+        await onRequest?.({ model: "m", messages });
         await onToolCall?.({
           name: "history_search",
           args: { query: "pizza" },

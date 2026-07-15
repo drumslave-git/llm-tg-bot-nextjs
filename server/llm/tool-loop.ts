@@ -213,6 +213,8 @@ export async function chatCompletionWithTools(
     tools: ChatCompletionTool[];
     callTool: (name: string, args: Record<string, unknown>) => Promise<McpToolCallResult>;
     onToolCall?: (record: ToolCallRecord) => void | Promise<void>;
+    /** Reports the exact initial request body just before the first round is sent. */
+    onRequest?: (requestBody: unknown) => void | Promise<void>;
     maxRounds?: number;
     timeoutMs?: number;
   },
@@ -221,6 +223,11 @@ export async function chatCompletionWithTools(
   const requestBody = { model: input.model, messages: seed, tools: input.tools };
   const client = createOpenAiClient(conn);
   const timeout = input.timeoutMs ?? CHAT_COMPLETION_TIMEOUT_MS;
+
+  // Report the initial request body (model + messages + tools) before the first
+  // round so the trace records what the model was actually sent, in order — the
+  // request precedes any tool-call events the loop then produces.
+  await input.onRequest?.(requestBody);
 
   const complete: CompleteRound = async (conversation) => {
     const start = Date.now();

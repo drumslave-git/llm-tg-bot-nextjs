@@ -2426,6 +2426,38 @@ No blockers recorded.
 - Do not copy MVP modules by default.
 - Keep shared patterns ahead of feature-specific code.
 
+### Fix: trace tools + web-search-over-read + memory_save subject binding (2026-07-15)
+
+Three issues surfaced from live reply traces (`b8cb05c3…`, `be32b8ad…`):
+
+- **Request trace was pieces, not the full body.** The `llm_request` event recorded
+  only `messages` (no `model`/`tools`); the real body is built behind the
+  `generateReply` boundary. Fix: `chatCompletion` + `chatCompletionWithTools` gained
+  an `onRequest(requestBody)` hook that fires with the exact body just before the
+  provider call; `generateReply` threads it through, and the bot-messaging service
+  records that whole body verbatim (symmetric with how `responseBody` is recorded),
+  via new `sanitizeRequestBodyForTrace` (spreads the body, redacts only inline image
+  bytes in `messages` per `vision-image-bytes-redacted-in-traces`). Firing before the
+  provider call keeps event order (request → tool calls → response) and latency
+  accurate. Honors `debug-show-full-raw-bodies`.
+- **`search_web` chosen when a specific URL was already given.** `read_page` was
+  offered but `search_web`'s description didn't exclude the known-URL case. Fix:
+  tightened `SEARCH_WEB_DESCRIPTION` to "discover pages when you do not already have
+  a URL" + an explicit "do NOT open a URL already in the conversation" (no
+  cross-tool naming — `tools-self-describe-atomic`). New live regression case in
+  `link-fetch/…/tool-selection.integration.test.ts`.
+- **`memory_save` broken.** Tool told the model to pass "their numeric id from the
+  conversation context," but no numeric id is ever injected → model hallucinated a
+  `user_id` from the sender's @username → service rejected it. Fix (user decision: *resolve from
+  context / bind sender*): `memory_save`/`memory_get` now take an optional `person`
+  (name/@username, never an id); omitted → the bound speaker (`McpToolContext.userId`),
+  named → resolved against chat participants via the new shared
+  `resolveChatUserByReference` (extracted from `addAliasByReference`, which now reuses
+  it). Descriptions rewritten to drop the numeric-id demand.
+- **Proof:** `npm run lint` clean, `npm run typecheck` clean, `npm run test`
+  **355 unit** pass. Not yet verified live against a real Telegram reply; the
+  `LLM_LIVE=1` tool-selection cases and a fresh reply trace are the live checks.
+
 ### Fix: model claimed a tool action it did not take (2026-07-13)
 
 - **Symptom:** in a private chat the bot replied "Записав" (recorded) to a user

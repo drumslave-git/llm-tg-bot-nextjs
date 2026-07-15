@@ -86,6 +86,20 @@ export function sanitizeMessagesForTrace(messages: ChatMessage[]): ChatMessage[]
   });
 }
 
+/**
+ * Redact a full chat-completion request body for trace recording: the exact
+ * object sent to the provider (`model`, `messages`, `tools`, and any other params)
+ * is preserved verbatim except that inline image bytes in `messages` are swapped
+ * for a compact `data:<mime>;base64,<N bytes>` marker (see
+ * {@link sanitizeMessagesForTrace}). Non-object bodies pass through unchanged.
+ */
+export function sanitizeRequestBodyForTrace<T>(body: T): T {
+  if (!body || typeof body !== "object") return body;
+  const messages = (body as { messages?: unknown }).messages;
+  if (!Array.isArray(messages)) return body;
+  return { ...body, messages: sanitizeMessagesForTrace(messages as ChatMessage[]) };
+}
+
 /** Normalize any base URL to its OpenAI-compatible `/v1` form. */
 export function toOpenAiBaseUrl(base: string): string {
   const host = base.trim().replace(/\/+$/, "");
@@ -157,7 +171,13 @@ export async function listModels(
  */
 export async function chatCompletion(
   conn: LlmConnection,
-  input: { model: string; messages: ChatMessage[]; timeoutMs?: number },
+  input: {
+    model: string;
+    messages: ChatMessage[];
+    timeoutMs?: number;
+    /** Reports the exact request body just before it is sent (for trace recording). */
+    onRequest?: (requestBody: unknown) => void | Promise<void>;
+  },
 ): Promise<ChatCompletionResult> {
   const requestBody = {
     model: input.model,
@@ -165,6 +185,7 @@ export async function chatCompletion(
   };
   const start = Date.now();
   try {
+    await input.onRequest?.(requestBody);
     const completion = await createOpenAiClient(conn).chat.completions.create(requestBody, {
       timeout: input.timeoutMs ?? CHAT_COMPLETION_TIMEOUT_MS,
     });

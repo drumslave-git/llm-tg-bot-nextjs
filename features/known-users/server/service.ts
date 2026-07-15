@@ -154,6 +154,35 @@ function ownNames(user: KnownUserRecord): Set<string> {
   return out;
 }
 
+/**
+ * Outcome of resolving a name reference to a single participant of a chat. Shared
+ * by every context-bound tool that lets the model name a person by a name it
+ * already sees (aliases, memory) rather than a numeric id it does not have.
+ */
+export type ResolveChatUserResult =
+  | { status: "matched"; user: KnownUserRecord }
+  | { status: "not_found" }
+  | { status: "ambiguous"; count: number };
+
+/**
+ * Server-only: resolve a name reference (first name, @username, or known nickname)
+ * to a single participant of `chatId`. Chat-scoped — only people who have messaged
+ * in this chat can match — so a tool can never touch an unrelated user. Returns the
+ * lone match, or `not_found`/`ambiguous` for the caller to surface to the model.
+ */
+export async function resolveChatUserByReference(
+  chatId: string,
+  reference: string,
+  db: DrizzleDb = getDb(),
+): Promise<ResolveChatUserResult> {
+  const participantIds = await getChatParticipantIds(db, chatId);
+  const users = await getKnownUsersByIds(db, participantIds);
+  const matches = matchUsersByReference(users, reference);
+  if (matches.length === 0) return { status: "not_found" };
+  if (matches.length > 1) return { status: "ambiguous", count: matches.length };
+  return { status: "matched", user: matches[0] };
+}
+
 /** Outcome of an alias-from-reference update, mapped by the tool to a reply. */
 export type AddAliasByReferenceResult =
   | { status: "updated"; user: KnownUser; added: string[] }
@@ -185,20 +214,17 @@ export async function addAliasByReference(
       data: { reference: params.reference, aliases: params.aliases },
     });
 
-    const participantIds = await getChatParticipantIds(db, params.chatId);
-    const users = await getKnownUsersByIds(db, participantIds);
-    const matches = matchUsersByReference(users, params.reference);
-
-    if (matches.length === 0) {
+    const resolved = await resolveChatUserByReference(params.chatId, params.reference, db);
+    if (resolved.status === "not_found") {
       await trace.skip(`no participant matches "${params.reference}"`);
       return { status: "not_found" };
     }
-    if (matches.length > 1) {
-      await trace.skip(`"${params.reference}" is ambiguous — ${matches.length} matches`);
-      return { status: "ambiguous", count: matches.length };
+    if (resolved.status === "ambiguous") {
+      await trace.skip(`"${params.reference}" is ambiguous — ${resolved.count} matches`);
+      return { status: "ambiguous", count: resolved.count };
     }
 
-    const user = matches[0];
+    const user = resolved.user;
     const known = ownNames(user);
     // Aliases are plain names — strip a leading `@` so "@alice" is recognized as
     // the (already-known) username rather than stored as a distinct nickname.

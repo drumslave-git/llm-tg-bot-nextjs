@@ -18,10 +18,12 @@ export const SEARCH_WEB_TOOL = "search_web";
 export const WEB_SEARCH_TOOL_NAMES = [SEARCH_WEB_TOOL];
 
 const SEARCH_WEB_DESCRIPTION =
-  "Search the public web via Tavily and return a summary with sources. " +
+  "Search the public web via Tavily to DISCOVER pages when you do not already have a specific URL. " +
   "ONLY call when the user explicitly asks you to search the web, look something up online, " +
   "verify a claim, or check current facts. " +
-  "Do NOT use for casual chat, general knowledge, or opinions the user did not ask you to verify.";
+  "Do NOT use for casual chat, general knowledge, or opinions the user did not ask you to verify. " +
+  "Do NOT use to open a specific web page the user already gave you or that is already in the " +
+  "conversation — a known URL should be read directly, not searched for.";
 
 /** Structured payload returned alongside the text summary. */
 const searchWebOutputSchema = {

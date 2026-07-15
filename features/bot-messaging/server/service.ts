@@ -7,7 +7,7 @@ import { getDb } from "@/db/drizzle";
 import { FEATURES } from "@/lib/features";
 import { buildLanguageInstruction } from "@/lib/language";
 import type { ChatContentPart, ChatMessage, ChatUsage } from "@/server/llm/client";
-import { sanitizeMessagesForTrace } from "@/server/llm/client";
+import { sanitizeRequestBodyForTrace } from "@/server/llm/client";
 import { startTrace } from "@/server/trace";
 import { checkAddressed, type AddressSource, type BotIdentity } from "./addressing";
 import { checkMaintenance, isOwner, type BotPolicy } from "./policy";
@@ -81,13 +81,15 @@ export interface ReplyToolCall {
 export interface BotMessagingDeps {
   bot: BotIdentity;
   /**
-   * Generate assistant reply text. Throws on provider/config failure. When tools
-   * are enabled the generator runs a tool-call loop and reports each executed
-   * call via `onToolCall`, so the service records them on the reply trace.
+   * Generate assistant reply text. Throws on provider/config failure. Reports the
+   * exact request body it sends via `onRequest` (recorded verbatim as the full
+   * request trace — model, messages, and tools, not just pieces) and each executed
+   * tool call via `onToolCall`, so the service records both on the reply trace.
    */
   generateReply: (
     messages: ChatMessage[],
     onToolCall?: (call: ReplyToolCall) => void | Promise<void>,
+    onRequest?: (requestBody: unknown) => void | Promise<void>,
   ) => Promise<GeneratedReply>;
   /** Deliver a reply back to the originating chat; resolves with its delivered id. */
   sendReply: (text: string) => Promise<SentMessage>;
@@ -441,26 +443,32 @@ export async function handleIncomingMessage(
           : []),
         { role: "user", content: userContent },
       ];
-      // 4. LLM request — full request body (recorded before the call so the
-      // response step's elapsed time reflects real provider latency). Inline
-      // image bytes are replaced with a compact marker (the real image is on the
-      // Vision page); all readable content is kept verbatim.
-      await trace.event({
-        type: "llm_request",
-        message: "request",
-        data: { messages: sanitizeMessagesForTrace(messages) },
-      });
-
-      // Record each tool call the generator runs (if any) as it happens, so the
-      // reply trace shows the full tool-call loop between request and response.
-      const reply = await deps.generateReply(messages, async (call) => {
-        await trace.event({
-          type: "external_call",
-          level: call.ok ? "info" : "warn",
-          message: `tool: ${call.name}`,
-          data: { args: call.args, result: call.result },
-        });
-      });
+      // 4. LLM request + tool calls. The generator reports the exact request body
+      // it sends (via onRequest, before the provider call so the response step's
+      // elapsed time reflects real provider latency) and each tool call it runs
+      // (via onToolCall, as it happens). Recording both here keeps the trace's
+      // event flow ordered — request, then any tool calls, then the response — and
+      // the request is the *whole* body the model saw (model, messages, tools), not
+      // hand-picked fields. Inline image bytes are replaced with a compact marker
+      // (the real image is on the Vision page); all other content is verbatim.
+      const reply = await deps.generateReply(
+        messages,
+        async (call) => {
+          await trace.event({
+            type: "external_call",
+            level: call.ok ? "info" : "warn",
+            message: `tool: ${call.name}`,
+            data: { args: call.args, result: call.result },
+          });
+        },
+        async (requestBody) => {
+          await trace.event({
+            type: "llm_request",
+            message: "request",
+            data: sanitizeRequestBodyForTrace(requestBody),
+          });
+        },
+      );
       // 4. LLM response — full raw response body + model/token stats.
       await trace.event({
         type: "llm_response",

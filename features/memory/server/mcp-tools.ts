@@ -3,6 +3,7 @@ import "server-only";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
+import { resolveChatUserByReference } from "@/features/known-users/server/service";
 import { getToolContext } from "@/server/mcp/context";
 
 import { MAX_FACT_LENGTH, MIN_FACT_LENGTH } from "../prompt";
@@ -16,10 +17,45 @@ import { readMemory, saveMemoryNote, searchMemory } from "./service";
  *
  * The current chat and speaker come from the per-turn tool context, never from
  * the model — a tool cannot be talked into writing memory into another
- * conversation. The person a `user` fact is *about* IS a model argument, because
- * a fact can legitimately be about someone else in a group; the service checks
- * the id against known users before storing it.
+ * conversation. The person a `user` fact is *about* defaults to whoever the bot
+ * is talking to (the bound speaker) and is otherwise named by a name the model
+ * already sees — never a numeric id, which the model is never given. That
+ * reference is resolved to a real participant of the current chat here, so a tool
+ * can only ever touch someone who has actually messaged in this conversation.
  */
+
+/**
+ * Resolve the person a `user`-scope memory operation is about to a numeric known-user
+ * id. With no `person` reference it binds the current speaker (the only subject in a
+ * DM, and the common case in a group); with one, it resolves that name/@username
+ * against this chat's participants. Returns a model-facing error otherwise.
+ */
+async function resolveSubjectId(
+  person: string | undefined,
+): Promise<{ ok: true; userId: string } | { ok: false; error: string }> {
+  const { chatId, userId: speakerId } = getToolContext();
+  const reference = person?.trim();
+  if (!reference) {
+    if (!speakerId) {
+      return { ok: false, error: "No one is identified to save this about — name the person." };
+    }
+    return { ok: true, userId: speakerId };
+  }
+  const resolved = await resolveChatUserByReference(chatId, reference);
+  if (resolved.status === "not_found") {
+    return {
+      ok: false,
+      error: `No one in this chat is known as "${reference}". You can only remember facts about people who have messaged here.`,
+    };
+  }
+  if (resolved.status === "ambiguous") {
+    return {
+      ok: false,
+      error: `"${reference}" matches ${resolved.count} people here — be more specific (e.g. use their @username).`,
+    };
+  }
+  return { ok: true, userId: resolved.user.userId };
+}
 
 export const MEMORY_SAVE_TOOL = "memory_save";
 export const MEMORY_GET_TOOL = "memory_get";
@@ -86,10 +122,12 @@ export function registerMemoryMcpTools(server: McpServer): void {
         "instruction about how they want you to behave. Saving proactively is expected of you, " +
         "not optional: prefer saving a fact that turns out to be minor over losing one that " +
         "mattered.\n" +
-        "Use scope 'user' for a fact about a specific person, passing their numeric id from the " +
-        "conversation context (this is how you remember someone across chats). Use scope " +
-        "'general' for knowledge that is not about any one person — a definition, a rule, a " +
-        "convention, how something works.\n" +
+        "Use scope 'user' for a fact about a specific person (this is how you remember someone " +
+        "across chats). By default the fact is saved about the person you are talking to right " +
+        "now; to save it about someone else in this chat, name them in 'person' by a name you " +
+        "already see for them (their first name, @username, or a known nickname) — never a numeric " +
+        "id. Use scope 'general' for knowledge that is not about any one person — a definition, a " +
+        "rule, a convention, how something works.\n" +
         "Do NOT save: guesses or inferences from vibes, passing moods, jokes, insults, one-off " +
         "plans, or ordinary chit-chat. Do not re-save something you have already saved.\n" +
         "Save ONE fact per call — make several calls for several facts — and write each as a " +
@@ -100,11 +138,12 @@ export function registerMemoryMcpTools(server: McpServer): void {
         scope: memoryScope.describe(
           "'user' for a fact about a specific person, 'general' for shared knowledge",
         ),
-        user_id: z
+        person: z
           .string()
           .optional()
           .describe(
-            "Numeric id of the person the fact is about. Required for scope 'user', ignored for 'general'.",
+            "Who the fact is about, named by a name you already see for them (first name, @username, " +
+              "or known nickname). Omit to save it about the person you are talking to now. Ignored for scope 'general'.",
           ),
         content: z
           .string()
@@ -125,15 +164,19 @@ export function registerMemoryMcpTools(server: McpServer): void {
         openWorldHint: false,
       },
     },
-    async ({ scope, user_id, content }) => {
+    async ({ scope, person, content }) => {
       const { chatId } = getToolContext();
-      const outcome = await saveMemoryNote({
-        scope,
-        userId: scope === "user" ? (user_id?.trim() ?? null) : null,
-        content,
-        chatId,
-      });
 
+      let subjectId: string | null = null;
+      if (scope === "user") {
+        const subject = await resolveSubjectId(person);
+        if (!subject.ok) {
+          return { content: [{ type: "text" as const, text: subject.error }], isError: true };
+        }
+        subjectId = subject.userId;
+      }
+
+      const outcome = await saveMemoryNote({ scope, userId: subjectId, content, chatId });
       if (!outcome.ok) {
         return {
           content: [{ type: "text" as const, text: outcome.error }],
@@ -145,7 +188,7 @@ export function registerMemoryMcpTools(server: McpServer): void {
           {
             type: "text" as const,
             text:
-              `Saved to long-term memory${scope === "user" ? ` about user ${user_id}` : ""}. ` +
+              `Saved to long-term memory${subjectId ? ` about user ${subjectId}` : ""}. ` +
               "It is merged into your durable memory overnight and will be there in future " +
               "conversations. Do not save this same fact again.",
           },
@@ -165,17 +208,22 @@ export function registerMemoryMcpTools(server: McpServer): void {
     {
       title: "Read everything stored in one memory scope",
       description:
-        "Read out a whole memory scope. With scope 'user' and a person's numeric id, returns " +
-        "every durable fact you know about that person; with scope 'general', returns all the " +
-        "shared knowledge you have stored (definitions, rules, conventions). Use it when you " +
-        "need the full picture rather than a specific answer — for example before saying you " +
-        "do not know something durable about someone, or to review what shared knowledge exists.",
+        "Read out a whole memory scope. With scope 'user', returns every durable fact you know " +
+        "about a person — by default the person you are talking to now, or someone else in this " +
+        "chat when you name them in 'person' (by a name you already see for them, never a numeric " +
+        "id); with scope 'general', returns all the shared knowledge you have stored (definitions, " +
+        "rules, conventions). Use it when you need the full picture rather than a specific answer — " +
+        "for example before saying you do not know something durable about someone, or to review " +
+        "what shared knowledge exists.",
       inputSchema: {
         scope: memoryScope.describe("Which memory to read out"),
-        user_id: z
+        person: z
           .string()
           .optional()
-          .describe("Numeric id of the person. Required for scope 'user', ignored for 'general'."),
+          .describe(
+            "Whose memory to read, named by a name you already see for them (first name, @username, " +
+              "or known nickname). Omit to read the person you are talking to now. Ignored for scope 'general'.",
+          ),
       },
       outputSchema: memoryOutputSchema,
       annotations: {
@@ -185,19 +233,16 @@ export function registerMemoryMcpTools(server: McpServer): void {
         openWorldHint: false,
       },
     },
-    async ({ scope, user_id }) => {
-      if (scope === "user" && !user_id?.trim()) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: "Reading 'user' memory needs the numeric id of the person to read.",
-            },
-          ],
-          isError: true,
-        };
+    async ({ scope, person }) => {
+      let subjectId: string | null = null;
+      if (scope === "user") {
+        const subject = await resolveSubjectId(person);
+        if (!subject.ok) {
+          return { content: [{ type: "text" as const, text: subject.error }], isError: true };
+        }
+        subjectId = subject.userId;
       }
-      const matches = await readMemory({ scope, userId: user_id ?? null });
+      const matches = await readMemory({ scope, userId: subjectId });
       return buildResult(
         matches,
         scope === "user"
