@@ -23,6 +23,13 @@ export const metadata: Metadata = {
   description: "Telegram LLM bot control dashboard",
 };
 
+// This is a live, DB-backed dashboard: every page already opts into dynamic
+// rendering, and the layout reads settings (timezone, config readiness) from the
+// database on each request. Declaring it here covers the whole tree — including
+// Next's built-in /_not-found, which has no page.tsx of its own — so nothing is
+// statically prerendered at build time, when DATABASE_URL is intentionally absent.
+export const dynamic = "force-dynamic";
+
 export default async function RootLayout({
   children,
 }: Readonly<{
