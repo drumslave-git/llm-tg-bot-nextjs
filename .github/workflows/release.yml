@@ -60,7 +60,10 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      # `npm install`, not `npm ci`: package-lock.json is generated on Windows and
+      # omits Linux-only optional native deps (@emnapi/*, sharp/lightningcss musl
+      # builds), which `npm ci`'s strict sync check rejects. Mirrors the Dockerfile.
+      - run: npm install --no-audit --no-fund
       - run: npm run lint
       - run: npm run typecheck
       - run: npm run test
