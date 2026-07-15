@@ -38,6 +38,47 @@ Next: **Priority 11 — Image generation** (Memory landed 2026-07-15; with Mood 
 
 ### Session log
 
+- 2026-07-15: **Fixed the Docker boot crash + provisioned Chromium for `read_page`
+  on Alpine** (user-reported: after deploy the container logged `An error occurred
+  while loading instrumentation hook: Failed to load external module playwright…:
+  Cannot find module '/app/node_modules/playwright-core/browsers.json'`).
+  - **Root cause (boot crash):** `features/link-fetch/server/playwright.ts` did a
+    **top-level** `import { chromium } from "playwright"`. Because `playwright` is a
+    `serverExternalPackage` it becomes a real `require` at boot, and this module is
+    reachable from `instrumentation.ts` → `registerNode` → the MCP registry graph
+    (`runtime.ts` → `registerLinkFetchMcpTools`). Next's file tracer copied only the
+    statically-resolvable JS into `.next/standalone/node_modules/playwright-core/`
+    (`lib/` + `index.js`) and **missed `browsers.json`**, which playwright-core reads
+    from disk on load — so the boot-time `require` threw and the **whole
+    instrumentation hook failed**, not just link-fetch.
+  - **Fix 1 — lazy load (contains the failure):** `playwright` is now imported only
+    as a type at module top, and the runtime value is loaded via a dynamic
+    `import("playwright")` inside `getSharedChromium()`. This pulls playwright out of
+    the server boot graph entirely, so a browser/provisioning problem can no longer
+    crash startup — it is confined to the moment `read_page` actually runs. Matches
+    the file's own "expensive to launch" intent.
+  - **Fix 2 — ship the full package:** the Dockerfile runner now `COPY`s the complete
+    `playwright` + `playwright-core` packages from the builder over the partial traced
+    copies, so `browsers.json` (and any other runtime data file) is present.
+  - **Fix 3 — Chromium on Alpine (user decision: stay Alpine + system chromium):** the
+    runner `apk add`s `chromium nss freetype harfbuzz ca-certificates ttf-freefont
+    font-noto-emoji`, sets `ENV CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser`
+    (path confirmed against the Alpine `chromium` package contents), and
+    `getSharedChromium()` passes that as `executablePath` (unset in dev → Playwright's
+    own download, unchanged). Playwright is officially unsupported on musl/Alpine, but
+    the distro Chromium + `executablePath` + the existing `--no-sandbox` args is the
+    accepted tradeoff for the smaller image.
+  - **Files:** `features/link-fetch/server/playwright.ts` (lazy import,
+    `CHROMIUM_EXECUTABLE_PATH`, `executablePath` on launch), `Dockerfile` (apk chromium
+    + fonts, `CHROMIUM_EXECUTABLE_PATH` env, full playwright package copy). No schema
+    or code-behavior change to other features.
+  - **Checks:** lint ✓ (0 warnings), typecheck ✓, `vitest run features/link-fetch` ✓
+    (19). `npm run build` **not run** — a dev server is live on 3200 and a production
+    build would clobber its `.next` (`dont-clobber-running-dev-server`); the fix is
+    Docker/standalone-boot behavior a dev preview can't exercise. **Not verified
+    in-container:** a real image build + a live `read_page` round-trip against the
+    distro Chromium — left to an operator deploy (no image built this session).
+
 - 2026-07-15 (Priority 10): **Memory feature (done)** — durable knowledge the bot
   keeps across conversations, written by the model mid-reply and consolidated
   nightly.
@@ -1221,10 +1262,13 @@ Next: **Priority 11 — Image generation** (Memory landed 2026-07-15; with Mood 
     boot-time MCP registry singleton needs a dev-server restart to pick up the new
     tool, and a live call needs the operator-run bot-token gate (no credentials
     created; the user's live dev server was not restarted).
-  - **Docker note (deferred to Phase 11):** the runner image is `node:22-alpine`;
-    Playwright's downloaded Chromium does not run on Alpine — Phase 11 must install
-    system Chromium (apk) or switch to the official Playwright base image before the
-    read-link tool works in-container. Recorded as a known risk.
+  - **Docker note (RESOLVED 2026-07-15):** the runner image is `node:22-alpine`;
+    Playwright's downloaded Chromium does not run on Alpine. Fixed by installing the
+    distro `chromium` package and pointing the launcher at it via
+    `CHROMIUM_EXECUTABLE_PATH`, plus copying the full playwright packages into the
+    standalone output (Next's tracer dropped `browsers.json`). A stale top-level
+    `import "playwright"` had also been crashing the whole instrumentation hook at
+    boot; it is now a lazy dynamic import. See the top session-log entry.
   - Checks: lint ✓ (0 warnings), typecheck ✓, unit 175 ✓, integration 79 ✓
     (unchanged — feature is DB-free). `build` **not run** — a dev server is live on
     3200 and `next build` would clobber its `.next` (memory

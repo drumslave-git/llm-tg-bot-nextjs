@@ -4,7 +4,7 @@
 # Native deps (lightningcss, tailwind oxide) are installed inside the image so
 # they match the container's platform — never copy host node_modules in.
 
-FROM node:22-alpine AS base
+FROM node:24-alpine AS base
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
 
@@ -29,15 +29,39 @@ ENV PORT=3200
 # Standalone server binds to HOSTNAME; use 0.0.0.0 so it is reachable in-container.
 ENV HOSTNAME=0.0.0.0
 
-# System ffmpeg: the vision feature samples video/GIF frames with it at runtime
-# (features/vision/server/frames.ts). sharp ships its own musl libvips binary via
-# npm, so only ffmpeg needs a system package here.
-RUN apk add --no-cache ffmpeg
+# System packages resolved at runtime:
+# - ffmpeg: the vision feature samples video/GIF frames with it
+#   (features/vision/server/frames.ts).
+# - chromium (+ nss/freetype/harfbuzz/fonts/ca-certificates): the read-link tool
+#   drives headless Chromium via Playwright. Playwright's own download is a glibc
+#   build that won't run on Alpine (musl), so we install the distro browser and
+#   point the app at it with CHROMIUM_EXECUTABLE_PATH below.
+# sharp ships its own musl libvips binary via npm, so it needs no system package.
+RUN apk add --no-cache \
+    ffmpeg \
+    chromium \
+    nss \
+    freetype \
+    harfbuzz \
+    ca-certificates \
+    ttf-freefont \
+    font-noto-emoji
+
+# Launch the distro Chromium instead of Playwright's (absent) bundled browser.
+ENV CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser
 
 # Self-contained app server: only traced runtime deps, no full node_modules.
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/public ./public
+
+# Playwright is a serverExternalPackage, so Next's file tracer copies only the JS
+# it can statically resolve into the standalone node_modules — it misses data
+# files read from disk at runtime (e.g. playwright-core/browsers.json). Copy the
+# full packages over the partial traced copies so the read-link tool can load
+# them. Chromium itself comes from the apk package above, not these.
+COPY --from=builder /app/node_modules/playwright ./node_modules/playwright
+COPY --from=builder /app/node_modules/playwright-core ./node_modules/playwright-core
 
 # Isolated migration runner: drizzle's programmatic migrator + the SQL files,
 # in its own dir so its two small deps never touch the app's traced node_modules.

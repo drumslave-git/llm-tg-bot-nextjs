@@ -58,7 +58,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
       # `npm install`, not `npm ci`: package-lock.json is generated on Windows and
       # omits Linux-only optional native deps (@emnapi/*, sharp/lightningcss musl

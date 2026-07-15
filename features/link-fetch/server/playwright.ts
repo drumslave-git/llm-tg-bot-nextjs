@@ -1,6 +1,6 @@
 import "server-only";
 
-import { chromium, type Browser, type BrowserContext } from "playwright";
+import type { Browser, BrowserContext } from "playwright";
 
 import type { FetchedPage } from "../types";
 
@@ -12,12 +12,30 @@ import type { FetchedPage } from "../types";
  * per module copy. Each read gets its own short-lived context (isolated cookies,
  * fixed user-agent). When the browser agent feature (priority 13) lands it can
  * reuse this singleton rather than launch a second Chromium.
+ *
+ * `playwright` is loaded lazily (dynamic `import` inside {@link getSharedChromium})
+ * rather than at module top level. It is a `serverExternalPackage`, so a static
+ * import pulls the native package into the server boot graph (this module is
+ * reachable from the instrumentation hook via the MCP registry) — and any problem
+ * resolving it, e.g. a data file like `browsers.json` missing from the traced
+ * standalone output, would then crash the whole app at startup. Loading it only
+ * when a page is actually read keeps boot independent of the browser runtime and
+ * confines any Chromium/provisioning failure to the read that needs it.
  */
 
 const NAVIGATION_TIMEOUT_MS = 60_000;
 const MAX_PAGE_TEXT_CHARS = 12_000;
 const USER_AGENT =
   "Mozilla/5.0 (compatible; LLMTGBot/1.0; +https://github.com/drumslave-git/llm-tg-bot-nextjs)";
+
+/**
+ * Path to a system Chromium binary to launch instead of Playwright's own download.
+ * Deploy-time bootstrap only: the Docker image runs on Alpine (musl), where
+ * Playwright's bundled glibc Chromium won't run, so the runner installs the distro
+ * `chromium` package and sets this to its path. Unset in dev — Playwright then uses
+ * its downloaded browser as usual.
+ */
+const CHROMIUM_EXECUTABLE_PATH = process.env.CHROMIUM_EXECUTABLE_PATH || undefined;
 
 interface BrowserStore {
   browser: Browser | null;
@@ -41,8 +59,14 @@ export async function getSharedChromium(): Promise<Browser> {
   const s = store();
   if (s.browser?.isConnected()) return s.browser;
   if (!s.launching) {
-    s.launching = chromium
-      .launch({ headless: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] })
+    s.launching = import("playwright")
+      .then(({ chromium }) =>
+        chromium.launch({
+          headless: true,
+          executablePath: CHROMIUM_EXECUTABLE_PATH,
+          args: ["--no-sandbox", "--disable-setuid-sandbox"],
+        }),
+      )
       .then((b) => {
         s.browser = b;
         return b;

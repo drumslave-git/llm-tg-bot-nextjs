@@ -250,7 +250,7 @@ Steps:
    - `start`: `next start`
    - `lint`: `eslint`
    - add `typecheck` and `test` once configured
-2. Set Node requirement to match production needs, likely Node `>=22.13.0`.
+2. Set Node requirement to match production needs, Node `>=24.0.0`.
 3. Add dependencies intentionally:
    - Telegram: `grammy`, `@grammyjs/types`
    - LLM: `openai`, `zod`
