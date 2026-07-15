@@ -41,7 +41,12 @@ async function seedMessage(input: {
   });
 }
 
-async function seedLlmUsage(model: string, latencyMs: number, tokens: { p: number; c: number }) {
+async function seedLlmUsage(
+  model: string,
+  latencyMs: number,
+  tokens: { p: number; c: number },
+  trigger?: { actor?: string; correlationId?: string },
+) {
   const traceId = crypto.randomUUID();
   await ctx.db.insert(traces).values({
     id: traceId,
@@ -49,6 +54,8 @@ async function seedLlmUsage(model: string, latencyMs: number, tokens: { p: numbe
     action: "reply",
     status: "success",
     triggerKind: "telegram",
+    triggerActor: trigger?.actor ?? null,
+    correlationId: trigger?.correlationId ?? null,
     startedAt: new Date(),
   });
   await ctx.db.insert(traceEvents).values({
@@ -76,7 +83,7 @@ function stubComplete(overrides?: { day?: string; period?: string }) {
     const isDay = user.includes("Conversation (one day)");
     const content = isDay
       ? overrides?.day ??
-        '{"moodScore":70,"moodLabel":"positive","moodSummary":"good chat","topTopic":"weekend"}'
+        '{"moodScore":70,"moodLabel":"positive","moodSummary":"good chat","topTopic":"weekend","word":"weekend"}'
       : overrides?.period ?? '{"wordOfPeriod":"weekend","topTopic":"weekend plans"}';
     return {
       content,
@@ -90,7 +97,7 @@ function stubComplete(overrides?: { day?: string; period?: string }) {
 }
 
 describe("getMetrics (live SQL aggregation)", () => {
-  it("aggregates message, character, and model metrics", async () => {
+  it("aggregates message, token, and model metrics", async () => {
     const now = new Date();
     await seedMessage({ chatId: "c1", telegramMessageId: 1, role: "user", userId: "u1", content: "hello", sentAt: now });
     await seedMessage({ chatId: "c1", telegramMessageId: 2, role: "assistant", content: "hi there", sentAt: now });
@@ -104,13 +111,16 @@ describe("getMetrics (live SQL aggregation)", () => {
 
     expect(m.totals.humanMessages).toBe(2);
     expect(m.totals.botMessages).toBe(1);
-    expect(m.totals.charsProcessed).toBe("hello".length + "yo".length);
-    expect(m.totals.charsGenerated).toBe("hi there".length);
     expect(m.totals.activeUsers).toBe(2);
+
+    // Tokens: processed = prompt, generated = completion, summed over bot-messaging usage.
+    expect(m.totals.tokensProcessed).toBe(300);
+    expect(m.totals.tokensGenerated).toBe(200);
 
     // The dense series aligns to the bucket axis and sums to the totals.
     expect(m.volume.human.length).toBe(m.buckets.length);
     expect(m.volume.human.reduce((a, b) => a + b, 0)).toBe(2);
+    expect(m.tokens.processed.reduce((a, b) => a + b, 0)).toBe(300);
 
     // Registry-prefixed variants merge into one clean model name.
     expect(m.models).toHaveLength(1);
@@ -120,15 +130,19 @@ describe("getMetrics (live SQL aggregation)", () => {
     expect(m.models[0].avgLatencyMs).toBe(2000);
   });
 
-  it("scopes to one chat when filtered", async () => {
+  it("scopes tokens and messages to one chat via correlation id", async () => {
     const now = new Date();
     await seedMessage({ chatId: "c1", telegramMessageId: 1, role: "user", userId: "u1", content: "a", sentAt: now });
     await seedMessage({ chatId: "c2", telegramMessageId: 1, role: "user", userId: "u1", content: "bb", sentAt: now });
+    // A reply trace for c1 (correlation id `<chatId>:<messageId>`) and one for c2.
+    await seedLlmUsage("m", 1000, { p: 40, c: 10 }, { actor: "u1", correlationId: "c1:1" });
+    await seedLlmUsage("m", 1000, { p: 99, c: 99 }, { actor: "u1", correlationId: "c2:1" });
 
     const m = await getMetrics({ granularity: "day", chatId: "c1" }, ctx.db);
     expect(m.scope).toBe("chat");
     expect(m.totals.humanMessages).toBe(1);
-    expect(m.totals.charsProcessed).toBe(1);
+    expect(m.totals.tokensProcessed).toBe(40);
+    expect(m.totals.tokensGenerated).toBe(10);
   });
 });
 
@@ -164,8 +178,8 @@ describe("runAnalyticsInsights", () => {
     });
 
     expect(result.daysComputed).toBe(1);
-    // month + year + all, each for global + chat scope = 6 roll-ups.
-    expect(result.periodsComputed).toBe(6);
+    // day + week + month + all, each for global + chat scope = 8 roll-ups.
+    expect(result.periodsComputed).toBe(8);
 
     const globalAll = await getPeriodInsight(ctx.db, {
       granularity: "all",
@@ -175,6 +189,15 @@ describe("runAnalyticsInsights", () => {
     });
     expect(globalAll?.wordOfPeriod).toBe("weekend");
     expect(globalAll?.moodScore).toBe(70);
+
+    // The "word of the day" exists too (a single-day roll-up copies the scored word).
+    const globalDay = await getPeriodInsight(ctx.db, {
+      granularity: "day",
+      bucket: "2026-07-14",
+      scope: "global",
+      chatId: "",
+    });
+    expect(globalDay?.wordOfPeriod).toBe("weekend");
 
     const runTraces = await listTraces(ctx.db, { feature: "analytics-insights" });
     expect(runTraces.traces).toHaveLength(1);

@@ -10,7 +10,6 @@ import type {
   AnalyticsJobInfo,
   AnalyticsMetrics,
   MoodPoint,
-  PeriodGranularity,
   PeriodInsight,
 } from "@/features/analytics/types";
 import { AnalyticsCharts } from "@/features/analytics/ui/AnalyticsCharts";
@@ -33,11 +32,6 @@ export const dynamic = "force-dynamic";
 
 const first = (value: string | string[] | undefined): string | undefined =>
   Array.isArray(value) ? value[0] : value;
-
-/** The insight card is stored only at month/year/all; map any granularity onto that. */
-function periodGranularityOf(g: string): PeriodGranularity {
-  return g === "month" || g === "year" ? g : "all";
-}
 
 interface AnalyticsData {
   metrics: AnalyticsMetrics;
@@ -77,8 +71,8 @@ export default async function AnalyticsPage({
   try {
     const [metrics, mood, insight, job, users, groups] = await Promise.all([
       getMetrics(query),
-      getMoodTrendPoints({ chatId }),
-      getPeriodInsightCard({ granularity: periodGranularityOf(query.granularity), scope: insightScope, chatId }),
+      getMoodTrendPoints({ granularity: query.granularity, scope: insightScope, chatId }),
+      getPeriodInsightCard({ granularity: query.granularity, scope: insightScope, chatId }),
       getAnalyticsJobInfo(),
       listUsers(),
       listGroups(),

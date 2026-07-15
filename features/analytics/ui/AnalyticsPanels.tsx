@@ -1,7 +1,7 @@
 import {
   Activity,
+  Cpu,
   Gauge,
-  Hash,
   Image as ImageIcon,
   MessageSquare,
   Sparkles,
@@ -30,7 +30,7 @@ import {
 import { Timestamp } from "@/components/time/Timestamp";
 
 import { formatCompact, formatMs, formatNumber, formatPercent } from "../format";
-import type { AnalyticsMetrics, HealthSignals, ModelStat, PeriodInsight, UserStat } from "../types";
+import { PERIOD_NOUN, type AnalyticsMetrics, type HealthSignals, type ModelStat, type PeriodInsight, type UserStat } from "../types";
 
 /** Badge tone for a mood score. */
 function moodTone(score: number): BadgeTone {
@@ -53,16 +53,16 @@ export function SummaryTiles({ metrics }: { metrics: AnalyticsMetrics }) {
         hint={`${formatNumber(t.humanMessages)} in · ${formatNumber(t.botMessages)} out`}
       />
       <StatCard
-        label="Chars processed"
-        value={formatCompact(t.charsProcessed)}
-        icon={Hash}
-        hint="Received from users"
+        label="Tokens processed"
+        value={formatCompact(t.tokensProcessed)}
+        icon={Cpu}
+        hint="Prompt tokens in"
       />
       <StatCard
-        label="Chars generated"
-        value={formatCompact(t.charsGenerated)}
-        icon={Hash}
-        hint="Written by the bot"
+        label="Tokens generated"
+        value={formatCompact(t.tokensGenerated)}
+        icon={Cpu}
+        hint="Completion tokens out"
       />
       <StatCard
         label={metrics.scope === "user" ? "Media" : "Active users"}
@@ -95,6 +95,8 @@ export function InsightCards({ insight }: { insight: PeriodInsight | null }) {
       </Card>
     );
   }
+  const noun = PERIOD_NOUN[insight.granularity];
+  const ofPeriod = insight.granularity === "all" ? "all time" : `the ${noun}`;
   return (
     <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
       <Card>
@@ -102,7 +104,7 @@ export function InsightCards({ insight }: { insight: PeriodInsight | null }) {
           <div className="space-y-1">
             <CardTitle className="flex items-center gap-2">
               <Gauge className="h-4 w-4 text-muted" aria-hidden />
-              Mood
+              Mood of {ofPeriod}
             </CardTitle>
           </div>
         </CardHeader>
@@ -122,7 +124,7 @@ export function InsightCards({ insight }: { insight: PeriodInsight | null }) {
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Sparkles className="h-4 w-4 text-muted" aria-hidden />
-            Word of the period
+            Word of {ofPeriod}
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -133,7 +135,7 @@ export function InsightCards({ insight }: { insight: PeriodInsight | null }) {
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <MessageSquare className="h-4 w-4 text-muted" aria-hidden />
-            Most-discussed topic
+            Top topic of {ofPeriod}
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -314,7 +316,7 @@ export function TopUsersPanel({ users }: { users: UserStat[] }) {
               <TableRow header>
                 <TableHeaderCell>User</TableHeaderCell>
                 <TableHeaderCell align="right">Messages</TableHeaderCell>
-                <TableHeaderCell align="right">Characters</TableHeaderCell>
+                <TableHeaderCell align="right">Tokens</TableHeaderCell>
               </TableRow>
             </TableHead>
             <TableBody>
@@ -325,7 +327,7 @@ export function TopUsersPanel({ users }: { users: UserStat[] }) {
                     {formatNumber(u.messages)}
                   </TableCell>
                   <TableCell align="right" className="tabular-nums">
-                    {formatCompact(u.chars)}
+                    {formatCompact(u.tokens)}
                   </TableCell>
                 </TableRow>
               ))}

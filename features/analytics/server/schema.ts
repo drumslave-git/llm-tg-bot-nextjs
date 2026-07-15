@@ -24,8 +24,8 @@ export type MetricsQuery = z.infer<typeof metricsQuerySchema>;
 
 /** Period-insight card query: which stored roll-up to read. */
 export const insightsQuerySchema = z.object({
-  granularity: z.enum(["month", "year", "all"]).default("all"),
-  /** Bucket key (`YYYY-MM` / `YYYY` / `all`); defaults to the current period. */
+  granularity: z.enum(GRANULARITIES).default("all"),
+  /** Bucket key; defaults to the latest computed period for the scope. */
   bucket: z.string().trim().min(1).optional(),
   scope: z.enum(["global", "chat"]).default("global"),
   chatId: z.string().trim().min(1).optional(),

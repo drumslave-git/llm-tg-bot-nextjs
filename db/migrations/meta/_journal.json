@@ -141,6 +141,13 @@
       "when": 1784132691139,
       "tag": "0019_crazy_skullbuster",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1784143704739,
+      "tag": "0020_many_loa",
+      "breakpoints": true
     }
   ]
 }

@@ -5,7 +5,7 @@
  */
 
 import { clampMoodScore, moodLabelForScore } from "../mood";
-import type { PeriodGranularity } from "../types";
+import type { Granularity } from "../types";
 
 /** Cap on transcript characters fed to one day-insight call, to bound tokens. */
 const TRANSCRIPT_CHAR_CAP = 12_000;
@@ -18,14 +18,14 @@ export const DAY_INSIGHT_PROMPT = [
   '- "moodLabel": 1–2 word mood (e.g. "positive", "tense", "neutral").',
   '- "moodSummary": one short sentence explaining the mood.',
   '- "topTopic": the single most-discussed topic, as a short noun phrase.',
+  '- "word": ONE standout word of the day — the most emblematic single word of what was said or felt.',
   "Respond with ONLY the JSON object — no prose, no markdown, no code fences.",
 ].join("\n");
 
 export const PERIOD_INSIGHT_PROMPT = [
-  "You are an analytics assistant. Given a period's daily topics and moods, return a",
-  "strict JSON object with exactly these fields:",
-  '- "wordOfPeriod": a SINGLE word that best characterizes the period — the most',
-  "  emblematic word of what was discussed or how it felt.",
+  "You are an analytics assistant. Given a period's daily topics, words, and moods,",
+  "return a strict JSON object with exactly these fields:",
+  '- "wordOfPeriod": a SINGLE word that best characterizes the whole period.',
   '- "topTopic": the single most-discussed topic across the whole period, as a short noun phrase.',
   "Respond with ONLY the JSON object — no prose, no markdown, no code fences.",
 ].join("\n");
@@ -39,18 +39,13 @@ export function formatTranscript(
     .map((m) => `${m.role === "assistant" ? "Bot" : "User"}: ${m.content.replace(/\s+/g, " ").trim()}`);
   let text = lines.join("\n");
   if (text.length > TRANSCRIPT_CHAR_CAP) {
-    // Keep the tail — the end of a day is the freshest emotional state and where
-    // conclusions land.
     text = `…\n${text.slice(text.length - TRANSCRIPT_CHAR_CAP)}`;
   }
   return text;
 }
 
 /** The user message for one day-insight call. */
-export function buildDayInsightRequest(input: {
-  transcript: string;
-  topics: string[];
-}): string {
+export function buildDayInsightRequest(input: { transcript: string; topics: string[] }): string {
   const parts = [`Conversation (one day):\n${input.transcript}`];
   if (input.topics.length > 0) {
     parts.push(`Already-identified topics for the day:\n${input.topics.map((t) => `- ${t}`).join("\n")}`);
@@ -61,14 +56,14 @@ export function buildDayInsightRequest(input: {
 
 /** The user message for one period roll-up call. */
 export function buildPeriodInsightRequest(input: {
-  granularity: PeriodGranularity;
+  granularity: Granularity;
   bucket: string;
-  days: { insightDate: string; moodLabel: string; topTopic: string; messageCount: number }[];
+  days: { insightDate: string; moodLabel: string; topTopic: string; word: string; messageCount: number }[];
 }): string {
-  const label =
-    input.granularity === "all" ? "all time" : `${input.granularity} ${input.bucket}`;
+  const label = input.granularity === "all" ? "all time" : `${input.granularity} ${input.bucket}`;
   const lines = input.days.map(
-    (d) => `${d.insightDate} — mood ${d.moodLabel} — topic: ${d.topTopic} (${d.messageCount} msgs)`,
+    (d) =>
+      `${d.insightDate} — mood ${d.moodLabel} — topic: ${d.topTopic} — word: ${d.word} (${d.messageCount} msgs)`,
   );
   return [
     `Period: ${label}. Daily breakdown (${input.days.length} day(s)):`,
@@ -95,17 +90,23 @@ function asString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
+/** The first meaningful word of a phrase — the fallback "word" when the model omits it. */
+function firstWord(phrase: string): string {
+  return phrase.split(/\s+/).find((w) => w.length > 0) ?? phrase;
+}
+
 export interface DayInsight {
   moodScore: number;
   moodLabel: string;
   moodSummary: string;
   topTopic: string;
+  word: string;
 }
 
 /**
  * Parse a day-insight response. Fails closed: returns null unless a topic and a
  * usable mood score are present, so a garbled response leaves the day's stored
- * insight untouched rather than overwriting it with junk.
+ * insight untouched. A missing `word` falls back to the topic's first word.
  */
 export function parseDayInsight(content: string): DayInsight | null {
   const obj = extractJsonObject(content);
@@ -119,6 +120,7 @@ export function parseDayInsight(content: string): DayInsight | null {
     moodLabel: asString(obj.moodLabel) || moodLabelForScore(moodScore),
     moodSummary: asString(obj.moodSummary),
     topTopic,
+    word: asString(obj.word) || firstWord(topTopic),
   };
 }
 

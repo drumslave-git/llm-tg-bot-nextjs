@@ -775,6 +775,8 @@ export const chatDayInsights = pgTable(
     moodSummary: text("mood_summary").notNull(),
     /** The single most-discussed topic of the day, as named by the model. */
     topTopic: text("top_topic").notNull(),
+    /** The standout "word of the day", as named by the model. Null for older rows. */
+    word: text("word"),
     /** Messages the day held when it was scored (the re-run trigger). */
     messageCount: integer("message_count").notNull(),
     /** Clean model name that produced this insight (informational). */

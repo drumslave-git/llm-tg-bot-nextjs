@@ -530,7 +530,7 @@ Priority order:
 | 8 | Vision backfill background job | Background processing for older/unprocessed media with status, locking, debug traces, and log download. |
 | 9 | Scheduled tasks feature | User-configurable scheduled tasks with execution traces, status, idempotency, and dashboard controls. |
 | 10 | Memory feature | Extract, store, edit, retrieve, and inject memories with traceable extraction and update flows. |
-| 11 | Analytics dashboard | Rich stats dashboard (ECharts): message/character/user/model metrics live per hour/day/month/year/all-time with per-chat and per-user drill-down, plus LLM-derived chat mood, deterministic health, word of the period, and most-discussed topic from a nightly insight job. **Inserted ahead of Image generation by the user (2026-07-15).** |
+| 11 | Analytics dashboard | Rich stats dashboard (ECharts): message/token/user/model metrics live per **day / week / month / all-time** with per-chat and per-user drill-down, plus LLM-derived chat mood, deterministic health, **word of the period**, and **most-discussed topic** — all available at every one of those four periods — from a nightly insight job. **Inserted ahead of Image generation by the user (2026-07-15).** |
 | 12 | Image generation | Generate images through configured provider/tooling with dashboard/debug visibility and downloadable traces. |
 | 13 | Browser agent feature | Browser-agent runs with queue/status, step traces, artifacts/downloads, and a dedicated Debug page. |
 | 14 | Mood feature | Mood/personality state, mood injection into replies, dashboard controls, and debug traces. **De-prioritized to lowest by the user (2026-07-14).** |

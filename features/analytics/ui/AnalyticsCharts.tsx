@@ -20,15 +20,12 @@ const Chart = dynamic(() => import("./Chart").then((m) => m.Chart), {
 /** Shorten a bucket key for an axis tick, per granularity. */
 function shortBucket(label: string, granularity: Granularity): string {
   switch (granularity) {
-    case "hour":
-      // "2026-07-15 14:00" → "07-15 14:00"
-      return label.slice(5);
     case "day":
+    case "week":
       // "2026-07-15" → "07-15"
       return label.slice(5);
     case "month":
-    case "year":
-      return label;
+      return label; // "2026-07"
     case "all":
       return "All time";
   }
@@ -37,36 +34,21 @@ function shortBucket(label: string, granularity: Granularity): string {
 interface SeriesSpec {
   name: string;
   data: number[];
-  /** Categorical slot (fixed order) — resolved to a validated hue by the theme. */
   slot?: number;
-  /** Explicit colour override (e.g. a status hue). */
   color?: string;
 }
 
 /** Shared line-chart option builder themed from the resolved palette. */
 function lineOption(
   theme: ChartTheme,
-  input: {
-    buckets: string[];
-    granularity: Granularity;
-    series: SeriesSpec[];
-    yMax?: number;
-    area?: boolean;
-  },
+  input: { buckets: string[]; granularity: Granularity; series: SeriesSpec[]; yMax?: number; area?: boolean },
 ): EChartsOption {
   const multi = input.series.length > 1;
   return {
     grid: { left: 8, right: 16, top: multi ? 34 : 12, bottom: 4, containLabel: true },
     color: input.series.map((s, i) => s.color ?? theme.series[s.slot ?? i]),
     legend: multi
-      ? {
-          show: true,
-          top: 0,
-          left: 0,
-          itemWidth: 12,
-          itemHeight: 4,
-          textStyle: { color: theme.secondary, fontSize: 12 },
-        }
+      ? { show: true, top: 0, left: 0, itemWidth: 12, itemHeight: 4, textStyle: { color: theme.secondary, fontSize: 12 } }
       : undefined,
     tooltip: {
       trigger: "axis",
@@ -94,7 +76,7 @@ function lineOption(
       type: "line" as const,
       data: s.data,
       smooth: false,
-      showSymbol: false,
+      showSymbol: input.buckets.length <= 1,
       lineStyle: { width: 2 },
       areaStyle: input.area ? { opacity: 0.12 } : undefined,
     })),
@@ -139,17 +121,10 @@ function LineChartCard({
 }
 
 /**
- * The chart grid: message volume, character volume, user activity, and (when
- * insights exist) the mood trend. All series are aligned to the same bucket axis;
- * each chart keeps a single y-scale (never dual-axis).
+ * The chart grid: message volume, token volume, user activity, and the mood trend.
+ * All series keep a single y-scale (never dual-axis) and share the period axis.
  */
-export function AnalyticsCharts({
-  metrics,
-  mood,
-}: {
-  metrics: AnalyticsMetrics;
-  mood: MoodPoint[];
-}) {
+export function AnalyticsCharts({ metrics, mood }: { metrics: AnalyticsMetrics; mood: MoodPoint[] }) {
   const { buckets, granularity } = metrics;
   const perUser = metrics.scope === "user";
 
@@ -169,13 +144,13 @@ export function AnalyticsCharts({
         ]}
       />
       <LineChartCard
-        title="Characters"
-        description="Processed (received) vs generated (replied)"
+        title="Tokens"
+        description="Processed (prompt) vs generated (completion)"
         buckets={buckets}
         granularity={granularity}
         series={[
-          { name: "Processed", data: metrics.chars.processed, slot: 0 },
-          { name: "Generated", data: metrics.chars.generated, slot: 1 },
+          { name: "Processed", data: metrics.tokens.processed, slot: 0 },
+          { name: "Generated", data: metrics.tokens.generated, slot: 1 },
         ]}
         area
       />
@@ -189,9 +164,9 @@ export function AnalyticsCharts({
       {mood.length > 0 ? (
         <LineChartCard
           title="Mood trend"
-          description="Daily conversation mood (0–100), from the insight job"
-          buckets={mood.map((p) => p.date)}
-          granularity="day"
+          description="Conversation mood (0–100) per period, from the insight job"
+          buckets={mood.map((p) => p.bucket)}
+          granularity={granularity}
           series={[{ name: "Mood", data: mood.map((p) => p.moodScore), color: STATUS.good }]}
           yMax={100}
           area
@@ -201,13 +176,13 @@ export function AnalyticsCharts({
           <CardHeader>
             <div>
               <CardTitle>Mood trend</CardTitle>
-              <CardDescription>Daily conversation mood (0–100)</CardDescription>
+              <CardDescription>Conversation mood (0–100) per period</CardDescription>
             </div>
           </CardHeader>
           <CardContent>
             <p className="py-10 text-center text-sm text-muted">
-              No mood data yet — the nightly insight job scores each finished day. Run it from the
-              card below to populate this.
+              No mood data yet — the nightly insight job scores each finished day. Run it from the card
+              below to populate this.
             </p>
           </CardContent>
         </Card>

@@ -1,0 +1,1 @@
+ALTER TABLE "chat_day_insights" ADD COLUMN "word" text;

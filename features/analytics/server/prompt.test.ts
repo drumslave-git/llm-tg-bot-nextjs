@@ -10,22 +10,24 @@ import {
 describe("parseDayInsight", () => {
   it("parses a well-formed object", () => {
     const out = parseDayInsight(
-      '{"moodScore":72,"moodLabel":"warm","moodSummary":"friendly banter","topTopic":"weekend plans"}',
+      '{"moodScore":72,"moodLabel":"warm","moodSummary":"friendly banter","topTopic":"weekend plans","word":"beach"}',
     );
     expect(out).toEqual({
       moodScore: 72,
       moodLabel: "warm",
       moodSummary: "friendly banter",
       topTopic: "weekend plans",
+      word: "beach",
     });
   });
 
-  it("tolerates code fences and surrounding prose", () => {
+  it("tolerates code fences and derives missing fields", () => {
     const out = parseDayInsight('Here it is:\n```json\n{"moodScore":40,"topTopic":"bug reports"}\n```');
     expect(out?.moodScore).toBe(40);
     expect(out?.topTopic).toBe("bug reports");
-    // Missing label is derived from the score.
+    // Missing label is derived from the score; missing word falls back to the topic's first word.
     expect(out?.moodLabel).toBe("tense");
+    expect(out?.word).toBe("bug");
   });
 
   it("clamps an out-of-range score", () => {
@@ -70,9 +72,11 @@ describe("buildPeriodInsightRequest", () => {
     const req = buildPeriodInsightRequest({
       granularity: "month",
       bucket: "2026-07",
-      days: [{ insightDate: "2026-07-01", moodLabel: "positive", topTopic: "launch", messageCount: 12 }],
+      days: [
+        { insightDate: "2026-07-01", moodLabel: "positive", topTopic: "launch", word: "ship", messageCount: 12 },
+      ],
     });
     expect(req).toContain("month 2026-07");
-    expect(req).toContain("2026-07-01 — mood positive — topic: launch (12 msgs)");
+    expect(req).toContain("2026-07-01 — mood positive — topic: launch — word: ship (12 msgs)");
   });
 });

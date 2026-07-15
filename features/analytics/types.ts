@@ -6,21 +6,31 @@
 
 import type { IntervalJobStatus } from "@/server/jobs/interval-scheduler";
 
-/** Chart time granularity. `all` collapses all history into a single bucket. */
-export type Granularity = "hour" | "day" | "month" | "year" | "all";
+/**
+ * The period selector — the same options everywhere (numeric charts, word of the
+ * period, top topic, mood). `all` collapses all history into a single bucket.
+ */
+export type Granularity = "day" | "week" | "month" | "all";
 
-export const GRANULARITIES: Granularity[] = ["hour", "day", "month", "year", "all"];
+export const GRANULARITIES: Granularity[] = ["day", "week", "month", "all"];
 
 export const GRANULARITY_LABELS: Record<Granularity, string> = {
-  hour: "Hourly",
-  day: "Daily",
-  month: "Monthly",
-  year: "Yearly",
+  day: "Day",
+  week: "Week",
+  month: "Month",
   all: "All time",
 };
 
-/** The granularities the LLM insight roll-up is stored at. */
-export type PeriodGranularity = "month" | "year" | "all";
+/** How the insight card names the period, per granularity. */
+export const PERIOD_NOUN: Record<Granularity, string> = {
+  day: "day",
+  week: "week",
+  month: "month",
+  all: "all time",
+};
+
+/** The LLM-derived insight is stored at every granularity. */
+export type PeriodGranularity = Granularity;
 
 /** Per-model speed + token volume, across all chats (system-level). */
 export interface ModelStat {
@@ -63,7 +73,8 @@ export interface UserStat {
   userId: string;
   label: string;
   messages: number;
-  chars: number;
+  /** Prompt tokens attributed to this user's turns. */
+  tokens: number;
 }
 
 /** The full numeric metrics payload the dashboard charts render. */
@@ -76,15 +87,16 @@ export interface AnalyticsMetrics {
   /** Bucket labels, oldest → newest. All value arrays are aligned to this. */
   buckets: string[];
   volume: { human: number[]; bot: number[] };
-  chars: { processed: number[]; generated: number[] };
+  /** LLM tokens per bucket: processed = prompt, generated = completion. */
+  tokens: { processed: number[]; generated: number[] };
   /** `new` is null when a chat/user filter is set (new-user counts are global). */
   users: { active: number[]; new: number[] | null };
   totals: {
     messages: number;
     humanMessages: number;
     botMessages: number;
-    charsProcessed: number;
-    charsGenerated: number;
+    tokensProcessed: number;
+    tokensGenerated: number;
     activeUsers: number;
     media: number;
   };
@@ -93,11 +105,27 @@ export interface AnalyticsMetrics {
   health: HealthSignals;
 }
 
-/** One day's mood point, for the mood trend chart. */
+/** One bucket's mood point, for the mood trend chart (at the selected granularity). */
 export interface MoodPoint {
-  date: string;
+  bucket: string;
   moodScore: number;
   moodLabel: string;
+}
+
+/** The LLM-derived insight for a selected period (mood + word of the period + topic). */
+export interface PeriodInsight {
+  granularity: PeriodGranularity;
+  bucket: string;
+  scope: "global" | "chat";
+  chatId: string | null;
+  wordOfPeriod: string;
+  topTopic: string;
+  moodScore: number;
+  moodLabel: string;
+  sourceDays: number;
+  messageCount: number;
+  model: string;
+  computedAt: string;
 }
 
 /** Status + backlog info for the analytics insight job's dashboard card. */
@@ -114,20 +142,4 @@ export interface AnalyticsJobInfo {
   pendingDays: number;
   /** Whether an LLM is configured (else the job settles as a no-op). */
   llmConfigured: boolean;
-}
-
-/** The LLM-derived roll-up insight for a selected period (mood + word + topic). */
-export interface PeriodInsight {
-  granularity: PeriodGranularity;
-  bucket: string;
-  scope: "global" | "chat";
-  chatId: string | null;
-  wordOfPeriod: string;
-  topTopic: string;
-  moodScore: number;
-  moodLabel: string;
-  sourceDays: number;
-  messageCount: number;
-  model: string;
-  computedAt: string;
 }
