@@ -1,6 +1,7 @@
+import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
-import { chatMessages, traceEvents, traces } from "@/db/schema";
+import { chatMessages, periodInsights, traceEvents, traces } from "@/db/schema";
 import type { ChatCompletionResult, ChatMessage } from "@/server/llm/client";
 import { listTraces } from "@/server/trace/repository";
 import { startTestDb, type TestDb } from "@/test/db";
@@ -211,6 +212,29 @@ describe("runAnalyticsInsights", () => {
     const again = await runAnalyticsInsights({ complete: stubComplete(), timeZone: "UTC", now: NOW, db: ctx.db });
     expect(again.daysComputed).toBe(0);
     expect(again.summary).toContain("nothing to compute");
+  });
+
+  it("backfills a missing period without re-scoring the day (self-heal)", async () => {
+    await seedFinishedDay();
+    await runAnalyticsInsights({ complete: stubComplete(), timeZone: "UTC", now: NOW, db: ctx.db });
+
+    // Simulate a granularity added after the day was scored: drop its day roll-ups.
+    await ctx.db.delete(periodInsights).where(eq(periodInsights.granularity, "day"));
+    expect(
+      await getPeriodInsight(ctx.db, { granularity: "day", bucket: "2026-07-14", scope: "global", chatId: "" }),
+    ).toBeNull();
+
+    // A run with zero pending days still backfills the missing period.
+    const healed = await runAnalyticsInsights({ complete: stubComplete(), timeZone: "UTC", now: NOW, db: ctx.db });
+    expect(healed.daysComputed).toBe(0);
+    expect(healed.periodsComputed).toBeGreaterThan(0);
+    const dayRow = await getPeriodInsight(ctx.db, {
+      granularity: "day",
+      bucket: "2026-07-14",
+      scope: "global",
+      chatId: "",
+    });
+    expect(dayRow?.wordOfPeriod).toBe("weekend");
   });
 
   it("self-heals when a day's message count changes", async () => {

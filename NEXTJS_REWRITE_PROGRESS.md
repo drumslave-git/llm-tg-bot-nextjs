@@ -97,8 +97,26 @@ Next: **Priority 12 — Image generation** (Analytics landed 2026-07-15 as the n
     `correlation_id`/`trigger_actor`. Verified live on 3200: `/analytics` shows the
     Day/Week/Month/All-time selector and Tokens tiles/chart with real data; the week
     view (`?granularity=week`) renders and re-queries server-side.
+  - **Production diagnosis + self-heal fix (operator-reported "missing data despite
+    Run now").** Read the live deploy's own API (not assumed): the insight job HAD
+    run (trace "12 day(s) scored, **6** period(s) rolled up") and `granularity=all`
+    returned a real card (word "Gaming", mood 51) — so data was present at
+    all/month/year, but the dashboard **defaults to Day**, which was empty
+    (`Run now` → `pendingDays:0` → "nothing to compute"). Root cause: the first
+    deploy (old code, 6-period month/year/all roll-up) scored the 12 days; the
+    reworked build added Day/Week but **Pass 2 only rolled up periods for days it
+    re-scored that run**, and those days were already scored — so the new
+    granularities never backfilled. Fix: Pass 2 now **self-heals** — it computes the
+    periods every scored day *should* have (`listAllInsightDays` × `periodsForDay`)
+    minus what exists (`listExistingPeriodKeys`) and backfills the missing ones,
+    independent of what was scored this run; a run with 0 pending days still
+    backfills, and a steady state (0 pending, 0 missing) still no-ops without a
+    trace. Makes any future granularity change auto-populate. Integration test added
+    (drop the `day` roll-ups, re-run with 0 pending → backfilled). **Needs a redeploy
+    to take effect on production**; until then, the computed insight is visible under
+    All time / Month.
   - **Checks:** lint ✓, typecheck ✓, `npm run test` ✓ (376 unit),
-    `vitest run --config vitest.integration.config.ts features/analytics` ✓ (6).
+    `vitest run --config vitest.integration.config.ts features/analytics` ✓ (7).
 
 - 2026-07-15: **Fixed the Docker boot crash + provisioned Chromium for `read_page`
   on Alpine** (user-reported: after deploy the container logged `An error occurred

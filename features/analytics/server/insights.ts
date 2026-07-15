@@ -24,8 +24,10 @@ import {
 import {
   getDayMessages,
   getDaySummaryTopics,
+  listAllInsightDays,
   listDayInsightsForPeriod,
   listDaysNeedingInsight,
+  listExistingPeriodKeys,
   type PeriodDayRow,
   upsertChatDayInsight,
   upsertPeriodInsight,
@@ -123,7 +125,23 @@ export async function runAnalyticsInsights(
     today,
     limit: MAX_DAYS_PER_RUN,
   });
-  if (pending.length === 0) {
+
+  // Self-heal: any period a scored day *should* have but doesn't (e.g. a new
+  // granularity was added after the day was first scored) is backfilled, so the
+  // roll-up never depends on a day being re-scored in the same run.
+  const [allDays, existingKeys] = await Promise.all([
+    listAllInsightDays(db),
+    listExistingPeriodKeys(db),
+  ]);
+  const missing = new Map<string, PeriodTarget>();
+  for (const d of allDays) {
+    for (const t of periodsForDay(d.insightDate, d.chatId)) {
+      const key = targetKey(t);
+      if (!existingKeys.has(key)) missing.set(key, t);
+    }
+  }
+
+  if (pending.length === 0 && missing.size === 0) {
     return { ...EMPTY, summary: "nothing to compute" };
   }
 
@@ -132,7 +150,7 @@ export async function runAnalyticsInsights(
       feature: FEATURE.id,
       action: "insights",
       trigger: { kind: "system", actor: "analytics" },
-      inputSummary: `${pending.length} day(s) pending`,
+      inputSummary: `${pending.length} day(s) pending, ${missing.size} period(s) to backfill`,
     },
     db,
   );
@@ -173,7 +191,9 @@ export async function runAnalyticsInsights(
   }
 
   try {
-    const touched = new Map<string, PeriodTarget>();
+    // Seed with the missing periods to backfill; Pass 1 adds the periods of any
+    // freshly-scored day.
+    const touched = new Map<string, PeriodTarget>(missing);
 
     /* Pass 1 — score each pending (chat, day). */
     for (const day of pending) {

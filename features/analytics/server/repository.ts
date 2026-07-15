@@ -365,6 +365,24 @@ export async function listDaysNeedingInsight(
   }));
 }
 
+/** Every scored (chat, day) — the source rows every period roll-up is built from. */
+export async function listAllInsightDays(
+  db: DrizzleDb,
+): Promise<{ chatId: string; insightDate: string }[]> {
+  const rows = await db.execute<{ chat_id: string; insight_date: string }>(sql`
+    select chat_id, insight_date from chat_day_insights
+  `);
+  return rows.rows.map((r) => ({ chatId: r.chat_id, insightDate: r.insight_date }));
+}
+
+/** The keys of every stored period roll-up, as `granularity|bucket|scope|chat_id`. */
+export async function listExistingPeriodKeys(db: DrizzleDb): Promise<Set<string>> {
+  const rows = await db.execute<{ granularity: string; bucket: string; scope: string; chat_id: string }>(sql`
+    select granularity, bucket, scope, chat_id from period_insights
+  `);
+  return new Set(rows.rows.map((r) => `${r.granularity}|${r.bucket}|${r.scope}|${r.chat_id}`));
+}
+
 /** How many (chat, day) pairs still need an insight — for the dashboard backlog. */
 export async function countDaysNeedingInsight(
   db: DrizzleDb,
