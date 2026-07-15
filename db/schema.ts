@@ -619,6 +619,118 @@ export const selfCorrections = pgTable(
 export type SelfCorrectionRow = typeof selfCorrections.$inferSelect;
 export type SelfCorrectionInsert = typeof selfCorrections.$inferInsert;
 
+/**
+ * Queue of raw memory notes the model wrote via the `memory_save` tool during a
+ * reply, awaiting the nightly consolidation job.
+ *
+ * The queue exists because a fact must be *saveable mid-conversation* ("remember
+ * that I moved to Lisbon") while merging it into long-term memory is an LLM pass
+ * too expensive to run inside a reply. A note is therefore appended verbatim here
+ * and folded into its scope's durable memory overnight, then deleted.
+ *
+ * A pending note is NOT part of memory yet (user decision): it is neither injected
+ * into replies nor visible to the memory tools, which read consolidated memory
+ * only. Nothing is lost by that — a note saved today was said in today's
+ * conversation, which the reply already carries verbatim via the 24-hour history
+ * window. It also means what a tool returns is exactly what the operator sees
+ * stored on the dashboard, with no shadow set of facts in between.
+ */
+export const memoryEntries = pgTable(
+  "memory_entries",
+  {
+    id: text("id").primaryKey(),
+    /** `user` (a fact about one person) or `general` (shared cross-chat knowledge). */
+    scope: text("scope").notNull(),
+    /** The person the fact is about — set for `user` scope, null for `general`. */
+    userId: text("user_id").references(() => knownUsers.userId, { onDelete: "cascade" }),
+    /** The durable fact, as the model wrote it. */
+    content: text("content").notNull(),
+    /** Chat the note was saved from (provenance for the operator; not a scope). */
+    chatId: text("chat_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check("memory_entries_scope_check", sql`${t.scope} in ('user', 'general')`),
+    // A `user` note must name its person; a `general` note must not.
+    check(
+      "memory_entries_user_id_check",
+      sql`(${t.scope} = 'user') = (${t.userId} is not null)`,
+    ),
+    index("memory_entries_scope_user_idx").on(t.scope, t.userId),
+  ],
+);
+
+export type MemoryEntryRow = typeof memoryEntries.$inferSelect;
+export type MemoryEntryInsert = typeof memoryEntries.$inferInsert;
+
+/**
+ * The consolidated long-term memory of one person — **one merged document per
+ * user** (recorded decision), rewritten wholesale by the nightly job as it folds
+ * in that user's pending notes: duplicates dropped, contradictions resolved in
+ * favour of the newer fact, everything else preserved.
+ *
+ * A document rather than fact rows because this text is *injected* into replies
+ * (for the sender and the other participants of the chat), and a person's memory
+ * is read as a whole — the model needs the coherent picture, not the best-matching
+ * three lines. The embedding still lets {@link generalMemories}' search tool find
+ * a person by a fact about them ("who works at a hospital").
+ */
+export const userMemories = pgTable(
+  "user_memories",
+  {
+    userId: text("user_id")
+      .primaryKey()
+      .references(() => knownUsers.userId, { onDelete: "cascade" }),
+    /** The merged memory document — durable facts, one per line. */
+    content: text("content").notNull(),
+    /** Embedding of `content` for the semantic half of memory search. */
+    embedding: vector("embedding", { dimensions: EMBEDDING_DIMENSIONS }),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("user_memories_embedding_idx").using("hnsw", t.embedding.op("vector_cosine_ops")),
+  ],
+);
+
+export type UserMemoryRow = typeof userMemories.$inferSelect;
+export type UserMemoryInsert = typeof userMemories.$inferInsert;
+
+/**
+ * Cross-chat shared knowledge — **individual fact rows, each independently
+ * embedded** (recorded decision), as opposed to the single document per user.
+ *
+ * Rows rather than a document because general memory is *retrieved*, never
+ * injected: it grows without bound across every chat, so a reply can only afford
+ * the handful of facts relevant to the question, which means each fact needs its
+ * own vector. It also makes a single wrong fact editable/deletable on the
+ * dashboard without rewriting everything around it.
+ *
+ * The nightly job reconciles each pending note against the existing rows it is
+ * most similar to: a genuinely new fact is inserted, a restatement is skipped,
+ * and a contradiction replaces the rows it supersedes.
+ */
+export const generalMemories = pgTable(
+  "general_memories",
+  {
+    id: text("id").primaryKey(),
+    /** One durable, self-contained fact. */
+    content: text("content").notNull(),
+    /** Embedding of `content` for the semantic half of memory search. Null when embedding failed. */
+    embedding: vector("embedding", { dimensions: EMBEDDING_DIMENSIONS }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // Vector half of the hybrid search. The full-text half uses a GIN index on
+    // `to_tsvector('simple', content)`, added by hand in the migration (an
+    // expression index has no Drizzle column to hang off) — same as chat_summaries.
+    index("general_memories_embedding_idx").using("hnsw", t.embedding.op("vector_cosine_ops")),
+  ],
+);
+
+export type GeneralMemoryRow = typeof generalMemories.$inferSelect;
+export type GeneralMemoryInsert = typeof generalMemories.$inferInsert;
+
 export type TraceRow = typeof traces.$inferSelect;
 export type TraceInsert = typeof traces.$inferInsert;
 export type TraceEventRow = typeof traceEvents.$inferSelect;

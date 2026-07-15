@@ -1,4 +1,5 @@
 import {
+  Brain,
   Bug,
   CalendarClock,
   Image,
@@ -37,6 +38,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { href: "/", label: "Overview", icon: LayoutDashboard },
       { href: "/history", label: "History", icon: MessageSquare },
+      { href: "/memory", label: "Memory", icon: Brain },
       { href: "/scheduled-tasks", label: "Scheduled tasks", icon: CalendarClock },
       { href: "/vision", label: "Vision", icon: Image },
       { href: "/self-improvement", label: "Self-improvement", icon: Sparkles },

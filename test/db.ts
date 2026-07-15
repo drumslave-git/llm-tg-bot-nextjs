@@ -4,14 +4,29 @@ import {
   PostgreSqlContainer,
   type StartedPostgreSqlContainer,
 } from "@testcontainers/postgresql";
+import { getTableName, is } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
+import { PgTable } from "drizzle-orm/pg-core";
 import { Pool } from "pg";
 
 import type { DrizzleDb } from "@/db/drizzle";
 import * as schema from "@/db/schema";
 
 const MIGRATIONS_FOLDER = fileURLToPath(new URL("../db/migrations", import.meta.url));
+
+/**
+ * Every table in the schema, derived rather than listed.
+ *
+ * This used to be a hand-written name list, which silently went stale the moment
+ * a feature added a table: rows from one test leaked into the next, and the
+ * failure surfaced as a baffling duplicate-key error in an unrelated assertion.
+ * Reading the tables off the schema means a new table is isolated the day it
+ * exists, with nothing to remember.
+ */
+const ALL_TABLES = Object.values(schema).flatMap((value) =>
+  is(value, PgTable) ? [`"${getTableName(value)}"`] : [],
+);
 
 /**
  * Integration test database backed by a real Postgres (Testcontainers). Start
@@ -50,9 +65,7 @@ export async function startTestDb(): Promise<TestDb> {
     db,
     connectionUri,
     async truncate() {
-      await pool.query(
-        'TRUNCATE TABLE "trace_events", "traces", "settings", "known_users", "known_groups", "group_members", "personalities", "chat_messages", "chat_summaries", "chat_summary_days", "message_media", "scheduled_tasks", "users_feedbacks", "users_communication_preferences", "self_corrections" CASCADE',
-      );
+      await pool.query(`TRUNCATE TABLE ${ALL_TABLES.join(", ")} CASCADE`);
     },
     async stop() {
       await pool.end();

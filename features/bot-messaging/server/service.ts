@@ -104,6 +104,14 @@ export interface BotMessagingDeps {
    */
   loadChatContext?: () => Promise<{ content: string; data?: Record<string, unknown> } | null>;
   /**
+   * Load the long-term memory of the people in this conversation (the sender, plus
+   * the other known participants in a group), injected as a system message after
+   * the chat context: identity first, then what is durably known about those
+   * identities. Resolves null when the bot knows nothing about anyone here. `data`
+   * is recorded verbatim on the trace step. Best-effort — must never fail the reply.
+   */
+  loadMemory?: () => Promise<{ content: string; data?: Record<string, unknown> } | null>;
+  /**
    * Load the sender's latest communication preferences (distilled from their
    * 👍/👎 feedback by the self-improvement job), injected as a system message
    * after the chat context so the reply adapts to this person. Resolves null
@@ -303,7 +311,23 @@ export async function handleIncomingMessage(
         }
       }
 
-      // 2b'. Sender preferences — what this person likes/dislikes about the
+      // 2b'. Long-term memory — what the bot durably knows about the people in
+      // this conversation, injected right after the chat context: the roster says
+      // *who* is here, this says what is known *about* them. Skipped when the bot
+      // knows nothing about anyone here.
+      let memory: { content: string; data?: Record<string, unknown> } | null = null;
+      if (deps.loadMemory) {
+        memory = await deps.loadMemory();
+        if (memory) {
+          await trace.event({
+            type: "step",
+            message: "long-term memory loaded",
+            data: memory.data ?? {},
+          });
+        }
+      }
+
+      // 2b''. Sender preferences — what this person likes/dislikes about the
       // bot's replies (distilled from their feedback), injected as a system
       // message after the chat context. Skipped when the sender has none.
       let senderPreferences: { content: string; data?: Record<string, unknown> } | null = null;
@@ -380,6 +404,7 @@ export async function handleIncomingMessage(
       const messages: ChatMessage[] = [
         { role: "system", content: systemPrompt },
         ...(chatContext ? [{ role: "system" as const, content: chatContext.content }] : []),
+        ...(memory ? [{ role: "system" as const, content: memory.content }] : []),
         ...(senderPreferences
           ? [{ role: "system" as const, content: senderPreferences.content }]
           : []),

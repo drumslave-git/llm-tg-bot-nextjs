@@ -13,6 +13,10 @@ import {
   registerLinkFetchMcpTools,
 } from "@/features/link-fetch/server/mcp-tools";
 import {
+  MEMORY_TOOL_NAMES,
+  registerMemoryMcpTools,
+} from "@/features/memory/server/mcp-tools";
+import {
   registerScheduledTasksMcpTools,
   SCHEDULED_TASKS_TOOL_NAMES,
 } from "@/features/scheduled-tasks/server/mcp-tools";
@@ -57,6 +61,7 @@ async function build(): Promise<BotMcpRegistry> {
     registerScheduledTasksMcpTools,
     SCHEDULED_TASKS_TOOL_NAMES,
   );
+  registry.registerTools("memory", registerMemoryMcpTools, MEMORY_TOOL_NAMES);
   await registry.finishRegistration();
   return registry;
 }

@@ -103,6 +103,13 @@ export const FEATURES = {
     realtimeTopic: "feedback",
     path: "/self-improvement",
   },
+  memory: {
+    id: "memory",
+    label: "Memory",
+    realtimeTopic: "memory",
+    relatedIdsKey: "memory",
+    path: "/memory",
+  },
 
   // Per-tool trace scopes. Every MCP tool call is recorded under
   // `mcp-tools-<owning-feature>` (see `server/mcp/tool-trace.ts`), so each tool
@@ -128,6 +135,11 @@ export const FEATURES = {
   "mcp-tools-scheduled-tasks": {
     id: "mcp-tools-scheduled-tasks",
     label: "Scheduled task tools",
+    path: "/tools",
+  },
+  "mcp-tools-memory": {
+    id: "mcp-tools-memory",
+    label: "Memory tools",
     path: "/tools",
   },
 } as const satisfies Record<string, FeatureDescriptor>;

@@ -4,6 +4,7 @@ import {
   startSummaryScheduler,
   stopSummaryScheduler,
 } from "@/features/history/server/summary-scheduler";
+import { startMemoryScheduler, stopMemoryScheduler } from "@/features/memory/server/scheduler";
 import { startTaskScheduler, stopTaskScheduler } from "@/features/scheduled-tasks/server/scheduler";
 import {
   startSelfImprovementScheduler,
@@ -30,6 +31,7 @@ export function registerNode(): void {
     stopTaskScheduler();
     stopSelfImprovementScheduler();
     stopSummaryScheduler();
+    stopMemoryScheduler();
     await Promise.race([
       stopBot().catch(() => undefined),
       new Promise((resolve) => setTimeout(resolve, 3000)),
@@ -60,6 +62,13 @@ export function registerNode(): void {
   // (including any days imported or edited since the last run); nothing due, or no
   // LLM configured, settles as a no-op.
   startSummaryScheduler();
+
+  // Start the daily memory-consolidation poller. At its configured local run time
+  // it folds the notes the bot saved during the day into durable memory (one merge
+  // per person, one reconcile per general fact). Notes are already readable before
+  // this runs — replies fold the pending queue in — so nothing due, or no LLM
+  // configured, settles as a harmless no-op.
+  startMemoryScheduler();
 
   // Fire-and-forget: do not block server startup on the Telegram handshake.
   void startBot().then((status) => {

@@ -29,6 +29,7 @@ import {
   getGroupContext,
   rememberGroupActivity,
 } from "@/features/known-groups/server/service";
+import { getMemoryContext } from "@/features/memory/server/service";
 import { getToolset } from "@/features/mcp-tools/server/service";
 import { findReplyMediaMessage, messageHasVisionMedia } from "@/features/vision/detect";
 import { mediaKindLabel, toVisionParts } from "@/features/vision/format";
@@ -229,6 +230,13 @@ function buildDeps(
       : senderId != null
         ? () => getUserContext(senderId).catch(() => null)
         : undefined,
+    // What the bot durably knows about the people here: the sender, plus the other
+    // known participants in a group (so it can follow talk *about* someone it
+    // knows without being asked to look them up). General memory is not injected —
+    // the model reaches it with the memory tools. Best-effort — a lookup failure
+    // resolves null rather than dropping the reply.
+    loadMemory: () =>
+      getMemoryContext({ chatId, senderId, isGroup }).catch(() => null),
     // The sender's learned communication preferences (from their 👍/👎
     // feedback), so the reply adapts to this person in groups and DMs alike.
     // Best-effort — a lookup failure resolves null rather than dropping the reply.
