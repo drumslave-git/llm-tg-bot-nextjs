@@ -110,6 +110,17 @@ export const FEATURES = {
     relatedIdsKey: "memory",
     path: "/memory",
   },
+  // Its own feature id rather than an action under `memory`, for the same reason
+  // `history-summaries` is split from `history`: one nightly run produces both
+  // extraction and consolidation traces, and an operator asking "what did the bot
+  // decide to remember from Tuesday" must be able to filter to that half alone.
+  "memory-extraction": {
+    id: "memory-extraction",
+    label: "Memory extraction",
+    realtimeTopic: "memory",
+    relatedIdsKey: "memory",
+    path: "/memory",
+  },
   analytics: {
     id: "analytics",
     label: "Analytics",

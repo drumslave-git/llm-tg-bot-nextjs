@@ -6,7 +6,13 @@ import { z } from "zod";
 import { resolveChatUserByReference } from "@/features/known-users/server/service";
 import { getToolContext } from "@/server/mcp/context";
 
-import { MAX_FACT_LENGTH, MIN_FACT_LENGTH } from "../prompt";
+import {
+  DURABLE_FACT_KINDS,
+  MAX_FACT_LENGTH,
+  MIN_FACT_LENGTH,
+  NON_DURABLE_FACT_KINDS,
+  SELF_CONTAINED_FACT_RULE,
+} from "../prompt";
 import type { MemoryMatch } from "../types";
 import { readMemory, saveMemoryNote, searchMemory } from "./service";
 
@@ -45,7 +51,12 @@ async function resolveSubjectId(
   if (resolved.status === "not_found") {
     return {
       ok: false,
-      error: `No one in this chat is known as "${reference}". You can only remember facts about people who have messaged here.`,
+      // Naming the way forward, not just the refusal: a fact about someone the bot
+      // cannot key on is still worth keeping, and general knowledge is where it goes.
+      error:
+        `No one in this chat is known as "${reference}", so a fact cannot be filed under them. ` +
+        `If you were saving a fact, save it with scope 'general' instead and write "${reference}" ` +
+        "into the fact itself so it is not lost.",
     };
   }
   if (resolved.status === "ambiguous") {
@@ -116,11 +127,8 @@ export function registerMemoryMcpTools(server: McpServer): void {
         "MUST call, before you reply, whenever the message asks you to remember, note, save, keep " +
         "in mind, or not forget something.\n" +
         "ALSO call, without being asked, the moment someone reveals something lastingly true about " +
-        "themselves or another person — their name or what they want to be called, where they " +
-        "live or are from, their job or studies, their family and pets, a stable preference or " +
-        "taste, a skill, a health constraint, a boundary, a recurring plan, or a standing " +
-        "instruction about how they want you to behave. Saving proactively is expected of you, " +
-        "not optional: prefer saving a fact that turns out to be minor over losing one that " +
+        `themselves or another person — ${DURABLE_FACT_KINDS}. Saving proactively is expected of ` +
+        "you, not optional: prefer saving a fact that turns out to be minor over losing one that " +
         "mattered.\n" +
         "Use scope 'user' for a fact about a specific person (this is how you remember someone " +
         "across chats). By default the fact is saved about the person you are talking to right " +
@@ -128,12 +136,12 @@ export function registerMemoryMcpTools(server: McpServer): void {
         "already see for them (their first name, @username, or a known nickname) — never a numeric " +
         "id. Use scope 'general' for knowledge that is not about any one person — a definition, a " +
         "rule, a convention, how something works.\n" +
-        "Do NOT save: guesses or inferences from vibes, passing moods, jokes, insults, one-off " +
-        "plans, or ordinary chit-chat. Do not re-save something you have already saved.\n" +
-        "Save ONE fact per call — make several calls for several facts — and write each as a " +
-        "single self-contained sentence that will still make sense to someone reading it months " +
-        "later with no memory of this conversation (include the who and the what, not 'he said " +
-        "yes').",
+        "If a 'user' save is rejected because you cannot identify the person, do NOT give up on " +
+        "the fact: save it again with scope 'general', writing their name into the fact itself " +
+        "('Bob lives in Porto'). A fact about someone you cannot file under a person is still " +
+        "worth knowing.\n" +
+        `Do NOT save: ${NON_DURABLE_FACT_KINDS}. Do not re-save something you have already saved.\n` +
+        `Save ONE fact per call — make several calls for several facts — and ${SELF_CONTAINED_FACT_RULE}.`,
       inputSchema: {
         scope: memoryScope.describe(
           "'user' for a fact about a specific person, 'general' for shared knowledge",
@@ -206,23 +214,20 @@ export function registerMemoryMcpTools(server: McpServer): void {
   server.registerTool(
     MEMORY_GET_TOOL,
     {
-      title: "Read everything stored in one memory scope",
+      title: "Read everything you durably know about one person",
       description:
-        "Read out a whole memory scope. With scope 'user', returns every durable fact you know " +
-        "about a person — by default the person you are talking to now, or someone else in this " +
-        "chat when you name them in 'person' (by a name you already see for them, never a numeric " +
-        "id); with scope 'general', returns all the shared knowledge you have stored (definitions, " +
-        "rules, conventions). Use it when you need the full picture rather than a specific answer — " +
-        "for example before saying you do not know something durable about someone, or to review " +
-        "what shared knowledge exists.",
+        "Read out every durable fact you know about one person — by default the person you are " +
+        "talking to now, or someone else in this chat when you name them in 'person' (by a name " +
+        "you already see for them, never a numeric id). Use it when you need the full picture of " +
+        "someone rather than a specific answer — for example before saying you do not know " +
+        "something durable about them.",
       inputSchema: {
-        scope: memoryScope.describe("Which memory to read out"),
         person: z
           .string()
           .optional()
           .describe(
             "Whose memory to read, named by a name you already see for them (first name, @username, " +
-              "or known nickname). Omit to read the person you are talking to now. Ignored for scope 'general'.",
+              "or known nickname). Omit to read the person you are talking to now.",
           ),
       },
       outputSchema: memoryOutputSchema,
@@ -233,43 +238,34 @@ export function registerMemoryMcpTools(server: McpServer): void {
         openWorldHint: false,
       },
     },
-    async ({ scope, person }) => {
-      let subjectId: string | null = null;
-      if (scope === "user") {
-        const subject = await resolveSubjectId(person);
-        if (!subject.ok) {
-          return { content: [{ type: "text" as const, text: subject.error }], isError: true };
-        }
-        subjectId = subject.userId;
+    async ({ person }) => {
+      const subject = await resolveSubjectId(person);
+      if (!subject.ok) {
+        return { content: [{ type: "text" as const, text: subject.error }], isError: true };
       }
-      const matches = await readMemory({ scope, userId: subjectId });
-      return buildResult(
-        matches,
-        scope === "user"
-          ? "(nothing durable is stored about this person yet)"
-          : "(no general knowledge is stored yet)",
-      );
+      const matches = await readMemory({ userId: subject.userId });
+      return buildResult(matches, "(nothing durable is stored about this person yet)");
     },
   );
 
   server.registerTool(
     MEMORY_SEARCH_TOOL,
     {
-      title: "Search long-term memory",
+      title: "Search what you durably know about people",
       description:
-        "Search everything you durably know — both facts about people and shared general " +
-        "knowledge — by meaning as well as wording, so it finds a fact even when the question " +
-        "phrases it differently than it was stored. Use it to recall something durable when you " +
-        "do not know which person or scope it belongs to, or to check what you already know " +
-        "before answering a question about a lasting fact. Each result is tagged with the scope " +
-        "and person it belongs to. Note this searches durable memory — what you know about " +
-        "people and the world — not what was said in a past conversation.",
+        "Search every durable fact you know about people — including people who are not in this " +
+        "conversation — by meaning as well as wording, so it finds a fact even when the question " +
+        "phrases it differently than it was stored. Use it to recall something durable about " +
+        "someone when you do not know who it belongs to, or to check what you already know " +
+        "before answering a question about a lasting fact. Each result is tagged with the person " +
+        "it belongs to. Note this searches durable memory — what you know about people — not " +
+        "what was said in a past conversation.",
       inputSchema: {
         query: z
           .union([z.string().min(1), z.array(z.string().min(1)).min(1)])
           .describe(
-            "What to recall — a topic, name, preference, or fact. Pass several phrasings as an " +
-              "array to search them all at once.",
+            "What to recall — a name, preference, or fact about someone. Pass several phrasings " +
+              "as an array to search them all at once.",
           ),
         limit: z
           .number()
@@ -293,7 +289,10 @@ export function registerMemoryMcpTools(server: McpServer): void {
         queries,
         limit: limit ?? SEARCH_LIMIT_DEFAULT,
       });
-      return buildResult(matches, "(no matching memory — this may simply never have been saved)");
+      return buildResult(
+        matches,
+        "(no matching memory about anyone — this may simply never have been saved)",
+      );
     },
   );
 }

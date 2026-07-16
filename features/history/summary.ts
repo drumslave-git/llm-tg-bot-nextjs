@@ -15,13 +15,23 @@ import { extractJsonObject } from "@/lib/json";
  * the exact original messages.
  */
 
-/** A stored message, as much of it as summarization needs. */
+/**
+ * One stored message with its speaker resolved — the unit both consumers of a
+ * chat-day transcript read: summarization here, and passive memory extraction
+ * (`features/memory/server/extract.ts`).
+ */
 export interface SummarizableMessage {
   telegramMessageId: number;
   role: "user" | "assistant";
   content: string;
   /** Resolved speaker label (known-user name, or the bot). */
   label: string;
+  /**
+   * Sender's known-user id, or null for the bot's own rows. Summarization ignores
+   * it — it exists for extraction, which must attribute a `user`-scope fact to a
+   * real id rather than to a display name the model read off a transcript line.
+   */
+  userId: string | null;
   sentAt: string;
 }
 

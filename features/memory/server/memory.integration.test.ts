@@ -1,19 +1,22 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+﻿import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { closePool } from "@/db/pool";
-import { generalMemories, groupMembers, knownGroups, knownUsers } from "@/db/schema";
+import {
+  chatMessages,
+  generalMemories,
+  groupMembers,
+  knownGroups,
+  knownUsers,
+} from "@/db/schema";
 import type { ChatCompletionResult, ChatMessage } from "@/server/llm/client";
 import { listTraces } from "@/server/trace/repository";
 import { startTestDb, type TestDb } from "@/test/db";
 
 import { runMemoryConsolidation, type ConsolidateDeps } from "./consolidate";
+import { runMemoryExtraction, type ExtractDeps } from "./extract";
+import { getGeneralMemory, getUserMemory, listMemoryEntries, searchMemories } from "./repository";
 import {
-  getUserMemory,
-  listGeneralMemories,
-  listMemoryEntries,
-  searchMemories,
-} from "./repository";
-import {
+  editGeneralMemory,
   editUserMemory,
   forgetGeneralMemory,
   getMemoryContext,
@@ -23,12 +26,11 @@ import {
 } from "./service";
 
 /**
- * Integration coverage for memory against a real Postgres with pgvector: the
- * `memory_save` write path, the nightly consolidation (per-person document merge
- * and per-note general reconcile) with a deterministic LLM, the hybrid search, and
- * the reply-context injection — including the property that matters most, that a
- * fact saved seconds ago is usable on the very next turn without waiting for the
- * nightly job.
+ * Integration coverage for memory against a real Postgres with pgvector: both
+ * producers of the pending queue (the `memory_save` write path and passive
+ * extraction from the history mirror), the nightly consolidation (per-person
+ * document merge and per-note general reconcile) with a deterministic LLM, the
+ * hybrid search, and the reply-context injection.
  */
 
 let ctx: TestDb;
@@ -167,7 +169,7 @@ describe("reply injection", () => {
     expect(context?.data).toMatchObject({ userIds: [ADA], factCount: 1 });
   });
 
-  it("does NOT inject a pending note — memory is what survived consolidation", async () => {
+  it("does NOT inject a pending note â€” memory is what survived consolidation", async () => {
     await seedUser(ADA, "Ada");
     await saveMemoryNote(
       { scope: "user", userId: ADA, content: "Lives in Lisbon.", chatId: CHAT_ID },
@@ -216,25 +218,43 @@ describe("reply injection", () => {
     ).toBeNull();
   });
 
-  it("does not inject general knowledge — that is tool-only", async () => {
+  /**
+   * The reverse of what this asserted until 2026-07-16, when general knowledge was
+   * tool-only: a general fact now reaches the prompt on its own, without the model
+   * having to think to look it up.
+   */
+  it("injects general knowledge once consolidated, with no tool call needed", async () => {
     await seedUser(ADA, "Ada");
     await saveMemoryNote(
       { scope: "general", userId: null, content: "Standup is at 09:30.", chatId: CHAT_ID },
       ctx.db,
     );
     await runMemoryConsolidation(
-      scriptedLlm(['{"action":"insert","content":"Standup is at 09:30.","replaces":[]}']).deps,
+      scriptedLlm([JSON.stringify({ memory: "Standup is at 09:30." })]).deps,
     );
 
     const context = await getMemoryContext(
       { chatId: CHAT_ID, senderId: ADA, isGroup: false },
       ctx.db,
     );
-    expect(context).toBeNull();
+    expect(context?.content).toContain("Standup is at 09:30.");
+    expect(context?.data).toMatchObject({ generalFactCount: 1 });
+  });
+
+  it("still injects nothing from a general note that is only pending", async () => {
+    await seedUser(ADA, "Ada");
+    await saveMemoryNote(
+      { scope: "general", userId: null, content: "Standup is at 09:30.", chatId: CHAT_ID },
+      ctx.db,
+    );
+    // Queued but not consolidated — memory is what survived the merge.
+    expect(
+      await getMemoryContext({ chatId: CHAT_ID, senderId: ADA, isGroup: false }, ctx.db),
+    ).toBeNull();
   });
 });
 
-describe("nightly consolidation — user documents", () => {
+describe("nightly consolidation â€” user documents", () => {
   it("merges pending notes into one document per person, then consumes the notes", async () => {
     await seedUser(ADA, "Ada");
     await saveMemoryNote(
@@ -253,7 +273,7 @@ describe("nightly consolidation — user documents", () => {
 
     expect(result.usersUpdated).toBe(1);
     expect(result.consumed).toBe(2);
-    // One call per PERSON, not per note — the model must see the whole picture.
+    // One call per PERSON, not per note â€” the model must see the whole picture.
     expect(calls).toHaveLength(1);
     expect(calls[0].at(-1)?.content).toContain("Ada");
 
@@ -334,112 +354,103 @@ describe("nightly consolidation — user documents", () => {
   });
 });
 
-describe("nightly consolidation — general facts", () => {
-  it("stores a new fact as its own embedded row", async () => {
+describe("nightly consolidation — general knowledge", () => {
+  /** Seed the general document directly (it is a singleton row). */
+  async function seedGeneral(content: string): Promise<void> {
+    await ctx.db.insert(generalMemories).values({ content });
+  }
+
+  it("merges pending notes into the single document", async () => {
     await saveMemoryNote(
       { scope: "general", userId: null, content: "Standup is at 09:30.", chatId: CHAT_ID },
       ctx.db,
     );
     const result = await runMemoryConsolidation(
-      scriptedLlm(['{"action":"insert","content":"Standup is at 09:30.","replaces":[]}']).deps,
+      scriptedLlm([JSON.stringify({ memory: "Standup is at 09:30." })]).deps,
     );
 
-    expect(result.generalInserted).toBe(1);
-    const facts = await listGeneralMemories(ctx.db);
-    expect(facts).toHaveLength(1);
-    expect(facts[0]).toMatchObject({ content: "Standup is at 09:30.", embedded: true });
-  });
-
-  it("skips a restatement instead of storing a near-duplicate", async () => {
-    await ctx.db
-      .insert(generalMemories)
-      .values({ id: "fact-1", content: "Standup is at 09:30." });
-    await saveMemoryNote(
-      { scope: "general", userId: null, content: "The standup happens at 9:30.", chatId: CHAT_ID },
-      ctx.db,
-    );
-
-    const result = await runMemoryConsolidation(
-      scriptedLlm(['{"action":"skip","content":"","replaces":[]}']).deps,
-    );
-
-    expect(result.generalSkipped).toBe(1);
-    expect(await listGeneralMemories(ctx.db)).toHaveLength(1);
-    // The note is still consumed — it has been considered, and re-spending it nightly would be waste.
+    expect(result.generalUpdated).toBe(true);
+    const stored = await getGeneralMemory(ctx.db);
+    expect(stored?.content).toBe("Standup is at 09:30.");
     expect(await listMemoryEntries(ctx.db)).toHaveLength(0);
   });
 
-  it("replaces the facts a correction supersedes", async () => {
-    await ctx.db.insert(generalMemories).values({
-      id: "fact-1",
-      content: "Standup is at 09:30.",
-      embedding: fakeEmbedding("Standup is at 09:30."),
-    });
+  it("shows the existing document to the merge, so a correction can supersede a line", async () => {
+    await seedGeneral("Standup is at 09:30.\nDeploys happen on Thursdays.");
     await saveMemoryNote(
       { scope: "general", userId: null, content: "Standup moved to 10:00.", chatId: CHAT_ID },
       ctx.db,
     );
 
     const { deps, calls } = scriptedLlm([
-      '{"action":"replace","content":"Standup is at 10:00.","replaces":["fact-1"]}',
+      JSON.stringify({ memory: "Standup is at 10:00.\nDeploys happen on Thursdays." }),
     ]);
     const result = await runMemoryConsolidation(deps);
 
-    // The existing fact was offered as a candidate, by id.
-    expect(calls[0].at(-1)?.content).toContain("[fact-1] Standup is at 09:30.");
-    expect(result.generalReplaced).toBe(1);
-    const facts = await listGeneralMemories(ctx.db);
-    expect(facts).toHaveLength(1);
-    expect(facts[0].content).toBe("Standup is at 10:00.");
+    const prompt = calls[0].at(-1)?.content as string;
+    expect(prompt).toContain("Standup is at 09:30.");
+    expect(prompt).toContain("- Standup moved to 10:00.");
+
+    expect(result.generalUpdated).toBe(true);
+    const stored = await getGeneralMemory(ctx.db);
+    expect(stored?.content).toBe("Standup is at 10:00.\nDeploys happen on Thursdays.");
   });
 
-  it("offers an unembedded fact as a candidate, so it can still be superseded", async () => {
-    // A fact stored while no embedding model was configured has a null vector. If
-    // the candidate lookup were vector-only it would be invisible here, and the
-    // job would store a contradictory duplicate beside it instead of replacing it.
-    await ctx.db.insert(generalMemories).values({ id: "fact-1", content: "Standup is at 09:30." });
-    await saveMemoryNote(
-      { scope: "general", userId: null, content: "Standup moved to 10:00.", chatId: CHAT_ID },
-      ctx.db,
-    );
+  /**
+   * The whole run now costs ONE general call regardless of backlog — the point of
+   * merging a document rather than reconciling note by note.
+   */
+  it("spends one LLM call for the whole general backlog", async () => {
+    for (const content of ["Standup is at 09:30.", "Deploys on Thursdays.", "Fridays are quiet."]) {
+      await saveMemoryNote({ scope: "general", userId: null, content, chatId: CHAT_ID }, ctx.db);
+    }
 
     const { deps, calls } = scriptedLlm([
-      '{"action":"replace","content":"Standup is at 10:00.","replaces":["fact-1"]}',
+      JSON.stringify({ memory: "Standup is at 09:30.\nDeploys on Thursdays.\nFridays are quiet." }),
     ]);
     const result = await runMemoryConsolidation(deps);
 
-    expect(calls[0].at(-1)?.content).toContain("[fact-1] Standup is at 09:30.");
-    expect(result.generalReplaced).toBe(1);
-    const facts = await listGeneralMemories(ctx.db);
-    expect(facts).toHaveLength(1);
-    expect(facts[0].content).toBe("Standup is at 10:00.");
+    expect(calls).toHaveLength(1);
+    expect(result.consumed).toBe(3);
+    expect(await listMemoryEntries(ctx.db)).toHaveLength(0);
   });
 
-  it("cannot be talked into deleting a fact it was never offered", async () => {
-    await ctx.db.insert(generalMemories).values({ id: "fact-keep", content: "Unrelated fact." });
+  /**
+   * The property that matters most: a garbage response must never be able to
+   * erase a shared document that took months to accumulate.
+   */
+  it("leaves the document untouched and the notes pending when the merge returns nothing", async () => {
+    await seedGeneral("Standup is at 09:30.");
     await saveMemoryNote(
-      { scope: "general", userId: null, content: "Standup is at 10:00.", chatId: CHAT_ID },
+      { scope: "general", userId: null, content: "Deploys on Thursdays.", chatId: CHAT_ID },
       ctx.db,
     );
 
-    // The model names an id that was never a candidate; it must be ignored, and
-    // the decision degrade to a plain insert.
-    const result = await runMemoryConsolidation(
-      scriptedLlm([
-        '{"action":"replace","content":"Standup is at 10:00.","replaces":["fact-keep"]}',
-      ]).deps,
-    );
+    const result = await runMemoryConsolidation(scriptedLlm(['{"memory": ""}']).deps);
 
-    expect(result.generalReplaced).toBe(0);
-    expect(result.generalInserted).toBe(1);
-    const contents = (await listGeneralMemories(ctx.db)).map((f) => f.content);
-    expect(contents).toContain("Unrelated fact.");
-    expect(contents).toContain("Standup is at 10:00.");
+    expect(result.failed).toBe(1);
+    expect(result.generalUpdated).toBe(false);
+    expect((await getGeneralMemory(ctx.db))?.content).toBe("Standup is at 09:30.");
+    // Not consumed — the note gets another chance tomorrow.
+    expect(await listMemoryEntries(ctx.db)).toHaveLength(1);
+  });
+
+  it("stores a fact about a person it cannot key on, rather than losing it", async () => {
+    // Nobody is a known user here, so this could never be a `user` document —
+    // general knowledge is what keeps it.
+    await saveMemoryNote(
+      { scope: "general", userId: null, content: "Bob lives in Porto.", chatId: CHAT_ID },
+      ctx.db,
+    );
+    await runMemoryConsolidation(
+      scriptedLlm([JSON.stringify({ memory: "Bob lives in Porto." })]).deps,
+    );
+    expect((await getGeneralMemory(ctx.db))?.content).toBe("Bob lives in Porto.");
   });
 });
 
 describe("consolidation without an embedding model", () => {
-  it("still stores and injects memory — only semantic search is lost", async () => {
+  it("still stores and injects memory â€” only semantic search is lost", async () => {
     await seedUser(ADA, "Ada");
     await saveMemoryNote(
       { scope: "user", userId: ADA, content: "Lives in Lisbon.", chatId: CHAT_ID },
@@ -463,22 +474,73 @@ describe("consolidation without an embedding model", () => {
   });
 });
 
+describe("general knowledge injection", () => {
+  async function seedGeneral(content: string): Promise<void> {
+    await ctx.db.insert(generalMemories).values({ content });
+  }
+
+  it("injects the general document into a reply, alongside the sender's own memory", async () => {
+    await seedUser(ADA, "Ada");
+    await saveMemoryNote(
+      { scope: "user", userId: ADA, content: "Lives in Lisbon.", chatId: CHAT_ID },
+      ctx.db,
+    );
+    await runMemoryConsolidation(scriptedLlm(['{"memory": "Lives in Lisbon."}']).deps);
+    await seedGeneral("Standup is at 09:30.\nBob lives in Porto.");
+
+    const context = await getMemoryContext(
+      { chatId: CHAT_ID, senderId: ADA, isGroup: false },
+      ctx.db,
+    );
+    expect(context?.content).toContain("Ada (@ada) (the person you are replying to)");
+    expect(context?.content).toContain("Lives in Lisbon.");
+    expect(context?.content).toContain("General knowledge you durably hold");
+    expect(context?.content).toContain("Standup is at 09:30.");
+    expect(context?.content).toContain("Bob lives in Porto.");
+    expect(context?.data).toMatchObject({ factCount: 1, generalFactCount: 2 });
+  });
+
+  /**
+   * The point of injecting it: general knowledge does not depend on who is
+   * talking, so a stranger the bot knows nothing about still gets it.
+   */
+  it("injects general knowledge even when the bot knows nobody in the chat", async () => {
+    await seedGeneral("Standup is at 09:30.");
+
+    const context = await getMemoryContext(
+      { chatId: CHAT_ID, senderId: "999999", isGroup: false },
+      ctx.db,
+    );
+    expect(context?.content).toContain("Standup is at 09:30.");
+    expect(context?.data).toMatchObject({ userIds: [], factCount: 0, generalFactCount: 1 });
+  });
+
+  it("injects general knowledge when there is no identified sender at all", async () => {
+    await seedGeneral("Standup is at 09:30.");
+
+    const context = await getMemoryContext(
+      { chatId: CHAT_ID, senderId: null, isGroup: false },
+      ctx.db,
+    );
+    expect(context?.content).toContain("Standup is at 09:30.");
+  });
+
+  it("still injects nothing when the bot knows nothing at all", async () => {
+    expect(
+      await getMemoryContext({ chatId: CHAT_ID, senderId: ADA, isGroup: false }, ctx.db),
+    ).toBeNull();
+  });
+});
+
 describe("search", () => {
-  it("finds a consolidated fact by wording, across both scopes", async () => {
+  it("finds a consolidated fact about a person by wording", async () => {
     await seedUser(ADA, "Ada");
     await saveMemoryNote(
       { scope: "user", userId: ADA, content: "Ada bakes sourdough every weekend.", chatId: CHAT_ID },
       ctx.db,
     );
-    await saveMemoryNote(
-      { scope: "general", userId: null, content: "Standup is at 09:30.", chatId: CHAT_ID },
-      ctx.db,
-    );
     await runMemoryConsolidation(
-      scriptedLlm([
-        '{"memory": "Ada bakes sourdough every weekend."}',
-        '{"action":"insert","content":"Standup is at 09:30.","replaces":[]}',
-      ]).deps,
+      scriptedLlm(['{"memory": "Ada bakes sourdough every weekend."}']).deps,
     );
 
     const hits = await searchMemories(ctx.db, {
@@ -488,16 +550,28 @@ describe("search", () => {
     });
     expect(hits).toHaveLength(1);
     expect(hits[0]).toMatchObject({ scope: "user", userId: ADA });
-
-    const standup = await searchMemories(ctx.db, {
-      queryText: "standup",
-      queryVector: null,
-      limit: 8,
-    });
-    expect(standup[0]).toMatchObject({ scope: "general", userId: null });
   });
 
-  it("does NOT find a pending note — the tools read consolidated memory only", async () => {
+  /**
+   * General knowledge is injected into every reply, so searching it would hand
+   * the model text already in its context. Not an oversight — the reason search
+   * exists at all is to reach what is NOT injected.
+   */
+  it("does NOT search general knowledge — it is already in every prompt", async () => {
+    await saveMemoryNote(
+      { scope: "general", userId: null, content: "Standup is at 09:30.", chatId: CHAT_ID },
+      ctx.db,
+    );
+    await runMemoryConsolidation(scriptedLlm(['{"memory": "Standup is at 09:30."}']).deps);
+    // It is genuinely stored...
+    expect((await getGeneralMemory(ctx.db))?.content).toBe("Standup is at 09:30.");
+    // ...and deliberately unreachable by search.
+    expect(
+      await searchMemories(ctx.db, { queryText: "standup", queryVector: null, limit: 8 }),
+    ).toEqual([]);
+  });
+
+  it("does NOT find a pending note â€” the tools read consolidated memory only", async () => {
     await seedUser(ADA, "Ada");
     await saveMemoryNote(
       { scope: "user", userId: ADA, content: "Ada bakes sourdough.", chatId: CHAT_ID },
@@ -505,7 +579,7 @@ describe("search", () => {
     );
 
     // The note is queued but not consolidated, so it is not memory yet. What the
-    // tools return is exactly what is stored — no shadow set of facts in between.
+    // tools return is exactly what is stored â€” no shadow set of facts in between.
     expect(await searchMemory({ queries: ["sourdough"], limit: 8 }, ctx.db)).toEqual([]);
   });
 });
@@ -518,13 +592,13 @@ describe("readMemory (memory_get)", () => {
       ctx.db,
     );
     await runMemoryConsolidation(scriptedLlm(['{"memory": "Lives in Lisbon."}']).deps);
-    // Saved after consolidation — still queued, so still not memory.
+    // Saved after consolidation â€” still queued, so still not memory.
     await saveMemoryNote(
       { scope: "user", userId: ADA, content: "Likes rye.", chatId: CHAT_ID },
       ctx.db,
     );
 
-    const facts = await readMemory({ scope: "user", userId: ADA }, ctx.db);
+    const facts = await readMemory({ userId: ADA }, ctx.db);
     expect(facts).toEqual([{ scope: "user", userId: ADA, content: "Lives in Lisbon." }]);
   });
 });
@@ -550,10 +624,17 @@ describe("operator edits", () => {
     expect(edit?.status).toBe("success");
   });
 
-  it("forgets a general fact", async () => {
-    await ctx.db.insert(generalMemories).values({ id: "fact-1", content: "Standup is at 09:30." });
-    await forgetGeneralMemory("fact-1", ctx.db);
-    expect(await listGeneralMemories(ctx.db)).toHaveLength(0);
+  it("rewrites the general document by hand", async () => {
+    await ctx.db.insert(generalMemories).values({ content: "Standup is at 09:30." });
+    const updated = await editGeneralMemory({ content: "Standup is at 10:00." }, ctx.db);
+    expect(updated.content).toBe("Standup is at 10:00.");
+    expect((await getGeneralMemory(ctx.db))?.content).toBe("Standup is at 10:00.");
+  });
+
+  it("forgets all general knowledge", async () => {
+    await ctx.db.insert(generalMemories).values({ content: "Standup is at 09:30." });
+    await forgetGeneralMemory(ctx.db);
+    expect(await getGeneralMemory(ctx.db)).toBeNull();
   });
 });
 
@@ -577,5 +658,218 @@ describe("tracing", () => {
     expect(result.summary).toBe("nothing to consolidate");
     const traces = await listTraces(ctx.db, { feature: "memory", limit: 10, offset: 0 });
     expect(traces.traces).toHaveLength(0);
+  });
+});
+
+describe("passive extraction (the un-addressed half of memory)", () => {
+  /** A day in the past, so the due-scan considers it finished. */
+  const DAY = "2026-07-13";
+  const NOW = new Date("2026-07-15T12:00:00.000Z");
+
+  /** Mirror a message into history, exactly as the runtime does for every update. */
+  async function seedMessage(input: {
+    telegramMessageId: number;
+    userId: string | null;
+    content: string;
+    at?: string;
+  }): Promise<void> {
+    await ctx.db.insert(chatMessages).values({
+      chatId: GROUP_ID,
+      telegramMessageId: input.telegramMessageId,
+      role: input.userId ? "user" : "assistant",
+      userId: input.userId,
+      content: input.content,
+      sentAt: new Date(input.at ?? `${DAY}T10:00:00.000Z`),
+    });
+  }
+
+  /** A deterministic LLM for the extraction pass (no embeddings involved). */
+  function scriptedExtractor(responses: string[]): { deps: ExtractDeps; calls: ChatMessage[][] } {
+    const calls: ChatMessage[][] = [];
+    let i = 0;
+    return {
+      calls,
+      deps: {
+        complete: async (messages): Promise<ChatCompletionResult> => {
+          calls.push(messages);
+          return {
+            content: responses[i++] ?? "",
+            model: "test-model",
+            latencyMs: 1,
+          } as ChatCompletionResult;
+        },
+        timeZone: "UTC",
+        now: () => NOW,
+      },
+    };
+  }
+
+  it("learns from a day the bot was never addressed in â€” the whole point", async () => {
+    await seedUser(ADA, "Ada");
+    await seedUser(GRACE, "Grace");
+    await seedGroup();
+    // Two people talking to each other. The bot is not mentioned once, so under the
+    // reply path alone none of this would ever have reached memory.
+    await seedMessage({ telegramMessageId: 1, userId: ADA, content: "I finally moved to Lisbon." });
+    await seedMessage({ telegramMessageId: 2, userId: GRACE, content: "nice! I'm still in Porto" });
+
+    const { deps, calls } = scriptedExtractor([
+      JSON.stringify({
+        facts: [
+          { scope: "user", user_id: ADA, content: "Ada moved to Lisbon." },
+          { scope: "user", user_id: GRACE, content: "Grace lives in Porto." },
+        ],
+      }),
+    ]);
+    const result = await runMemoryExtraction(deps, ctx.db);
+
+    expect(result).toMatchObject({ days: 1, notes: 2, failures: 0 });
+    // The model was shown the roster it must attribute facts with.
+    expect(calls[0][1].content).toContain(`[id:${ADA}] Ada`);
+
+    const entries = await listMemoryEntries(ctx.db);
+    expect(entries).toHaveLength(2);
+    expect(entries.map((e) => e.content).sort()).toEqual([
+      "Ada moved to Lisbon.",
+      "Grace lives in Porto.",
+    ]);
+    // Queued against the chat they were said in, like any other note.
+    expect(entries.every((e) => e.chatId === GROUP_ID)).toBe(true);
+  });
+
+  it("hands the extracted facts to consolidation, reaching durable memory the same night", async () => {
+    await seedUser(ADA, "Ada");
+    await seedMessage({ telegramMessageId: 1, userId: ADA, content: "I'm a vet, by the way" });
+
+    await runMemoryExtraction(
+      scriptedExtractor([
+        JSON.stringify({
+          facts: [{ scope: "user", user_id: ADA, content: "Ada is a veterinarian." }],
+        }),
+      ]).deps,
+      ctx.db,
+    );
+    // The consolidator neither knows nor cares which producer queued the note.
+    await runMemoryConsolidation(
+      scriptedLlm([JSON.stringify({ memory: "Ada is a veterinarian." })]).deps,
+    );
+
+    const stored = await getUserMemory(ctx.db, ADA);
+    expect(stored?.content).toBe("Ada is a veterinarian.");
+    expect(await listMemoryEntries(ctx.db)).toHaveLength(0);
+  });
+
+  it("never re-reads an unchanged day, but re-reads one that gained messages", async () => {
+    await seedUser(ADA, "Ada");
+    await seedMessage({ telegramMessageId: 1, userId: ADA, content: "hi" });
+
+    const first = scriptedExtractor([JSON.stringify({ facts: [] })]);
+    await runMemoryExtraction(first.deps, ctx.db);
+    expect(first.calls).toHaveLength(1);
+
+    // A day that yielded nothing is still marked read â€” otherwise a chat-day of
+    // pure noise would cost an LLM pass every single night, forever.
+    const second = scriptedExtractor([JSON.stringify({ facts: [] })]);
+    const rerun = await runMemoryExtraction(second.deps, ctx.db);
+    expect(second.calls).toHaveLength(0);
+    expect(rerun.summary).toBe("nothing to extract");
+
+    // But a day that gained a message is genuinely new work again (self-healing).
+    await seedMessage({ telegramMessageId: 2, userId: ADA, content: "I'm a vet" });
+    const third = scriptedExtractor([
+      JSON.stringify({ facts: [{ scope: "user", user_id: ADA, content: "Ada is a vet." }] }),
+    ]);
+    const healed = await runMemoryExtraction(third.deps, ctx.db);
+    expect(third.calls).toHaveLength(1);
+    expect(healed).toMatchObject({ days: 1, notes: 1 });
+  });
+
+  it("skips today â€” it is unfinished and already injected verbatim", async () => {
+    await seedUser(ADA, "Ada");
+    await seedMessage({
+      telegramMessageId: 1,
+      userId: ADA,
+      content: "said today",
+      at: NOW.toISOString(),
+    });
+
+    const { deps, calls } = scriptedExtractor([JSON.stringify({ facts: [] })]);
+    const result = await runMemoryExtraction(deps, ctx.db);
+    expect(calls).toHaveLength(0);
+    expect(result.summary).toBe("nothing to extract");
+  });
+
+  /**
+   * Regression from the first live run: imported history holds senders who were
+   * never registered as known users, and `memory_entries.user_id` references
+   * `known_users`. The roster used to be built from the transcript's ids, so the
+   * model extracted a good fact about such a person and the store refused it.
+   */
+  it("keeps an unregistered sender off the roster instead of harvesting facts it cannot store", async () => {
+    await seedUser(ADA, "Ada");
+    // GRACE speaks in the mirror but was never registered as a known user.
+    await seedMessage({ telegramMessageId: 1, userId: ADA, content: "I'm a vet" });
+    await seedMessage({ telegramMessageId: 2, userId: GRACE, content: "I live in Porto" });
+
+    const { deps, calls } = scriptedExtractor([
+      JSON.stringify({
+        facts: [{ scope: "user", user_id: ADA, content: "Ada is a veterinarian." }],
+      }),
+    ]);
+    const result = await runMemoryExtraction(deps, ctx.db);
+
+    const prompt = calls[0][1].content as string;
+    expect(prompt).toContain(`[id:${ADA}] Ada`);
+    expect(prompt).not.toContain(`[id:${GRACE}]`);
+    // Still present as context — what they said may be evidence about Ada.
+    expect(prompt).toContain("I live in Porto");
+
+    expect(result.notes).toBe(1);
+    expect(await listMemoryEntries(ctx.db)).toHaveLength(1);
+  });
+
+  it("drops a fact attributed to someone who was not in the day", async () => {
+    await seedUser(ADA, "Ada");
+    await seedMessage({ telegramMessageId: 1, userId: ADA, content: "hey" });
+
+    const result = await runMemoryExtraction(
+      scriptedExtractor([
+        JSON.stringify({
+          facts: [
+            { scope: "user", user_id: "999999", content: "A stranger lives on Mars." },
+            { scope: "general", content: "The office is closed on Fridays." },
+          ],
+        }),
+      ]).deps,
+      ctx.db,
+    );
+
+    expect(result.notes).toBe(1);
+    const entries = await listMemoryEntries(ctx.db);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ scope: "general", userId: null });
+  });
+
+  it("traces the day under its own feature, so the operator can audit what it decided", async () => {
+    await seedUser(ADA, "Ada");
+    await seedMessage({ telegramMessageId: 1, userId: ADA, content: "I have a dog named Rex" });
+
+    await runMemoryExtraction(
+      scriptedExtractor([
+        JSON.stringify({
+          facts: [{ scope: "user", user_id: ADA, content: "Ada has a dog named Rex." }],
+        }),
+      ]).deps,
+      ctx.db,
+    );
+
+    const traces = await listTraces(ctx.db, {
+      feature: "memory-extraction",
+      limit: 10,
+      offset: 0,
+    });
+    expect(traces.traces).toHaveLength(1);
+    expect(traces.traces[0]).toMatchObject({ action: "extract", status: "success" });
+    expect(traces.traces[0].outputSummary).toContain("1 fact(s)");
   });
 });

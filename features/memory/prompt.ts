@@ -3,13 +3,16 @@
  * they return. Pure and client-safe (no DB, no provider) so the whole decision
  * surface of the job is unit-testable without a database or a model.
  *
- * The scopes need different passes because they are stored differently (recorded
- * decision):
- *  - a `user` memory is ONE document, so its pass is a *merge*: existing document
- *    + new notes → rewritten document.
- *  - a `general` memory is a SET of independently embedded fact rows, so its pass
- *    is a *reconcile*: one new note is compared against the existing facts most
- *    similar to it and becomes an insert, a skip, or a replacement.
+ * Both scopes are stored as one merged document (operator decision, 2026-07-16),
+ * so both passes are a *merge*: existing document + new notes → rewritten
+ * document, sharing {@link parseMergedDocument}. They stay two prompts rather than
+ * one because they are rewriting genuinely different things — a `user` document is
+ * about ONE named person and may say "they"; the `general` document is shared
+ * knowledge where every fact must name its own subject.
+ *
+ * A `general` merge previously reconciled one note at a time (insert / skip /
+ * replace) against the stored facts most similar to it, because general knowledge
+ * was a set of independently embedded rows. That is gone with the rows.
  */
 
 import { extractJsonObject } from "@/lib/json";
@@ -17,6 +20,32 @@ import { extractJsonObject } from "@/lib/json";
 /** Bounds on what may be stored. A note longer than this is rejected at the tool. */
 export const MIN_FACT_LENGTH = 2;
 export const MAX_FACT_LENGTH = 4_000;
+
+/* --------------------------------------------------- shared durability policy */
+
+/**
+ * What "durable" means, as one policy shared by both producers of the pending
+ * queue: the `memory_save` tool (the model saving mid-reply) and passive
+ * extraction (the nightly job reading the mirror). They are worded for different
+ * jobs — one pushes a model to act now, the other harvests a finished day — but
+ * they must agree on *what is worth remembering*, or the same sentence would be
+ * remembered when the bot was spoken to and dropped when it was not.
+ */
+export const DURABLE_FACT_KINDS =
+  "their name or what they want to be called, where they live or are from, their job or " +
+  "studies, their family and pets, a stable preference or taste, a skill, a health constraint, " +
+  "a boundary, a recurring plan, or a standing instruction about how they want you to behave";
+
+/** The other half of the policy: what must never reach the queue. */
+export const NON_DURABLE_FACT_KINDS =
+  "guesses or inferences from vibes, passing moods, jokes, insults, one-off plans, or ordinary " +
+  "chit-chat";
+
+/** How a stored fact must be written, so it survives losing its conversation. */
+export const SELF_CONTAINED_FACT_RULE =
+  "write each as a single self-contained sentence that will still make sense to someone reading " +
+  "it months later with no memory of this conversation (include the who and the what, not 'he " +
+  "said yes')";
 
 /* ------------------------------------------------------------------ user doc */
 
@@ -81,92 +110,44 @@ export function parseMergedDocument(content: string): string[] {
 
 /* ----------------------------------------------------------------- general */
 
-/** System prompt for the general-fact reconcile. */
-export const GENERAL_RECONCILE_PROMPT =
-  "You maintain the long-term store of general knowledge a Telegram chat bot keeps — shared facts, " +
-  "definitions, rules, and conventions that are not about one specific person. You are given ONE " +
-  "newly saved fact and the existing stored facts most similar to it. Decide what the store should " +
-  "do with the new fact.\n" +
-  "Choose exactly one action:\n" +
-  '- "insert": the fact is new information. Provide it, cleaned up into one self-contained line.\n' +
-  '- "skip": an existing fact already says this. Nothing changes.\n' +
-  '- "replace": the fact corrects, contradicts, or supersedes one or more existing facts. Provide ' +
-  "the replacement line and list the ids of every fact it supersedes.\n" +
+/** System prompt for the general-knowledge document merge. */
+export const GENERAL_MERGE_PROMPT =
+  "You maintain the long-term memory document a Telegram chat bot keeps of GENERAL knowledge — " +
+  "shared facts, definitions, rules and conventions, plus facts about people the bot cannot file " +
+  "under a person of their own. You are given the current document and newly saved facts. Rewrite " +
+  "the document to incorporate the new facts.\n" +
   "Rules:\n" +
-  "- A fact must stand on its own: someone reading it months later, with no conversation around " +
-  "it, must understand it.\n" +
-  "- Prefer 'skip' over storing a near-duplicate, and 'replace' over letting two contradictory " +
-  "facts both stand.\n" +
-  "- Never invent detail that is not in the new fact.\n" +
-  'Reply with ONLY a JSON object of the shape ' +
-  '{"action": "insert" | "skip" | "replace", "content": string, "replaces": string[]}. ' +
-  '"content" is ignored for "skip"; "replaces" is only read for "replace".';
+  "- Preserve every unique durable detail. This is lossless except where a fact is a duplicate, " +
+  "is contradicted, or was never durable.\n" +
+  "- Drop duplicates and near-duplicates: if a new fact restates something already there in " +
+  "different words, keep one concise version.\n" +
+  "- When a new fact contradicts an old one, keep the new one and drop the outdated line — " +
+  "arrangements change and facts get corrected.\n" +
+  "- Every line must name its own subject and stand on its own: this document is read with no " +
+  "conversation around it, so never write 'he', 'they', or 'the above'. A fact about a person " +
+  "must name that person.\n" +
+  "- Write one fact per line, no bullet characters, no section headers, no preamble.\n" +
+  "- Group related facts near each other so the document stays readable as it grows.\n" +
+  "- Never invent a fact that is not in the inputs.\n" +
+  'Reply with ONLY a JSON object of the shape {"memory": string} — the whole document as one ' +
+  'string with newline-separated facts. Use {"memory": ""} if nothing durable remains.';
 
-/** An existing general fact offered to the reconcile pass as a candidate. */
-export interface GeneralCandidate {
-  id: string;
-  content: string;
+export interface GeneralMergeInput {
+  /** The current document's facts (empty for a store with nothing in it yet). */
+  existing: string[];
+  /** The pending notes to fold in. */
+  incoming: string[];
 }
 
-export interface GeneralReconcileInput {
-  /** The newly saved note being reconciled. */
-  note: string;
-  /** Existing facts most similar to the note (may be empty for a fresh store). */
-  candidates: GeneralCandidate[];
-}
-
-/** Build the general-fact reconcile request (the user turn). */
-export function buildGeneralReconcileRequest(input: GeneralReconcileInput): string {
-  const candidates =
-    input.candidates.length > 0
-      ? input.candidates.map((c) => `[${c.id}] ${c.content}`).join("\n")
-      : "(the store is empty — there is nothing similar)";
+/** Build the general-document merge request (the user turn; system prompt is separate). */
+export function buildGeneralMergeRequest(input: GeneralMergeInput): string {
+  const existing = input.existing.length > 0 ? input.existing.join("\n") : "(nothing known yet)";
+  const incoming = input.incoming.map((fact) => `- ${fact}`).join("\n");
   return [
-    "Newly saved fact:",
-    input.note,
+    "Current general knowledge document:",
+    existing,
     "",
-    "Existing stored facts most similar to it:",
-    candidates,
+    "Newly saved facts to fold in:",
+    incoming,
   ].join("\n");
-}
-
-/** What the reconcile pass decided for one note. */
-export type GeneralDecision =
-  | { action: "insert"; content: string }
-  | { action: "skip" }
-  | { action: "replace"; content: string; replaces: string[] };
-
-/**
- * The reconcile decision, or null when the model returned something unusable.
- *
- * Defensive by design: a `replace` naming no *known* candidate id would delete
- * nothing and insert an unreviewed line, and an `insert`/`replace` with no
- * content would store an empty fact — both are rejected here rather than acted
- * on, so the run falls back to leaving the note pending for the next night.
- * `knownIds` is what the caller actually offered, so the model cannot reach
- * beyond its candidates and delete an unrelated fact.
- */
-export function parseGeneralDecision(content: string, knownIds: string[]): GeneralDecision | null {
-  const obj = extractJsonObject(content);
-  if (!obj) return null;
-
-  const action = obj.action;
-  if (action === "skip") return { action: "skip" };
-
-  const text = typeof obj.content === "string" ? obj.content.trim() : "";
-  if (text.length < MIN_FACT_LENGTH || text.length > MAX_FACT_LENGTH) return null;
-
-  if (action === "insert") return { action: "insert", content: text };
-
-  if (action === "replace") {
-    const allowed = new Set(knownIds);
-    const replaces = Array.isArray(obj.replaces)
-      ? obj.replaces.filter((id): id is string => typeof id === "string" && allowed.has(id))
-      : [];
-    // A replacement that supersedes nothing we offered is just an insert.
-    if (replaces.length === 0) return { action: "insert", content: text };
-    return { action: "replace", content: text, replaces };
-  }
-
-  return null;
 }

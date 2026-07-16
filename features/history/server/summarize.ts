@@ -15,14 +15,10 @@ import {
   currentSummaryDate,
   parseSummaryTopics,
   SUMMARY_SYSTEM,
-  summaryDayBounds,
-  type SummarizableMessage,
   type SummaryDate,
   type SummaryTopic,
 } from "../summary";
-import { fallbackSpeakerLabel } from "./format";
-import { getChatMessagesForDay } from "./repository";
-import { resolveSpeakerLabels } from "./service";
+import { loadChatDayTranscript } from "./service";
 import {
   countDaysNeedingSummary,
   listDaysNeedingSummary,
@@ -43,9 +39,6 @@ import {
  */
 
 const FEATURE = FEATURES["history-summaries"];
-
-/** Label used for the bot's own rows in a summarized transcript. */
-const BOT_LABEL = "Bot";
 
 /**
  * Days fetched from the due-scan per iteration. Not a cap on the run: the run
@@ -89,29 +82,6 @@ export interface SummarizeDayResult {
   embedded: boolean;
 }
 
-/** Load a day's messages, already labelled with their speakers. */
-async function loadDay(
-  db: DrizzleDb,
-  chatId: string,
-  date: SummaryDate,
-  timeZone: string,
-): Promise<SummarizableMessage[]> {
-  const { from, to } = summaryDayBounds(date, timeZone);
-  const records = await getChatMessagesForDay(db, chatId, from, to);
-  const labels = await resolveSpeakerLabels(db, records);
-  return records.map((record) => ({
-    telegramMessageId: record.telegramMessageId,
-    role: record.role,
-    content: record.content,
-    label:
-      record.role === "assistant"
-        ? BOT_LABEL
-        : ((record.userId ? labels.get(record.userId) : undefined) ??
-          fallbackSpeakerLabel(record.userId)),
-    sentAt: record.sentAt,
-  }));
-}
-
 /**
  * Summarize one chat-day: LLM over the transcript (in batches for a busy day),
  * embed the topics, replace the day's stored summaries, and stamp its marker.
@@ -139,7 +109,7 @@ export async function summarizeChatDay(
   );
 
   try {
-    const messages = await loadDay(db, params.chatId, params.summaryDate, deps.timeZone);
+    const messages = await loadChatDayTranscript(db, params.chatId, params.summaryDate, deps.timeZone);
     await trace.event({
       type: "step",
       message: "day loaded",

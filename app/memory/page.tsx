@@ -31,7 +31,7 @@ export default async function MemoryPage() {
     <>
       <PageHeader
         title="Memory"
-        description="What the bot durably knows — facts about people, injected into their conversations, and shared general knowledge it looks up when needed."
+        description="What the bot durably knows — a document per person, injected into the conversations they take part in, and one document of shared general knowledge, injected into every reply."
         actions={
           <div className="flex items-center gap-2">
             <LiveIndicator topic="memory" />

@@ -18,6 +18,7 @@ function message(overrides: Partial<SummarizableMessage> = {}): SummarizableMess
     role: "user",
     content: "hello",
     label: "Alice",
+    userId: "1001",
     sentAt: "2026-07-13T10:00:00.000Z",
     ...overrides,
   };

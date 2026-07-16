@@ -18,10 +18,12 @@ import {
   renderTranscriptLine,
   type ReplyRef,
 } from "./format";
+import { summaryDayBounds, type SummarizableMessage, type SummaryDate } from "../summary";
 import {
   appendChatMessage,
   getChatMessageByTelegramId,
   getChatMessages,
+  getChatMessagesForDay,
   getChatMessagesSince,
   listChatSummaries,
   updateChatMessageContent,
@@ -203,6 +205,41 @@ export async function resolveSpeakerLabels(
   if (userIds.length === 0) return new Map();
   const users = await getKnownUsersByIds(db, userIds);
   return new Map(users.map((u) => [u.userId, formatKnownUserLabel(u)]));
+}
+
+/** Label used for the bot's own rows in a loaded chat-day transcript. */
+export const BOT_TRANSCRIPT_LABEL = "Bot";
+
+/**
+ * Load one wall-clock chat-day's messages with their speakers resolved.
+ *
+ * Shared by the two nightly jobs that read a day as a whole — history
+ * summarization and passive memory extraction — because both need exactly this:
+ * the day's rows in the operator's timezone, each carrying a human label. The
+ * boundaries are the operator's day, not UTC's, so an evening conversation is not
+ * split across two runs.
+ */
+export async function loadChatDayTranscript(
+  db: DrizzleDb,
+  chatId: string,
+  date: SummaryDate,
+  timeZone: string,
+): Promise<SummarizableMessage[]> {
+  const { from, to } = summaryDayBounds(date, timeZone);
+  const records = await getChatMessagesForDay(db, chatId, from, to);
+  const labels = await resolveSpeakerLabels(db, records);
+  return records.map((record) => ({
+    telegramMessageId: record.telegramMessageId,
+    role: record.role,
+    content: record.content,
+    label:
+      record.role === "assistant"
+        ? BOT_TRANSCRIPT_LABEL
+        : ((record.userId ? labels.get(record.userId) : undefined) ??
+          fallbackSpeakerLabel(record.userId)),
+    userId: record.role === "assistant" ? null : record.userId,
+    sentAt: record.sentAt,
+  }));
 }
 
 /**

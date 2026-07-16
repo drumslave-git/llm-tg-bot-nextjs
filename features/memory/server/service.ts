@@ -18,20 +18,19 @@ import type { GeneralMemory, MemoryEntry, MemoryMatch, MemoryScope, UserMemory }
 import {
   addMemoryEntry,
   countPendingEntries,
-  deleteGeneralMemories,
+  deleteGeneralMemory,
   deleteMemoryEntries,
   deleteUserMemory,
+  getGeneralMemory,
   getUserMemoriesFor,
   getUserMemory,
-  insertGeneralMemory,
-  listGeneralMemories,
   listMemoryEntries,
   listUserMemories,
   searchMemories,
-  updateGeneralMemory,
+  upsertGeneralMemory,
   upsertUserMemory,
 } from "./repository";
-import type { CreateGeneralMemory, UpdateGeneralMemory, UpdateUserMemory } from "./schema";
+import type { UpdateGeneralMemory, UpdateUserMemory } from "./schema";
 
 /**
  * Memory domain service — the boundary the memory tools, the reply runtime, the
@@ -72,20 +71,24 @@ async function embedQuery(text: string): Promise<number[] | null> {
 export interface MemoryContext {
   content: string;
   /** Trace payload for the "memory loaded" step. */
-  data: { userIds: string[]; factCount: number };
+  data: { userIds: string[]; factCount: number; generalFactCount: number };
 }
 
 /**
- * Server-only: what the bot durably knows about the people in this conversation,
- * formatted for injection as a system message on a reply. Null when it knows
- * nothing about anyone here.
+ * Server-only: what the bot durably knows — about the people in this
+ * conversation, and in general — formatted for injection as a system message on a
+ * reply. Null only when it knows nothing at all.
  *
  * Who counts as "the people in this conversation" (recorded decision): the sender
  * always, plus — in a group — every known participant, so the bot can follow a
  * conversation *about* someone it knows without being asked to look them up. Only
- * people with a stored memory contribute anything, so the injected block is
- * bounded by how many people the bot actually remembers, not by the roster size.
- * General memory is deliberately NOT injected; it is reachable by tool.
+ * people with a stored memory contribute anything, so that half is bounded by how
+ * many people the bot actually remembers, not by the roster size.
+ *
+ * General knowledge is injected on **every** reply (operator decision,
+ * 2026-07-16) — it was previously tool-only. So this returns a context even when
+ * the bot knows nobody here, or there is no identified sender at all: the general
+ * document does not depend on who is talking.
  *
  * Only **consolidated** memory is injected (user decision). A note saved earlier
  * today is deliberately not folded in: it was said in this conversation, and the
@@ -109,11 +112,10 @@ export async function getMemoryContext(
   }
 
   const userIds = ids;
-  if (userIds.length === 0) return null;
-
-  const [documents, users] = await Promise.all([
-    getUserMemoriesFor(db, userIds),
-    getKnownUsersByIds(db, userIds),
+  const [documents, users, general] = await Promise.all([
+    userIds.length > 0 ? getUserMemoriesFor(db, userIds) : Promise.resolve([]),
+    userIds.length > 0 ? getKnownUsersByIds(db, userIds) : Promise.resolve([]),
+    getGeneralMemory(db),
   ]);
 
   const documentBy = new Map(documents.map((d) => [d.userId, d]));
@@ -132,7 +134,9 @@ export async function getMemoryContext(
     };
   });
 
-  const content = formatMemoryContext(blocks);
+  const generalFacts = general ? splitMemoryFacts(general.content) : [];
+
+  const content = formatMemoryContext(blocks, generalFacts);
   if (!content) return null;
 
   return {
@@ -142,6 +146,7 @@ export async function getMemoryContext(
       // knows nothing about contributes nothing and is not claimed in the trace.
       userIds: blocks.filter((b) => b.facts.length > 0).map((b) => b.userId),
       factCount,
+      generalFactCount: generalFacts.length,
     },
   };
 }
@@ -149,8 +154,11 @@ export async function getMemoryContext(
 /* --------------------------------------------------------------- tool reads */
 
 /**
- * Everything stored in one scope (`memory_get`). For `user`, the person's
- * consolidated document; for `general`, every stored fact.
+ * One person's consolidated memory document, as facts (`memory_get`).
+ *
+ * `user` scope only: general knowledge is injected into every reply (operator
+ * decision), so a tool that returned it would hand the model text already sitting
+ * in its context.
  *
  * Consolidated memory only (user decision) — the pending queue is not readable
  * through the tools. What a tool returns is therefore exactly what the operator
@@ -158,32 +166,27 @@ export async function getMemoryContext(
  * only until the next nightly run.
  */
 export async function readMemory(
-  params: { scope: MemoryScope; userId?: string | null },
+  params: { userId?: string | null },
   db: DrizzleDb = getDb(),
 ): Promise<MemoryMatch[]> {
-  if (params.scope === "user") {
-    const userId = params.userId?.trim();
-    if (!userId) return [];
-    const stored = await getUserMemory(db, userId);
-    if (!stored) return [];
-    return splitMemoryFacts(stored.content).map((content) => ({
-      scope: "user" as const,
-      userId,
-      content,
-    }));
-  }
-
-  const facts = await listGeneralMemories(db);
-  return facts.map((f) => ({
-    scope: "general" as const,
-    userId: null,
-    content: f.content,
+  const userId = params.userId?.trim();
+  if (!userId) return [];
+  const stored = await getUserMemory(db, userId);
+  if (!stored) return [];
+  return splitMemoryFacts(stored.content).map((content) => ({
+    scope: "user" as const,
+    userId,
+    content,
   }));
 }
 
 /**
- * Hybrid search across consolidated memory of both scopes (`memory_search`):
- * semantic and lexical, fused by reciprocal rank.
+ * Hybrid search over consolidated **user** memory (`memory_search`): semantic and
+ * lexical, fused by reciprocal rank.
+ *
+ * General knowledge is not searched — it is already in the prompt. What is worth
+ * searching is what is *not* injected: the documents of people who are not in this
+ * conversation.
  *
  * Consolidated memory only (user decision) — the pending queue is not searched.
  * A fact saved earlier in this conversation is not lost to the model: the
@@ -269,14 +272,17 @@ export interface MemoryEntryView extends MemoryEntry {
 export interface MemoryView {
   entries: MemoryEntryView[];
   users: UserMemoryView[];
-  general: GeneralMemory[];
+  /** The single general-knowledge document, or null when nothing is stored yet. */
+  general: GeneralMemory | null;
+  /** General notes still waiting for the nightly merge. */
+  generalPendingNotes: number;
 }
 
 export async function getMemoryView(db: DrizzleDb = getDb()): Promise<MemoryView> {
   const [entries, users, general] = await Promise.all([
     listMemoryEntries(db),
     listUserMemories(db),
-    listGeneralMemories(db),
+    getGeneralMemory(db),
   ]);
 
   const userIds = [
@@ -304,6 +310,7 @@ export async function getMemoryView(db: DrizzleDb = getDb()): Promise<MemoryView
       pendingNotes: pendingCount.get(u.userId) ?? 0,
     })),
     general,
+    generalPendingNotes: entries.filter((e) => e.scope === "general").length,
   };
 }
 
@@ -390,49 +397,24 @@ export async function forgetUser(userId: string, db: DrizzleDb = getDb()): Promi
   );
 }
 
-/** Store a general fact by hand. */
-export async function addGeneralMemory(
-  input: CreateGeneralMemory,
-  db: DrizzleDb = getDb(),
-): Promise<GeneralMemory> {
-  return traced(
-    "create-general-memory",
-    input.content.slice(0, 80),
-    async (trace) => {
-      const stored = await insertGeneralMemory(db, {
-        content: input.content,
-        embedding: await embedForStorage(input.content),
-      });
-      await trace.event({
-        type: "step",
-        message: "general fact stored",
-        data: { memoryId: stored.id, content: stored.content, embedded: stored.embedded },
-      });
-      return stored;
-    },
-    db,
-  );
-}
-
-/** Rewrite one general fact. Re-embeds so search stays honest. */
+/**
+ * Rewrite the general-knowledge document by hand. No re-embedding: the document
+ * is never searched, only injected.
+ */
 export async function editGeneralMemory(
-  id: string,
   input: UpdateGeneralMemory,
   db: DrizzleDb = getDb(),
 ): Promise<GeneralMemory> {
   return traced(
     "edit-general-memory",
-    id,
+    input.content.slice(0, 80),
     async (trace) => {
-      const stored = await updateGeneralMemory(db, id, {
-        content: input.content,
-        embedding: await embedForStorage(input.content),
-      });
-      if (!stored) throw ApiError.notFound(`No general memory with id ${id}`);
+      const before = await getGeneralMemory(db);
+      const stored = await upsertGeneralMemory(db, input.content);
       await trace.event({
         type: "step",
-        message: "general fact rewritten",
-        data: { memoryId: id, content: stored.content, embedded: stored.embedded },
+        message: "general knowledge rewritten",
+        data: { before: before?.content ?? null, after: stored.content },
       });
       return stored;
     },
@@ -440,15 +422,20 @@ export async function editGeneralMemory(
   );
 }
 
-/** Forget one general fact. */
-export async function forgetGeneralMemory(id: string, db: DrizzleDb = getDb()): Promise<void> {
+/** Forget all general knowledge. */
+export async function forgetGeneralMemory(db: DrizzleDb = getDb()): Promise<void> {
   return traced(
     "delete-general-memory",
-    id,
+    "general knowledge",
     async (trace) => {
-      const deleted = await deleteGeneralMemories(db, [id]);
-      if (deleted === 0) throw ApiError.notFound(`No general memory with id ${id}`);
-      await trace.event({ type: "step", message: "general fact deleted", data: { memoryId: id } });
+      const before = await getGeneralMemory(db);
+      const deleted = await deleteGeneralMemory(db);
+      if (!deleted) throw ApiError.notFound("No general knowledge is stored");
+      await trace.event({
+        type: "step",
+        message: "general knowledge deleted",
+        data: { deleted: before?.content ?? null },
+      });
     },
     db,
   );

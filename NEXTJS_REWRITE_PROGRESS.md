@@ -25,6 +25,40 @@ Last updated: 2026-07-16
 > blocker (no browser, no Docker, a live Telegram send), never cost.
 Proof: `npm run lint` ✓, `npm run typecheck` ✓, `npm run test` ✓ (390 unit), `npm run test:integration` ✓ (212 passed / 16 skipped, real Postgres via Testcontainers), `npm run build` ✓.
 
+**General memory becomes one injected document (user-requested 2026-07-16, done):** *"and if its not — general memory have to be one document, injected in prompt for every reply"* — said in answer to the `known_users` ceiling below. It **reverses two of the original memory decisions** and, in doing so, lifts that ceiling.
+
+- **What it solves.** A fact about someone with no `known_users` row could not be stored at all: `memory_entries.user_id` references `known_users`, so the person has nowhere to live. Now it is not filed under a person — it is kept in general knowledge, *named* ("Bob lives in Porto"). Nothing is dropped for want of an id. And because general knowledge is injected, the bot actually knows it rather than having to think to look it up.
+- **Reversal 1 — storage: rows → one document.** `general_memories` was N independently embedded fact rows; it is now a **singleton document** (migration `0022`), a structural twin of `user_memories` with no person attached. Deleted with the rows: the `embedding` column, the HNSW index, the hand-added FTS GIN index, `findSimilarGeneralMemories`, `insertGeneralMemory`/`deleteGeneralMemories`, `GENERAL_RECONCILE_PROMPT`, `parseGeneralDecision`, the `POST /api/memory/general` + `PATCH|DELETE /api/memory/general/[id]` routes, and the dashboard's "Add fact" form.
+- **Reversal 2 — injection: tool-only → every reply.** The original rationale was that general memory spans every chat and grows without bound, so a reply could only afford the few facts relevant to the question — hence a vector per fact. Overridden, and the trade is real (it costs context on *every* reply). Two things justify it: knowledge the model must *choose* to look up is knowledge it mostly does not use, and the nightly merge already bounds a document by deduplicating and resolving contradictions — exactly as it always has for the per-person documents, which are injected and uncapped too.
+- **The nightly general pass is now a merge, not a reconcile.** Same shape as the user merge, sharing `parseMergedDocument`, and it **fails closed** the same way: an empty merge is treated as a failed pass, never as "general knowledge is now empty", so a garbage response cannot erase the shared document. Cost dropped from **one LLM call per pending note** to **one per run**.
+- **Tools: `memory_get`/`memory_search` are user-scope only; `memory_save` keeps both scopes** — it is how a general fact gets written. `memory_get` lost its `scope` parameter entirely (it read one thing). `searchMemories` no longer fuses the general half: the model already has that document in context, so searching it would spend a round-trip to hand back its own prompt. What remains worth searching is what is *not* injected — the documents of people who are not in this conversation.
+- **The general fallback is wired at both producers, not just one.** Extraction: `EXTRACTION_SYSTEM` now says a fact about someone off the roster becomes a **general** fact naming them, instead of "skip it". Tool: `memory_save`'s description tells the model that a rejected `user` save should be retried as `general` with the name written into the fact, and the `resolveSubjectId` rejection message now names that way forward instead of just refusing.
+- **The migration is hand-written past drizzle-kit.** The generated version dropped the columns but left every fact as its own uuid-keyed row — which a singleton read (`id = 'singleton'`) would never find, silently orphaning the whole store. It now collapses the rows into the document **first**, ordered by `created_at` (so it must run before that column is dropped). The aggregate deliberately spans *every* row including any already keyed `singleton`, since excluding it would let the `ON CONFLICT` overwrite that row's own content with a document omitting it; `HAVING count(*) > 0` keeps it a clean no-op on an empty table rather than inserting a NULL-content row.
+- **Verified the collapse against real Postgres before running it on real data.** The integration suite migrates an *empty* database, so the collapse branch — the one that must not lose the operator's facts — is untested there. Proved it separately in a rolled-back transaction over a temp table: 5 facts → one document, all preserved in order; empty table → clean no-op; pre-existing singleton + a loose fact → both folded in (this last case is what caught the `WHERE` bug above). Then applied for real: the operator's **5 general facts survived as 5 lines of one `singleton` document**, columns now `id / content / updated_at`.
+- **Tests (440 unit ✓, 38 memory integration ✓).** `prompt.test.ts` swaps the reconcile parser for the merge builder (+ a check that the prompt demands every line name its own subject — the general document has no subject of its own). Integration: merge folds notes in, the existing document is shown to the merge, **one LLM call for the whole backlog**, an empty merge leaves the document *and* the notes alone, a fact about an unkeyable person is kept, general is injected alongside the sender's own memory, injected **even when the bot knows nobody** and **even with no identified sender**, still nothing when it knows nothing at all, and general is deliberately **not** searchable. The old "does not inject general knowledge — that is tool-only" test now asserts the opposite.
+- **Verified live**: `/memory` renders the collapsed document under "Injected into every reply" with Edit / Forget-all and no stale "Add fact"; the People card shows a real document the passive extraction built. Build ✓ (`/api/memory/general/[id]` gone from the route list).
+- **Checks:** lint ✓, typecheck ✓, unit 440 ✓, memory integration 38 ✓, full integration ✓ except the one pre-existing failure below, build ✓.
+
+**Passive memory extraction (user-requested 2026-07-16, done):** *"memory is too weak. bot remembers something only in case it is addressed. we need passive memory extraction."* The bot now learns from the whole conversation, not just the turns aimed at it.
+
+- **The bottleneck was structural, not the prompt.** `memory_entries` had exactly **one producer** — the `memory_save` tool — and a tool only runs while the model is composing a reply, which only happens when `checkAddressed` says yes. In a group that meant the bot mined the handful of turns aimed at it and learned nothing from the conversation around it, which is where people actually say where they live and what they do.
+- **Nothing about addressing changed.** `recordIncomingMessage` already mirrors **every** message regardless of addressing, so the raw material was already in `chat_messages`. The fix is a **second producer** reading the mirror, not a loosening of when the bot speaks — the bot is exactly as quiet as before, it just stops being amnesiac about what it heard.
+- **Decisions (user, AskUserQuestion — both in Decision Notes):** (1) **nightly, folded into the existing memory job** rather than a new scheduler or an idle trigger; (2) **all chats, all human messages** (not groups-only).
+- **The run is now two passes, in order** (`features/memory/server/scheduler.ts`): *extract* → *consolidate*, sharing one advisory lock. Extraction first so a day's facts reach durable memory the **same** night rather than waiting for the next. An extraction failure does **not** skip consolidation: the queue may hold tool-saved notes, and a dead extraction pass is no reason to leave them pending another day.
+- **Shaped as a twin of the history summarizer** (`features/memory/server/extract.ts`), because it is the same problem: one LLM pass per finished chat-day over an id-anchored transcript. New `memory_extraction_days` marker table (migration `0021_previous_wendell_rand`) mirrors `chat_summary_days`, including `message_count` — which makes the job **self-healing** (a day that gains rows later is re-read; an unchanged day is never re-spent) and **retroactive by construction**: the due-scan cannot tell yesterday from a day predating the feature, so **the first run mines the entire history the mirror has ever stored**. There is no separate backfill to run or forget.
+- **Facts are attributed by id, never by name.** The prompt shows a roster (`[id:…] Label`) and id-tagged transcript lines; `parseExtractedNotes` **discards any `user` fact whose id was not in that roster**, and every surviving note still goes through `saveMemoryNote` — the same known-user check the tool clears. Two people in a group can share a first name; the id is what the store is keyed by. The bot's own rows carry no id, so no fact can be attributed to it.
+- **One durability policy, not two.** The "what counts as durable / what never does / write it self-contained" rules now live once in `features/memory/prompt.ts` (`DURABLE_FACT_KINDS`, `NON_DURABLE_FACT_KINDS`, `SELF_CONTAINED_FACT_RULE`) and are composed into **both** the `memory_save` tool description and the extraction prompt. Otherwise the same sentence would be worth remembering when the bot was spoken to and not when it was not. The tool's tuned "push to actually use it" framing is untouched around them.
+- **Shared, not copy-pasted:** `loadDay` was private to `summarize.ts`; it is now `loadChatDayTranscript` in the history service, used by both jobs, and `SummarizableMessage` gained `userId` (the summarizer ignores it). Extraction reuses `batchMessages` / `currentSummaryDate` / `summaryDayBounds` rather than restating them.
+- **Its own feature id `memory-extraction`** (following `history-summaries` vs `history`), so an operator asking *"what did the bot decide to remember from Tuesday"* can filter to that half alone. Every day is traced with full request/response bodies.
+- **Dashboard:** the card is now **"Memory"** (it is no longer consolidation-only), with **two backlog badges** — days-to-read and notes-pending — because they are different units at different stages, and one number would hide which half is behind. **Bug avoided:** `Run now` was gated on `pendingNotes === 0`, which would have left a pile of unread chat-days with no way to trigger the extraction that turns them into notes; it now needs *both* backlogs empty.
+- **Tests (+21 → 443 unit ✓, 31 memory integration ✓).** New `extract-prompt.test.ts` (16: roster/id rendering, unstorable speaker kept off-roster, unknown-id rejection, unknown scopes, length bounds, case-insensitive de-dup, same sentence for two people, fenced/junk responses → `[]`). Memory integration (+7, real Postgres): **facts learned from a day the bot was never addressed in** (the whole point), extraction→consolidation reaching a durable document, marker stops a re-read but a new message re-triggers one, today skipped, stranger-id dropped, unregistered sender kept off the roster, traced under its own feature.
+- **Verified live against the real local LLM + the operator's real dev history**, not only mocks. The dev server was killed and restarted first, because the scheduler is a boot-bound `globalThis` singleton and HMR cannot replace the captured `runJob` closure — the first `Run now` after editing silently ran the *old* one-pass job (`lastResult` was `"nothing to consolidate"`, with no extraction half). After the restart: `/memory` showed **14 days to read / no notes pending**, `Run now` **enabled** (the `runDisabled` fix, proven on real data — the old gating would have made it dead), the run reached `Running…`, the backlog ticked 14 → 13, and `/debug?feature=memory-extraction` showed a real `extract` trace (28 messages, 27.4s, 8.4k tokens, full bodies).
+- **A real bug the tests could not have caught, found by that live run — and it was the same weakness in miniature.** The model correctly harvested a durable fact about a person and `saveMemoryNote` **refused it**: *"No known person has id …"*. Cause: the roster was built from the transcript's `chat_messages.user_id`, but `memory_entries.user_id` references **`known_users`** — and history holds senders that were never registered (imported history does this routinely; the tell is a fallback `User <id>` label). So extraction was offering the model ids it could never store against, and binning good facts. **Fix:** the roster is now the *storable* subset (resolved via `getKnownUsersByIds`); an unregistered speaker stays in the transcript as **context** (what they say is evidence about people who *are* storable) but is rendered **without an id**, so the model has nothing to attribute to. Unstorable speakers are named on the trace (`unstorableSpeakers` + a `warn` step) — otherwise "the day was quiet" and "the bot cannot remember these people" look identical in a note count of 0. Pinned by a unit test and an integration test.
+- **Ceiling found here, then closed by the next change (2026-07-16):** the dev DB has **1 `known_users` row against 4 distinct senders in history**, so a *per-person document* can only ever exist for that one person. As first shipped, facts about the other three were dropped. That is what prompted the operator's follow-up — general knowledge is now one injected document, and a fact about someone with no `known_users` row is kept **there**, named, instead of being lost (see the entry above). `known_users` coverage therefore no longer caps what the bot can remember, only how it is filed.
+- **Checks:** lint ✓, typecheck ✓, unit 443 ✓, memory integration 31 ✓, build ✓, live run ✓.
+- **Pre-existing failure, not from this work** (proved by stashing and re-running on clean `main`): `server/telegram/process-update.integration.test.ts:111` expects un-addressed chatter to leave 0 `bot-messaging` traces but gets 1 — commit `9f04e87`'s analyzer opens a trace on the `needsAnalyzer` path. The test and the code disagree; **left for a separate decision** rather than folded in here.
+- **Outstanding, operator's call (2026-07-16):** the pre-fix live run stamped **3 chat-days** (`2026-07-03/04/05`) as read, at 0/0/1 notes, and left **1 pending note**. Asked whether to clear those markers so the fixed roster re-reads them; the operator chose to **leave them**. They stay skipped until their message count changes — deleting those rows from `memory_extraction_days` re-opens them at any time. The other 11 days are untouched and get read correctly on the next run.
+
 **LLM addressing check (user-requested 2026-07-16, done):** the bot now answers when someone calls it **by name** — including the name in another alphabet or an inflected/vocative form ("Ариа, ответь…"). This closes the last-listed feature-1 deferral (the MVP's `addressing-detection` analyzer). Decisions: see the three *LLM addressing check* rows in Decision Notes.
 
 - **Layered, cheapest-first** (`features/bot-messaging/server/addressing.ts`). Order: private → reply → `/command@bot` → @mention → **literal display-name match** (new, free, `source: "name"`) → **LLM analyzer** (new, `source: "analyzer"`). `checkAddressed` stays **pure and sync**: when the deterministic rules find nothing but the message could still be naming the bot, it returns `needsAnalyzer` (undecided) rather than a verdict, and the service settles it. So the pure check keeps its unit-testability and only a genuinely ambiguous group message costs a completion.
@@ -213,17 +247,39 @@ Next: **Priority 12 — Image generation** (Analytics landed 2026-07-15 as the n
 - 2026-07-15 (Priority 10): **Memory feature (done)** — durable knowledge the bot
   keeps across conversations, written by the model mid-reply and consolidated
   nightly.
-  - **Decisions (user, AskUserQuestion — all four recorded in Decision Notes):**
-    (1) storage is **split by scope** — one merged **document per user**, but
-    **individual embedded fact rows** for general knowledge; (2) scopes are
-    **`user` + `general`** (MVP parity, no per-chat scope); (3) **the relevant
-    people's memory is injected** (sender + group participants), while general
-    memory is **tool-only**; (4) writes go through a **`memory_save` tool + nightly
-    job** (MVP parity).
-  - **Why the split storage.** User memory is *injected* and read as a whole, so a
-    person must be one coherent document; general memory is *retrieved* and grows
-    without bound across every chat, so each fact needs its own vector — and one
-    wrong fact must be deletable without rewriting everything around it.
+  - **Superseded in part on 2026-07-16 by passive memory extraction** (see Current
+    Summary). Decision (4) below — *writes go through a `memory_save` tool +
+    nightly job* — described the **only** producer at the time, and that was the
+    weakness the operator hit: a tool only runs inside a reply, and a reply only
+    happens when the bot is addressed, so the bot remembered nothing from a group
+    conversation it was not part of. `memory_entries` now has **two** producers,
+    the tool and the nightly extraction pass over the history mirror.
+  - **Superseded again the same day by the general-document change** (see Current
+    Summary): general knowledge is no longer a set of embedded fact rows read by
+    tool, but one merged document injected into every reply. The parts of this
+    entry describing general storage, the general reconcile pass, and the general
+    half of the tools are **history**. The pending queue, the per-person merge, and
+    the fail-closed rule are unchanged.
+  - **Decisions (user, AskUserQuestion — all four recorded in Decision Notes).**
+    Three of the four have since been **superseded** (2026-07-16); read them as
+    history, not as the current design:
+    (1) ~~storage is **split by scope** — one merged **document per user**, but
+    **individual embedded fact rows** for general knowledge~~ → **both scopes are
+    merged documents**; (2) scopes are **`user` + `general`** (MVP parity, no
+    per-chat scope) — *still true*; (3) ~~**the relevant people's memory is
+    injected** (sender + group participants), while general memory is
+    **tool-only**~~ → **both are injected**, general on every reply, and the read
+    tools no longer cover it; (4) ~~writes go through a **`memory_save` tool +
+    nightly job**~~ → the nightly job still merges, but the tool is no longer the
+    only producer — **passive extraction** feeds the same queue.
+  - **Why the split storage (superseded 2026-07-16 — the reasoning that lost).**
+    User memory is *injected* and read as a whole, so a person must be one coherent
+    document; general memory is *retrieved* and grows without bound across every
+    chat, so each fact needs its own vector — and one wrong fact must be deletable
+    without rewriting everything around it. What this missed: knowledge the model
+    must choose to look up is knowledge it mostly does not use, and the unbounded
+    growth it feared is held in check by the same nightly merge that has always
+    bounded the per-person documents. Both scopes are merged documents now.
   - **Data model (migration `0017_aberrant_frightful_four`):** `memory_entries`
     (the pending queue: scope/user_id/content/chat_id, with CHECK constraints
     binding `scope='user'` ⇔ `user_id is not null`), `user_memories` (one row per
@@ -2559,6 +2615,11 @@ writing `docs/decisions/*.md`. This table is the lightweight record.
 | Analytics `year` granularity (operator correction 2026-07-16) | done | user | **`year` is a first-class period everywhere** (day/week/month/year/all), not just an option on the regenerate control — card tabs, bucket math, SQL date filter, mood trend, and the insight roll-ups. A scored day now writes 10 roll-ups (5 granularities × global/chat) instead of 8. |
 | Analytics Bot health (operator correction 2026-07-16) | done | user | **"Chat health" → "Bot health"; drop the composite `Health n/100`, Active users, and Feedback tiles.** The user's reason for the score: *"it is subjective"* — it averaged unlike signals with invented weights and read as authoritative. The other two duplicated the Users tile and the satisfaction tile. Agent addition, accepted as in-scope: `avgReplyLatencyMs` is now measured from `bot-messaging`/`reply` calls only (it previously averaged every LLM call, so vision and nightly jobs inflated "Avg reply"). |
 | Analytics model performance by request type (operator correction 2026-07-16) | done | user | **Measure every type of request separately** — *"vision takes longer in general than just text generation, reply generation can take longer than some aux simple request"*. Implemented by grouping LLM usage on the trace's own **(feature, action)** taxonomy alongside the model, with p50/p95 from `percentile_cont` beside the mean. Consequence: the model name must be normalized **in SQL** (percentiles are computed by the aggregate and cannot be merged in JS afterwards), so `normalizedModelExpr` mirrors `normalizeModelName` under the same JS↔Postgres agreement rule as `period.ts`. Model-level latency is deliberately not shown — it would be a mean over unlike request types. |
+| Passive memory extraction — cadence (2026-07-16) | done | user | **Nightly, as a second pass inside the existing memory job** (extract → consolidate, one advisory lock), not a new scheduler and not idle-debounced. Extraction runs first so a day's facts reach durable memory the same night. Rejected: idle-debounced like the vision backfill (fresher, but notes still wait for the nightly consolidation, so the freshness buys nothing); a separate idle extractor + nightly consolidator (more moving parts for the same end state). |
+| Passive memory extraction — scope (2026-07-16) | done | user | **All chats, all human messages**, batched per chat-day so the model reads conversation rather than isolated lines. Private chats are included even though their reply path already had a chance to save: a reply only saves what the model happened to think worth saving. Rejected: groups-only (halves cost but leaves DMs on the weaker path); known-users-only (general facts would still need everyone's messages read anyway). |
+| Passive memory extraction — `known_users` ceiling (2026-07-16) | done | user | **Left alone as a `known_users` problem — then solved from the other side.** The dev DB has 1 `known_users` row against 4 senders in history, so per-person documents can only exist for registered users. The operator declined to investigate or backfill `known_users`; instead they redirected the fact itself — see the next two rows. A fact about an unregistered person is now kept in **general** knowledge, named. So nothing is lost for want of an id, and `known_users` coverage stays a non-issue. |
+| General memory — storage shape (2026-07-16) | done | user | **One merged document, replacing the individually embedded fact rows.** Reverses the original "rows because general memory is retrieved, so each fact needs its own vector" decision. Consequences accepted: no embeddings/HNSW/FTS for the scope, the nightly pass becomes a merge (one LLM call per run instead of one per note), per-fact edit/delete on the dashboard becomes one textarea (as user memory already is), and existing facts are concatenated into the document on migration `0022` for the next merge to tidy. Rejected: keeping rows and merely concatenating them at injection time (keeps machinery whose purpose — retrieving only the relevant few — no longer exists). |
+| General memory — injection + tools (2026-07-16) | done | user | **Injected into every reply; dropped from `memory_get`/`memory_search`** (kept in `memory_save`, which is how it is written). Reverses "general memory is tool-only". Rationale for injecting: knowledge the model must choose to look up is knowledge it mostly does not use; the nightly merge is what keeps the document bounded. Rationale for dropping it from the read tools: the whole document is already in context, so a tool call would spend a round-trip returning the model its own prompt. Cost accepted and flagged: the document now consumes context on *every* reply, uncapped — same as the per-person documents. |
 | Analytics periods + metric (priority 11, operator correction 2026-07-15) | done | user | **Periods are day / week / month / all-time** (not hour/day/month/year/all — the first cut had the wrong set and no week), and this selector drives **every** metric, **including word of the period and most-discussed topic**, which must exist at each of the four periods (the first cut computed them only at month/year/all). The **"characters processed/generated" metric is replaced by tokens** (processed = prompt, generated = completion) — the LLM-meaningful measure. Implemented by scoring a per-day **word** too (`chat_day_insights.word`, migration `0020`) and rolling every day up into day/week/month/all `period_insights`; tokens read from `bot-messaging` usage events, chat/user-filterable via the trace `correlation_id`/`trigger_actor`. |
 
 ## Blockers
@@ -2571,6 +2632,55 @@ No blockers recorded.
 - Confirm v1 scope before implementation.
 - Do not copy MVP modules by default.
 - Keep shared patterns ahead of feature-specific code.
+
+### State at handoff (2026-07-16, after passive memory extraction)
+
+- **Current state:** two memory changes shipped this session — **passive extraction**
+  and **general memory as one injected document** — both complete and green (lint ✓,
+  typecheck ✓, 440 unit ✓, 38 memory integration ✓, build ✓), and both **verified
+  live** against the real local LLM and the operator's real data. Migrations `0021`
+  (`memory_extraction_days`) and `0022` (general document) **have been applied** to
+  the operator's dev DB; the 5 pre-existing general facts survived as one document.
+- **The first full extraction run has already happened.** All 14 chat-days are read,
+  and the operator's `/memory` shows a real per-person document built from
+  conversations the bot was never addressed in. 3 of those days (`2026-07-03/04/05`)
+  were read by the **pre-roster-fix** run; the operator chose to leave their markers
+  rather than re-read them. **Do not "helpfully" clear them** — that was asked and
+  declined.
+- **Next best task:** watch a real reply now that general knowledge is injected —
+  `/debug?feature=bot-messaging`, the `long-term memory loaded` step. Two things to
+  judge, both prompt-quality rather than mechanics: whether the general document is
+  earning its place in every prompt (it is uncapped, like the per-person documents),
+  and whether the bot over-recites what it knows. Everything mechanical is pinned by
+  tests.
+- **Restart the dev server after editing a job** — the scheduler is a boot-bound
+  `globalThis` singleton and HMR does *not* replace the captured `runJob`; a
+  `Run now` after an edit silently executes the old closure and looks like your
+  change did nothing. This bit us once already. Dev LLM tokens are free; a full
+  extraction pass is just slow (~27s/day), not hung.
+- **Prompt-tuning map.** `EXTRACTION_SYSTEM` (`features/memory/extract-prompt.ts`)
+  decides what gets harvested; `USER_MERGE_PROMPT`/`GENERAL_MERGE_PROMPT`
+  (`features/memory/prompt.ts`) decide what survives. The durability rules
+  (`DURABLE_FACT_KINDS` et al, also in `prompt.ts`) are **shared with the
+  `memory_save` tool description**, so editing them moves both producers — that is
+  deliberate (the same sentence must be worth remembering whether or not the bot was
+  spoken to), but tune the extraction-only prose if you mean to change just one.
+- **Both merges fail closed, and must stay that way.** An empty/unusable merge leaves
+  the document untouched and the notes pending. It is the only thing standing between
+  one bad model response and a document that took months to accumulate. Pinned by
+  tests for both scopes; do not "simplify" it into trusting the model.
+- **Known pitfall:** `server/telegram/process-update.integration.test.ts:111` fails
+  on clean `main` (pre-existing; commit `9f04e87`'s analyzer opens a trace the test
+  expects not to exist). Do not assume you broke it — verify against a stash before
+  chasing it. It needs a decision, not a patch.
+- **Editing this file from PowerShell will corrupt it.** `Get-Content -Raw` +
+  `Set-Content -Encoding utf8` reads UTF-8 as cp1252 and writes it back
+  double-encoded, mangling every `—`/`✓` in the document (and adding a BOM). It
+  happened this session and had to be reverted with `git checkout`. Use the editor
+  tooling, not shell text substitution.
+- **Commands that passed:** `npm run lint`, `npm run typecheck`, `npm run test`,
+  `npm run test:integration -- features/memory`, `npm run build`.
+  `npm run test:integration` (full) fails **only** on the pre-existing case above.
 
 ### Fix: trace tools + web-search-over-read + memory_save subject binding (2026-07-15)
 

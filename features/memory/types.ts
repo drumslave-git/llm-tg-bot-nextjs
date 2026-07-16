@@ -2,16 +2,19 @@
  * Client-safe types for the memory feature: durable knowledge the bot keeps
  * across conversations.
  *
- * Two scopes, stored two different ways (recorded decision):
- *  - `user`    one merged document per person, injected into replies in the chats
+ * Two scopes, both stored as **merged documents** (operator decision, 2026-07-16):
+ *  - `user`    one document per person, injected into the replies of the chats
  *              they take part in.
- *  - `general` individual, independently embedded fact rows of cross-chat shared
- *              knowledge, reachable only through the memory tools.
+ *  - `general` ONE document of cross-chat shared knowledge, injected into every
+ *              reply. Also where a fact about a person the bot cannot key on
+ *              lands — someone with no known-user row cannot have a per-person
+ *              document, but the fact is still worth knowing, so it is kept here
+ *              by name.
  *
- * Both are written the same way: the model calls `memory_save` mid-reply, the
- * note lands in the pending queue, and the nightly job folds it in. A note only
- * becomes memory once consolidated — the queue itself is neither injected into
- * replies nor readable by the tools.
+ * Both are written the same way: a note reaches the pending queue (from the
+ * `memory_save` tool mid-reply, or from the nightly passive extraction over the
+ * history mirror), and the nightly job merges it in. A note only becomes memory
+ * once consolidated — the queue itself is neither injected nor readable by tools.
  */
 
 /** Which memory a fact belongs to. */
@@ -38,20 +41,20 @@ export interface UserMemory {
   updatedAt: string;
 }
 
-/** One durable fact of cross-chat general knowledge. */
+/**
+ * The consolidated general-knowledge document. No embedding and no id: it is a
+ * singleton row, and nothing ranks it — the whole document is in every prompt.
+ */
 export interface GeneralMemory {
-  id: string;
   content: string;
-  /** Whether the row carries an embedding (i.e. is findable by semantic search). */
-  embedded: boolean;
-  createdAt: string;
   updatedAt: string;
 }
 
 /**
- * A memory search hit, tagged with the scope it came from. Always a
- * *consolidated* fact — the pending queue is neither injected nor searchable
- * (user decision), so there is no "pending" state to represent here.
+ * A memory search hit. Always a *consolidated* `user` fact: the pending queue is
+ * neither injected nor searchable (user decision), and general knowledge is not
+ * searched at all since it is already in the prompt. `scope` is kept so the
+ * model-facing result stays explicit about what it is looking at.
  */
 export interface MemoryMatch {
   scope: MemoryScope;

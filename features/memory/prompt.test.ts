@@ -1,17 +1,18 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  buildGeneralReconcileRequest,
+  buildGeneralMergeRequest,
   buildUserMergeRequest,
-  parseGeneralDecision,
+  GENERAL_MERGE_PROMPT,
   parseMergedDocument,
 } from "./prompt";
 
 /**
  * The nightly job's whole decision surface is pure, so its riskiest behavior —
  * what happens when the model returns something wrong — is testable without a
- * model or a database. Both parsers are written to fail *closed*: an unusable
- * response must leave memory untouched, never destroy or corrupt it.
+ * model or a database. The parser is written to fail *closed*: an unusable
+ * response must leave memory untouched, never destroy or corrupt it. Both scopes
+ * merge documents now, so both go through {@link parseMergedDocument}.
  */
 
 describe("buildUserMergeRequest", () => {
@@ -60,59 +61,28 @@ describe("parseMergedDocument", () => {
   });
 });
 
-describe("buildGeneralReconcileRequest", () => {
-  it("offers the candidates by id", () => {
-    const request = buildGeneralReconcileRequest({
-      note: "Standup moved to 10:00.",
-      candidates: [{ id: "abc", content: "Standup is at 09:30." }],
-      });
-    expect(request).toContain("Standup moved to 10:00.");
-    expect(request).toContain("[abc] Standup is at 09:30.");
-  });
-
-  it("says the store is empty when there is nothing to compare against", () => {
-    const request = buildGeneralReconcileRequest({ note: "Standup is at 10:00.", candidates: [] });
-    expect(request).toContain("(the store is empty — there is nothing similar)");
-  });
-});
-
-describe("parseGeneralDecision", () => {
-  it("reads an insert", () => {
-    expect(parseGeneralDecision('{"action":"insert","content":"Standup is at 10:00."}', [])).toEqual(
-      { action: "insert", content: "Standup is at 10:00." },
-    );
-  });
-
-  it("reads a skip", () => {
-    expect(parseGeneralDecision('{"action":"skip","content":"","replaces":[]}', ["a"])).toEqual({
-      action: "skip",
+describe("buildGeneralMergeRequest", () => {
+  it("shows the existing document with the incoming notes", () => {
+    const request = buildGeneralMergeRequest({
+      existing: ["Standup is at 09:30.", "Deploys happen on Thursdays."],
+      incoming: ["Standup moved to 10:00."],
     });
+    expect(request).toContain("Standup is at 09:30.");
+    expect(request).toContain("Deploys happen on Thursdays.");
+    expect(request).toContain("- Standup moved to 10:00.");
   });
 
-  it("reads a replace, keeping only the ids it was actually offered", () => {
-    const decision = parseGeneralDecision(
-      '{"action":"replace","content":"Standup is at 10:00.","replaces":["a","hallucinated"]}',
-      ["a", "b"],
-    );
-    expect(decision).toEqual({
-      action: "replace",
-      content: "Standup is at 10:00.",
-      replaces: ["a"],
-    });
+  it("says so explicitly when nothing is stored yet", () => {
+    const request = buildGeneralMergeRequest({ existing: [], incoming: ["Standup is at 10:00."] });
+    expect(request).toContain("(nothing known yet)");
   });
 
-  it("downgrades a replace that supersedes nothing real to an insert, deleting nothing", () => {
-    const decision = parseGeneralDecision(
-      '{"action":"replace","content":"Standup is at 10:00.","replaces":["ghost"]}',
-      ["a"],
-    );
-    expect(decision).toEqual({ action: "insert", content: "Standup is at 10:00." });
-  });
-
-  it("rejects an unusable response rather than acting on it", () => {
-    expect(parseGeneralDecision("no json here", ["a"])).toBeNull();
-    // insert/replace with no content would store an empty fact
-    expect(parseGeneralDecision('{"action":"insert","content":""}', [])).toBeNull();
-    expect(parseGeneralDecision('{"action":"nonsense","content":"x y"}', [])).toBeNull();
+  /**
+   * The general document, unlike a person's, has no subject of its own — it is
+   * read with no conversation around it, so a line saying "he moved to Lisbon"
+   * would be unattributable forever.
+   */
+  it("instructs that every line names its own subject", () => {
+    expect(GENERAL_MERGE_PROMPT).toContain("name its own subject");
   });
 });

@@ -116,10 +116,37 @@ describe("daily job views", () => {
     expect(view.progress).toEqual({ step: "working", current: 1, total: 4 });
   });
 
-  it("memory: disables Run now when there are no pending notes", () => {
-    const view = memoryJobView({ ...dailyBase, pendingNotes: 0, embeddingsConfigured: false });
+  it("memory: disables Run now only when both backlogs are empty", () => {
+    const view = memoryJobView({
+      ...dailyBase,
+      pendingNotes: 0,
+      pendingExtractionDays: 0,
+      embeddingsConfigured: false,
+    });
     expect(view.runDisabled).toBe(true);
     expect(view.backlog).toBeNull();
+  });
+
+  it("memory: unread chat-days alone are enough work to enable Run now", () => {
+    const view = memoryJobView({
+      ...dailyBase,
+      pendingNotes: 0,
+      pendingExtractionDays: 3,
+      embeddingsConfigured: false,
+    });
+    expect(view.runDisabled).toBe(false);
+    expect(view.backlog).toEqual({ label: "days to read", count: 3 });
+  });
+
+  it("memory: falls back to the note backlog once every day has been read", () => {
+    const view = memoryJobView({
+      ...dailyBase,
+      pendingNotes: 7,
+      pendingExtractionDays: 0,
+      embeddingsConfigured: false,
+    });
+    expect(view.runDisabled).toBe(false);
+    expect(view.backlog).toEqual({ label: "notes pending", count: 7 });
   });
 
   it("analytics: warns and disables Run now when no LLM is configured", () => {

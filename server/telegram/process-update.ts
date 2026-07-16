@@ -244,11 +244,12 @@ function buildDeps(
       : senderId != null
         ? () => getUserContext(senderId).catch(() => null)
         : undefined,
-    // What the bot durably knows about the people here: the sender, plus the other
-    // known participants in a group (so it can follow talk *about* someone it
-    // knows without being asked to look them up). General memory is not injected —
-    // the model reaches it with the memory tools. Best-effort — a lookup failure
-    // resolves null rather than dropping the reply.
+    // What the bot durably knows: the people here — the sender, plus the other
+    // known participants in a group, so it can follow talk *about* someone it
+    // knows without being asked to look them up — followed by its whole general
+    // knowledge document, which is injected on every reply regardless of who is
+    // talking. Best-effort — a lookup failure resolves null rather than dropping
+    // the reply.
     loadMemory: () =>
       getMemoryContext({ chatId, senderId, isGroup }).catch(() => null),
     // The sender's learned communication preferences (from their 👍/👎

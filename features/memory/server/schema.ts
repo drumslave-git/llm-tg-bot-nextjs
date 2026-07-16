@@ -21,10 +21,9 @@ const content = z
 export const updateUserMemorySchema = z.object({ content });
 export type UpdateUserMemory = z.infer<typeof updateUserMemorySchema>;
 
-/** Store a new general fact by hand. */
-export const createGeneralMemorySchema = z.object({ content });
-export type CreateGeneralMemory = z.infer<typeof createGeneralMemorySchema>;
-
-/** Rewrite one general fact. */
+/**
+ * Rewrite the general-knowledge document. There is no "create" counterpart: the
+ * document is a singleton, so writing it is an upsert — the first edit creates it.
+ */
 export const updateGeneralMemorySchema = z.object({ content });
 export type UpdateGeneralMemory = z.infer<typeof updateGeneralMemorySchema>;

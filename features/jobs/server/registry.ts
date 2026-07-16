@@ -127,19 +127,29 @@ export function summaryJobView(info: SummaryJobInfo | null): JobView {
   };
 }
 
-/** Memory consolidation — daily. */
+/** Memory extraction + consolidation — daily. */
 export function memoryJobView(info: MemoryJobInfo | null): JobView {
-  if (info == null) return errored("memory", "Memory consolidation", "/memory");
+  if (info == null) return errored("memory", "Memory", "/memory");
   return {
     id: "memory",
-    title: "Memory consolidation",
-    description: `Folds the day's saved notes into durable memory, daily at ${info.runTime} (${info.timezone}).`,
+    title: "Memory",
+    description: `Reads each finished chat-day for durable facts and folds them into memory, daily at ${info.runTime} (${info.timezone}).`,
     activity: intervalActivity(info.status),
     href: "/memory",
     runEndpoint: "/api/memory/run",
-    runDisabled: info.pendingNotes === 0,
+    // The run does both passes, so it is only pointless when *both* backlogs are
+    // empty — gating on notes alone would leave a pile of unread chat-days with no
+    // way to trigger the extraction that turns them into notes.
+    runDisabled: info.pendingNotes === 0 && info.pendingExtractionDays === 0,
     notice: null,
-    backlog: info.pendingNotes > 0 ? { label: "notes pending", count: info.pendingNotes } : null,
+    // One badge, two backlogs: unread days come first because they are upstream —
+    // reading them is what produces the notes the other number counts.
+    backlog:
+      info.pendingExtractionDays > 0
+        ? { label: "days to read", count: info.pendingExtractionDays }
+        : info.pendingNotes > 0
+          ? { label: "notes pending", count: info.pendingNotes }
+          : null,
     nextRunAt: info.nextRunAt,
     lastRunAt: info.lastResult?.at ?? null,
     lastResult: info.lastResult?.summary ?? null,

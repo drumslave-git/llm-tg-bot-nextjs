@@ -12,51 +12,50 @@ import { startTrace } from "@/server/trace";
 
 import { splitMemoryFacts } from "../format";
 import {
-  buildGeneralReconcileRequest,
+  buildGeneralMergeRequest,
   buildUserMergeRequest,
-  GENERAL_RECONCILE_PROMPT,
-  parseGeneralDecision,
+  GENERAL_MERGE_PROMPT,
   parseMergedDocument,
   USER_MERGE_PROMPT,
 } from "../prompt";
 import {
-  deleteGeneralMemories,
   deleteMemoryEntries,
-  findSimilarGeneralMemories,
+  getGeneralMemory,
   getPendingGeneralEntries,
   getPendingUserEntries,
   getUserMemory,
-  insertGeneralMemory,
   listUsersWithPendingEntries,
+  upsertGeneralMemory,
   upsertUserMemory,
 } from "./repository";
 
 /**
- * The nightly consolidation job: fold every pending `memory_save` note into
- * durable memory.
+ * The nightly consolidation job: fold every pending note — from the `memory_save`
+ * tool and from passive extraction alike — into durable memory.
  *
- * Two passes, because the scopes are stored differently (recorded decision):
- *  - **user** — one LLM call per *person*, merging all of their pending notes into
- *    their single document at once. Merging per-person rather than per-note lets
- *    the model see the whole picture it is rewriting, which is what makes
- *    contradiction resolution ("moved to Lisbon" supersedes "lives in Porto")
- *    possible at all.
- *  - **general** — one LLM call per *note*, reconciled against the existing facts
- *    most similar to it. Per-note because each fact is an independently embedded
- *    row: the decision is local (insert / skip / replace), so there is no reason to
- *    put the whole store in the context, and a store that has grown for months
- *    could not fit there anyway.
+ * Two passes, one per scope, both **document merges** (operator decision,
+ * 2026-07-16): existing document + its pending notes → rewritten document. Merging
+ * per-document rather than per-note is what makes contradiction resolution
+ * possible at all — the model sees the whole picture it is rewriting, so "moved to
+ * Lisbon" can supersede "lives in Porto".
+ *  - **user** — one LLM call per *person* with a backlog.
+ *  - **general** — one LLM call for the single shared document.
+ *
+ * The general pass used to be one call per *note*, reconciling it (insert / skip /
+ * replace) against the stored facts most similar to it, because general knowledge
+ * was a set of independently embedded rows. It is one document now, so it merges
+ * like a person's — and the whole run costs at most one general call instead of
+ * one per note.
  *
  * A pass that fails leaves its notes pending for the next run rather than losing
- * them; a note that succeeds is deleted, so it is never re-spent on the LLM.
- * Embeddings are optional: with no embedding model configured the job still runs
- * and memory is still stored and injected, it just is not semantically searchable.
+ * them; a note that succeeds is deleted, so it is never re-spent on the LLM. An
+ * empty merge is treated as a *failed* pass, never as "this is now empty", so a
+ * garbage model response can never erase a document that took months to build.
+ * Embeddings are optional and only affect `user` memory (general is never
+ * searched): with none configured, memory is still stored and injected.
  */
 
 const FEATURE = FEATURES.memory;
-
-/** Existing facts offered to the reconcile pass per note. A code constant. */
-const SIMILAR_CANDIDATES = 8;
 
 /**
  * Safety valve on one run, not a business rule — the backlog is normally a
@@ -79,10 +78,8 @@ export interface ConsolidateDeps {
 export interface ConsolidateResult {
   /** People whose document was rewritten. */
   usersUpdated: number;
-  /** General facts inserted, replaced, and skipped as duplicates. */
-  generalInserted: number;
-  generalReplaced: number;
-  generalSkipped: number;
+  /** Whether the single general document was rewritten this run. */
+  generalUpdated: boolean;
   /** Notes folded in and deleted. */
   consumed: number;
   /** Notes whose pass failed; left pending for the next run. */
@@ -92,9 +89,7 @@ export interface ConsolidateResult {
 
 const EMPTY: Omit<ConsolidateResult, "summary"> = {
   usersUpdated: 0,
-  generalInserted: 0,
-  generalReplaced: 0,
-  generalSkipped: 0,
+  generalUpdated: false,
   consumed: 0,
   failed: 0,
 };
@@ -260,95 +255,76 @@ export async function runMemoryConsolidation(deps: ConsolidateDeps): Promise<Con
       });
     }
 
-    /* Pass 2 — one reconcile per general note. */
-    for (const entry of generalEntries) {
-      if (budget <= 0) break;
-      deps.onProgress?.({ step: "Reconciling general fact", current: ++processed, total });
-
-      const embedding = await embedOne(entry.content);
-      const candidates = await findSimilarGeneralMemories(db, {
-        content: entry.content,
-        embedding,
-        limit: SIMILAR_CANDIDATES,
+    /* Pass 2 — one merge for the single general document. */
+    const generalBatch = generalEntries.slice(0, Math.max(budget, 0));
+    if (generalBatch.length > 0) {
+      deps.onProgress?.({
+        step: "Merging general knowledge",
+        current: ++processed,
+        total,
       });
+
+      const existingDoc = await getGeneralMemory(db);
+      const existingFacts = existingDoc ? splitMemoryFacts(existingDoc.content) : [];
 
       await trace.event({
         type: "step",
-        message: "reconcile general fact",
-        data: { entryId: entry.id, note: entry.content, candidates: candidates.length },
+        message: "merge general knowledge",
+        data: {
+          existingFacts: existingFacts.length,
+          incomingNotes: generalBatch.length,
+        },
       });
 
       const content = await complete(
-        GENERAL_RECONCILE_PROMPT,
-        buildGeneralReconcileRequest({
-          note: entry.content,
-          candidates: candidates.map((c) => ({ id: c.id, content: c.content })),
+        GENERAL_MERGE_PROMPT,
+        buildGeneralMergeRequest({
+          existing: existingFacts,
+          incoming: generalBatch.map((e) => e.content),
         }),
       );
-      if (!content) continue;
 
-      const decision = parseGeneralDecision(
-        content,
-        candidates.map((c) => c.id),
-      );
-      if (!decision) {
-        result.failed += 1;
-        await trace.event({
-          type: "step",
-          level: "warn",
-          message: "unusable reconcile decision — note left pending for the next run",
-          data: { entryId: entry.id, content },
-        });
-        continue;
+      if (content) {
+        const merged = parseMergedDocument(content);
+        if (merged.length === 0) {
+          // Same rule as the user pass: an empty merge is a failed pass, NOT
+          // "general knowledge is now empty". Acting on it would erase the whole
+          // shared document. The notes stay pending.
+          result.failed += 1;
+          await trace.event({
+            type: "step",
+            level: "warn",
+            message: "merge produced no document — general knowledge left untouched, notes left pending",
+            data: { content },
+          });
+        } else {
+          const document = merged.join("\n");
+          await upsertGeneralMemory(db, document);
+          await deleteMemoryEntries(
+            db,
+            generalBatch.map((e) => e.id),
+          );
+          result.consumed += generalBatch.length;
+          result.generalUpdated = true;
+
+          await trace.event({
+            type: "step",
+            level: "success",
+            message: "general knowledge updated",
+            data: {
+              factsBefore: existingFacts.length,
+              factsAfter: merged.length,
+              notesFolded: generalBatch.length,
+              document,
+            },
+          });
+        }
       }
-
-      if (decision.action === "skip") {
-        result.generalSkipped += 1;
-        await trace.event({
-          type: "step",
-          message: "already known — general fact not stored again",
-          data: { entryId: entry.id, note: entry.content },
-        });
-      } else {
-        // The stored line is the model's cleaned-up rewrite, so embed *that* —
-        // embedding the raw note would leave the vector describing text the row
-        // does not contain.
-        const stored = await insertGeneralMemory(db, {
-          content: decision.content,
-          embedding: await embedOne(decision.content),
-        });
-        const replaced =
-          decision.action === "replace"
-            ? await deleteGeneralMemories(db, decision.replaces)
-            : 0;
-
-        if (decision.action === "replace") result.generalReplaced += 1;
-        else result.generalInserted += 1;
-
-        await trace.event({
-          type: "step",
-          level: "success",
-          message: decision.action === "replace" ? "general fact replaced" : "general fact stored",
-          data: {
-            entryId: entry.id,
-            memoryId: stored.id,
-            content: decision.content,
-            supersededIds: decision.action === "replace" ? decision.replaces : [],
-            superseded: replaced,
-            embedded: stored.embedded,
-          },
-        });
-      }
-
-      await deleteMemoryEntries(db, [entry.id]);
-      budget -= 1;
-      result.consumed += 1;
     }
 
     const summary =
       `${result.usersUpdated} user memor${result.usersUpdated === 1 ? "y" : "ies"} updated, ` +
-      `${result.generalInserted} general fact(s) stored, ${result.generalReplaced} replaced, ` +
-      `${result.generalSkipped} already known` +
+      (result.generalUpdated ? "general knowledge updated" : "general knowledge unchanged") +
       (result.failed > 0 ? `, ${result.failed} left pending` : "");
 
     await trace.succeed({ outputSummary: summary });

@@ -1,6 +1,6 @@
 "use client";
 
-import { Brain, Inbox, Library, Pencil, Plus, Trash2, X } from "lucide-react";
+import { Brain, Inbox, Library, Pencil, Trash2, X } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
@@ -167,61 +167,6 @@ function EditableMemory({
   );
 }
 
-/** The "add a general fact by hand" form. */
-function AddGeneralMemory() {
-  const { mutate, busy, error } = useMemoryMutation();
-  const [open, setOpen] = useState(false);
-  const [draft, setDraft] = useState("");
-
-  if (!open) {
-    return (
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        onClick={() => setOpen(true)}
-        leftIcon={<Plus className="h-4 w-4" />}
-      >
-        Add fact
-      </Button>
-    );
-  }
-
-  return (
-    <div className="w-full space-y-2">
-      <Textarea
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        rows={3}
-        placeholder="One durable, self-contained fact…"
-        aria-label="New general fact"
-      />
-      <div className="flex gap-2">
-        <Button
-          type="button"
-          size="sm"
-          disabled={busy || draft.trim().length < 2}
-          onClick={() =>
-            void mutate(
-              "/api/memory/general",
-              { method: "POST", body: JSON.stringify({ content: draft }) },
-              () => {
-                setDraft("");
-                setOpen(false);
-              },
-            )
-          }
-        >
-          {busy ? "Saving…" : "Save"}
-        </Button>
-        <Button type="button" variant="ghost" size="sm" onClick={() => setOpen(false)}>
-          Cancel
-        </Button>
-      </div>
-      {error ? <p className="text-sm text-danger">{error}</p> : null}
-    </div>
-  );
-}
 
 /** One row of the pending queue, with a discard button. */
 function PendingRow({
@@ -267,7 +212,7 @@ function PendingRow({
 
 export function MemoryPanel({ view }: { view: MemoryView }) {
   useLiveRefresh("memory");
-  const { entries, users, general } = view;
+  const { entries, users, general, generalPendingNotes } = view;
 
   return (
     <div className="space-y-6">
@@ -370,40 +315,37 @@ export function MemoryPanel({ view }: { view: MemoryView }) {
           <div className="space-y-1">
             <CardTitle>General knowledge</CardTitle>
             <CardDescription>
-              Shared facts that are not about any one person. Not injected into replies — the bot
-              looks them up with its memory tools when a question calls for them.
+              One document of shared facts — definitions, rules, conventions, and facts about
+              people the bot cannot file under a person of their own. Injected into every reply.
             </CardDescription>
           </div>
           <CardAction>
-            <AddGeneralMemory />
+            {generalPendingNotes > 0 ? (
+              <Badge tone="warning">
+                {generalPendingNotes} note{generalPendingNotes === 1 ? "" : "s"} pending
+              </Badge>
+            ) : null}
           </CardAction>
         </CardHeader>
         <CardContent>
-          {general.length === 0 ? (
+          {general == null ? (
             <EmptyState
               icon={Library}
               title="No general knowledge yet"
-              description="The bot stores a general fact when it learns something shared — a definition, a rule, a convention."
+              description="The bot adds to this document when it learns something shared — a definition, a rule, a convention — or a fact about someone it cannot remember as a person."
             />
           ) : (
-            <ul className="space-y-6">
-              {general.map((fact) => (
-                <li key={fact.id} className="space-y-2 border-b border-border pb-6 last:border-0 last:pb-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <EmbeddedBadge embedded={fact.embedded} />
-                    <span className="text-sm text-muted">
-                      stored <Timestamp iso={fact.createdAt} />
-                    </span>
-                  </div>
-                  <EditableMemory
-                    content={fact.content}
-                    saveUrl={`/api/memory/general/${fact.id}`}
-                    deleteUrl={`/api/memory/general/${fact.id}`}
-                    deleteLabel="Forget this fact"
-                  />
-                </li>
-              ))}
-            </ul>
+            <div className="space-y-2">
+              <span className="text-sm text-muted">
+                updated <Timestamp iso={general.updatedAt} />
+              </span>
+              <EditableMemory
+                content={general.content}
+                saveUrl="/api/memory/general"
+                deleteUrl="/api/memory/general"
+                deleteLabel="Forget all general knowledge"
+              />
+            </div>
           )}
         </CardContent>
       </Card>

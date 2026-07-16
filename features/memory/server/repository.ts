@@ -43,10 +43,7 @@ function mapUserMemory(row: UserMemoryRow): UserMemory {
 
 function mapGeneralMemory(row: GeneralMemoryRow): GeneralMemory {
   return {
-    id: row.id,
     content: row.content,
-    embedded: row.embedding != null,
-    createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
 }
@@ -185,102 +182,40 @@ export async function deleteUserMemory(db: DrizzleDb, userId: string): Promise<b
   return rows.length > 0;
 }
 
-/* ------------------------------------------------------------ general facts */
+/* -------------------------------------------------------- general document */
 
-/** Every general fact, newest first (dashboard). */
-export async function listGeneralMemories(db: DrizzleDb): Promise<GeneralMemory[]> {
-  const rows = await db.select().from(generalMemories).orderBy(desc(generalMemories.createdAt));
-  return rows.map(mapGeneralMemory);
+/** The single row's key. General memory is one document, like `settings`. */
+const GENERAL_ID = "singleton";
+
+/** The general-knowledge document, or null when nothing has been stored yet. */
+export async function getGeneralMemory(db: DrizzleDb): Promise<GeneralMemory | null> {
+  const [row] = await db.select().from(generalMemories).where(eq(generalMemories.id, GENERAL_ID));
+  return row ? mapGeneralMemory(row) : null;
 }
 
-/** Store one new general fact. */
-export async function insertGeneralMemory(
+/** Write the general document (nightly merge, or an operator edit). */
+export async function upsertGeneralMemory(
   db: DrizzleDb,
-  input: { content: string; embedding: number[] | null },
+  content: string,
 ): Promise<GeneralMemory> {
   const [row] = await db
     .insert(generalMemories)
-    .values({ id: randomUUID(), content: input.content, embedding: input.embedding })
+    .values({ id: GENERAL_ID, content, updatedAt: new Date() })
+    .onConflictDoUpdate({
+      target: generalMemories.id,
+      set: { content, updatedAt: new Date() },
+    })
     .returning();
   return mapGeneralMemory(row);
 }
 
-/** Rewrite one general fact (operator edit). */
-export async function updateGeneralMemory(
-  db: DrizzleDb,
-  id: string,
-  input: { content: string; embedding: number[] | null },
-): Promise<GeneralMemory | null> {
-  const [row] = await db
-    .update(generalMemories)
-    .set({ content: input.content, embedding: input.embedding, updatedAt: new Date() })
-    .where(eq(generalMemories.id, id))
-    .returning();
-  return row ? mapGeneralMemory(row) : null;
-}
-
-/** Forget general facts by id (an operator delete, or superseded by a reconcile). */
-export async function deleteGeneralMemories(db: DrizzleDb, ids: string[]): Promise<number> {
-  if (ids.length === 0) return 0;
+/** Forget general knowledge entirely (operator "forget all"). */
+export async function deleteGeneralMemory(db: DrizzleDb): Promise<boolean> {
   const rows = await db
     .delete(generalMemories)
-    .where(inArray(generalMemories.id, ids))
+    .where(eq(generalMemories.id, GENERAL_ID))
     .returning({ id: generalMemories.id });
-  return rows.length;
-}
-
-/**
- * The general facts most similar to a note — the candidate set the nightly
- * reconcile pass decides against.
- *
- * BOTH halves always run, and the results are unioned. The vector half alone is
- * not enough: it can only see rows that carry an embedding, so a fact stored
- * while no embedding model was configured (or whose embed call failed) would
- * never be offered as a candidate — and an invisible candidate is one the job
- * cannot deduplicate against or supersede, quietly producing a contradictory
- * store. The lexical half catches those rows by their words.
- */
-export async function findSimilarGeneralMemories(
-  db: DrizzleDb,
-  params: { content: string; embedding: number[] | null; limit: number },
-): Promise<GeneralMemory[]> {
-  const text = params.content.trim();
-
-  // The lexical half must OR the note's words, not AND them. A correction shares
-  // only *some* words with the fact it corrects ("Standup moved to 10:00" vs
-  // "Standup is at 09:30"), so an AND query — what `websearch_to_tsquery` builds —
-  // would demand the word "moved" appear in the stored fact and match nothing.
-  // Rank by overlap so the most-related facts come first.
-  const orQuery = sql`(select string_agg(lexeme, ' | ') from unnest(to_tsvector('simple', ${text})))::tsquery`;
-
-  const [vectorRows, textRows] = await Promise.all([
-    params.embedding
-      ? db
-          .select()
-          .from(generalMemories)
-          .where(isNotNull(generalMemories.embedding))
-          .orderBy(
-            sql`${generalMemories.embedding} <=> ${JSON.stringify(params.embedding)}::vector`,
-          )
-          .limit(params.limit)
-      : Promise.resolve([]),
-    text
-      ? db
-          .select()
-          .from(generalMemories)
-          .where(sql`to_tsvector('simple', ${generalMemories.content}) @@ ${orQuery}`)
-          .orderBy(
-            sql`ts_rank(to_tsvector('simple', ${generalMemories.content}), ${orQuery}) desc`,
-          )
-          .limit(params.limit)
-      : Promise.resolve([]),
-  ]);
-
-  const byId = new Map<string, GeneralMemory>();
-  for (const row of [...vectorRows, ...textRows]) {
-    if (!byId.has(row.id)) byId.set(row.id, mapGeneralMemory(row));
-  }
-  return [...byId.values()].slice(0, params.limit);
+  return rows.length > 0;
 }
 
 /* ---------------------------------------------------------------- searching */
@@ -313,14 +248,15 @@ function fuseByRank<T>(lists: Array<Array<{ key: string; value: T }>>, limit: nu
 }
 
 /**
- * Hybrid search across consolidated memory of BOTH scopes: semantic (cosine over
- * the embedding) fused with lexical (Postgres full text) by reciprocal rank, the
- * same shape as the history-summary search.
+ * Hybrid search over consolidated **user** memory: semantic (cosine over the
+ * embedding) fused with lexical (Postgres full text) by reciprocal rank, the same
+ * shape as the history-summary search.
  *
- * Spanning both scopes is deliberate: the model asking "what do I know about
- * sourdough" should not first have to guess whether that landed in general
- * knowledge or in a fact about a person. Each hit is tagged with the scope it
- * came from.
+ * General knowledge is deliberately **not** searched (operator decision): it is
+ * one document injected into every reply, so the model already has all of it in
+ * context — searching it would spend a round-trip to hand back text the model can
+ * already read. What remains worth searching is what is *not* injected: the
+ * per-person documents of people who are not in this conversation.
  *
  * With no embedding configured this degrades to pure full text rather than
  * returning nothing.
@@ -342,16 +278,8 @@ export async function searchMemories(
           .where(isNotNull(userMemories.embedding))
           .orderBy(sql`${userMemories.embedding} <=> ${JSON.stringify(params.queryVector)}::vector`)
           .limit(poolSize),
-        db
-          .select({ id: generalMemories.id, content: generalMemories.content })
-          .from(generalMemories)
-          .where(isNotNull(generalMemories.embedding))
-          .orderBy(
-            sql`${generalMemories.embedding} <=> ${JSON.stringify(params.queryVector)}::vector`,
-          )
-          .limit(poolSize),
       ])
-    : [[], []];
+    : [[]];
 
   const textHits = text
     ? await Promise.all([
@@ -365,18 +293,8 @@ export async function searchMemories(
             sql`ts_rank(to_tsvector('simple', ${userMemories.content}), websearch_to_tsquery('simple', ${text})) desc`,
           )
           .limit(poolSize),
-        db
-          .select({ id: generalMemories.id, content: generalMemories.content })
-          .from(generalMemories)
-          .where(
-            sql`to_tsvector('simple', ${generalMemories.content}) @@ websearch_to_tsquery('simple', ${text})`,
-          )
-          .orderBy(
-            sql`ts_rank(to_tsvector('simple', ${generalMemories.content}), websearch_to_tsquery('simple', ${text})) desc`,
-          )
-          .limit(poolSize),
       ])
-    : [[], []];
+    : [[]];
 
   type Hit = { scope: MemoryScope; userId: string | null; content: string };
   const asUserHits = (rows: Array<{ userId: string; content: string }>) =>
@@ -384,20 +302,7 @@ export async function searchMemories(
       key: `user:${r.userId}`,
       value: { scope: "user" as const, userId: r.userId, content: r.content } satisfies Hit,
     }));
-  const asGeneralHits = (rows: Array<{ id: string; content: string }>) =>
-    rows.map((r) => ({
-      key: `general:${r.id}`,
-      value: { scope: "general" as const, userId: null, content: r.content } satisfies Hit,
-    }));
 
-  return fuseByRank<Hit>(
-    [
-      asUserHits(vectorHits[0]),
-      asGeneralHits(vectorHits[1]),
-      asUserHits(textHits[0]),
-      asGeneralHits(textHits[1]),
-    ],
-    params.limit,
-  );
+  return fuseByRank<Hit>([asUserHits(vectorHits[0]), asUserHits(textHits[0])], params.limit);
 }
 

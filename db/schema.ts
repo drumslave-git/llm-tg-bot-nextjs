@@ -708,40 +708,78 @@ export type UserMemoryRow = typeof userMemories.$inferSelect;
 export type UserMemoryInsert = typeof userMemories.$inferInsert;
 
 /**
- * Cross-chat shared knowledge — **individual fact rows, each independently
- * embedded** (recorded decision), as opposed to the single document per user.
+ * Cross-chat shared knowledge — **one merged document**, injected into every
+ * reply (operator decision, 2026-07-16), structurally a twin of
+ * {@link userMemories} with no person attached.
  *
- * Rows rather than a document because general memory is *retrieved*, never
- * injected: it grows without bound across every chat, so a reply can only afford
- * the handful of facts relevant to the question, which means each fact needs its
- * own vector. It also makes a single wrong fact editable/deletable on the
- * dashboard without rewriting everything around it.
+ * This **reverses** the original design (individually embedded fact rows,
+ * retrieved by tool, never injected). That design was built around general memory
+ * growing without bound, so a reply could only afford the few facts relevant to
+ * the question — which meant each fact needed its own vector. Two things settled
+ * it the other way: knowledge the bot has to *think to look up* is knowledge it
+ * mostly does not use, and the nightly merge already keeps a document from
+ * sprawling by deduplicating and resolving contradictions — exactly as it does
+ * for the per-person documents, which have always been injected and uncapped.
  *
- * The nightly job reconciles each pending note against the existing rows it is
- * most similar to: a genuinely new fact is inserted, a restatement is skipped,
- * and a contradiction replaces the rows it supersedes.
+ * Consequences, all deliberate: no `embedding` column and no HNSW index (there is
+ * nothing to rank — the whole document is always in context); the nightly job runs
+ * a *merge* rather than a per-note reconcile; and the memory tools no longer read
+ * this scope, since the model can already see it. It is also where a fact about a
+ * person the bot cannot key on lands — someone with no {@link knownUsers} row
+ * cannot have a per-person document, but "Bob lives in Porto" is still worth
+ * knowing, so it is kept here, named.
+ *
+ * Singleton, like {@link settings}: `id` defaults to `'singleton'`.
  */
-export const generalMemories = pgTable(
-  "general_memories",
-  {
-    id: text("id").primaryKey(),
-    /** One durable, self-contained fact. */
-    content: text("content").notNull(),
-    /** Embedding of `content` for the semantic half of memory search. Null when embedding failed. */
-    embedding: vector("embedding", { dimensions: EMBEDDING_DIMENSIONS }),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => [
-    // Vector half of the hybrid search. The full-text half uses a GIN index on
-    // `to_tsvector('simple', content)`, added by hand in the migration (an
-    // expression index has no Drizzle column to hang off) — same as chat_summaries.
-    index("general_memories_embedding_idx").using("hnsw", t.embedding.op("vector_cosine_ops")),
-  ],
-);
+export const generalMemories = pgTable("general_memories", {
+  id: text("id").primaryKey().default("singleton"),
+  /** The merged general-knowledge document — durable facts, one per line. */
+  content: text("content").notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
 
 export type GeneralMemoryRow = typeof generalMemories.$inferSelect;
 export type GeneralMemoryInsert = typeof generalMemories.$inferInsert;
+
+/**
+ * Marker of a (chat, day) pair the **passive extraction** job has read — including
+ * a day that yielded no facts at all, which would otherwise be rescanned forever.
+ *
+ * Passive extraction exists because {@link memoryEntries} had exactly one producer:
+ * the `memory_save` tool, which only runs while the model is generating a reply —
+ * and the bot only replies when addressed. In a group that meant the bot learned
+ * nothing from the conversation happening around it, which is most of it. The
+ * mirror already holds every message regardless of addressing, so the fix is a
+ * second producer reading *that* rather than a change to the addressing rules.
+ *
+ * Structurally a twin of {@link chatSummaryDays}, for the same reasons: extraction
+ * is one LLM pass per finished chat-day, and `message_count` is what makes it
+ * self-healing — the due-scan compares it to the day's live count, so a day that
+ * gains rows later (an import, a late edit) is re-read, while an unchanged day is
+ * never re-spent on the LLM.
+ *
+ * It is a separate marker from `chat_summary_days` rather than a shared "this day
+ * was processed" flag: the two jobs ask different questions of the same day and
+ * must be able to re-run, fail, and backfill independently of each other.
+ */
+export const memoryExtractionDays = pgTable(
+  "memory_extraction_days",
+  {
+    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    chatId: text("chat_id").notNull(),
+    /** The extracted day (`YYYY-MM-DD`) in the operator timezone. */
+    extractionDate: text("extraction_date").notNull(),
+    /** Messages the day held when it was extracted (the re-run trigger). */
+    messageCount: integer("message_count").notNull(),
+    /** Notes the day yielded (0 for a day of pure noise). */
+    noteCount: integer("note_count").notNull(),
+    extractedAt: timestamp("extracted_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("memory_extraction_days_chat_date_idx").on(t.chatId, t.extractionDate)],
+);
+
+export type MemoryExtractionDayRow = typeof memoryExtractionDays.$inferSelect;
+export type MemoryExtractionDayInsert = typeof memoryExtractionDays.$inferInsert;
 
 /**
  * One chat's LLM-derived analytics insight for one day — the base grain of the
