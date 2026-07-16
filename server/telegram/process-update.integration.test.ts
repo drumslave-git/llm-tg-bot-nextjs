@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { closePool } from "@/db/pool";
+import type { NameMatch } from "@/features/bot-messaging/server/address-analyzer";
 import { getChatHistory } from "@/features/history/server/service";
 import { getKnownUser } from "@/features/known-users/server/repository";
 import { upsertSettings } from "@/features/settings/server/repository";
@@ -56,6 +57,19 @@ function fakeGenerator(content = "Hi there!") {
   return { generateReply, calls };
 }
 
+/**
+ * A deterministic addressing analyzer answering with one classification, so a
+ * group message the cheap checks leave undecided settles without a provider.
+ */
+function fakeAnalyzer(nameMatch: NameMatch) {
+  const calls: ChatMessage[][] = [];
+  const analyzeAddressing = async (messages: ChatMessage[]) => {
+    calls.push(messages);
+    return { content: JSON.stringify({ name_match: nameMatch }), model: "test-model", latencyMs: 1 };
+  };
+  return { analyzeAddressing, calls };
+}
+
 describe("processUpdate (bot-less flow)", () => {
   it("handles a private message end to end: remembers, mirrors, replies, traces", async () => {
     const gen = fakeGenerator("Hello back");
@@ -88,6 +102,9 @@ describe("processUpdate (bot-less flow)", () => {
 
   it("ignores un-addressed group chatter but still captures it passively", async () => {
     const gen = fakeGenerator();
+    // Plain chatter names nothing recognizable, so the cheap checks leave it to
+    // the analyzer; it answers "absent" and the bot stays silent.
+    const analyzer = fakeAnalyzer("absent");
     const res = await simulateUpdate(
       {
         text: "just chatting",
@@ -96,19 +113,30 @@ describe("processUpdate (bot-less flow)", () => {
         chatTitle: "Test Group",
         from: { id: 200, username: "bob", firstName: "Bob" },
       },
-      { generateReply: gen.generateReply },
+      { generateReply: gen.generateReply, analyzeAddressing: analyzer.analyzeAddressing },
     );
 
-    expect(res.outcome).toMatchObject({ status: "ignored", reason: "not_addressed" });
+    expect(res.outcome).toMatchObject({
+      status: "ignored",
+      reason: "not_addressed",
+      source: "analyzer",
+    });
     expect(res.replies).toEqual([]);
     expect(gen.calls).toHaveLength(0);
 
     // Passive capture runs regardless of addressing: user remembered + mirrored.
-    // No bot-messaging (reply) trace is written for un-addressed chatter, even
-    // though first-sight capture traces (known-users/known-groups) may be.
     expect(await getKnownUser(ctx.db, "200")).not.toBeNull();
     expect(await getChatHistory("-1001", {}, ctx.db)).toHaveLength(1);
-    expect((await listTraces(ctx.db, { feature: "bot-messaging" })).total).toBe(0);
+
+    // The bot asked the LLM about this message before staying silent, so the
+    // operator gets one trace explaining the silence — settled as skipped, not
+    // dropped. (Chatter the cheap checks reject outright leaves nothing behind.)
+    const botTraces = await listTraces(ctx.db, { feature: "bot-messaging" });
+    expect(botTraces.total).toBe(1);
+    expect(botTraces.traces[0]).toMatchObject({
+      status: "skipped",
+      outputSummary: "not addressed — display name absent",
+    });
   });
 
   it("replies in a group when @mentioned", async () => {
