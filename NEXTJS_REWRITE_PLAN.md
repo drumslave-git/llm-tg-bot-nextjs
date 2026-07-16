@@ -201,7 +201,6 @@ Steps:
    - history
    - summaries
    - memory
-   - mood
    - tasks
    - vision
    - browser runs
@@ -217,7 +216,7 @@ Steps:
    - history-aware replies
    - LLM tool use
    - memory injection
-   - mood/personality injection
+   - personality injection
    - image/sticker handling
 3. Inventory operational requirements:
    - bootstrap env vars (`DATABASE_URL`) and the settings the DB-backed configuration area must cover
@@ -290,7 +289,7 @@ Steps:
    - messages
    - summaries
    - memories
-   - mood/personality state
+   - personalities
    - tasks
    - task events/fires
    - media/vision descriptions
@@ -405,7 +404,7 @@ Steps:
    - system prompt
    - recent history
    - memories
-   - mood/personality
+   - personality
    - link/search/vision context when enabled
 3. Implement token/context budgeting.
 4. Implement response generation.
@@ -493,7 +492,6 @@ Steps:
    - memory extraction
    - vision backfill
    - browser-agent queue
-   - mood cooldown
 2. For each job, choose a standard operating model:
    - run on demand through Route Handler
    - run from external cron hitting a Route Handler
@@ -533,14 +531,19 @@ Priority order:
 | 11 | Analytics dashboard | Rich stats dashboard (ECharts): message/token/user/model metrics live per **day / week / month / all-time** with per-chat and per-user drill-down, plus LLM-derived chat mood, deterministic health, **word of the period**, and **most-discussed topic** — all available at every one of those four periods — from a nightly insight job. **Inserted ahead of Image generation by the user (2026-07-15).** |
 | 12 | Image generation | Generate images through configured provider/tooling with dashboard/debug visibility and downloadable traces. |
 | 13 | Browser agent feature | Browser-agent runs with queue/status, step traces, artifacts/downloads, and a dedicated Debug page. |
-| 14 | Mood feature | Mood/personality state, mood injection into replies, dashboard controls, and debug traces. **De-prioritized to lowest by the user (2026-07-14).** |
+
+Dropped features:
+
+| Feature | Status | Reason |
+| --- | --- | --- |
+| Mood feature | **Deprecated — not v1, do not implement (user, 2026-07-16)** | The MVP's mood/personality state and its injection into replies is dropped. The bot's reply behavior is governed by the base system prompt + the active personality only. Any mood-shaped work would need a fresh decision from the user first. Not to be confused with the **analytics-only** mood score in priority 11, which stays. |
 
 Feature dependency notes:
 
 - Bot text messaging depends on settings, health, Telegram intake, LLM provider, and shared trace infrastructure.
 - Search and visit/read-link tools depend on MCP tools basic support.
 - Vision backfill depends on bot vision/media persistence.
-- Mood and memory both depend on prompt composition and history.
+- Memory depends on prompt composition and history.
 - Scheduled tasks must use the shared background-job operating model from Phase 8.
 - Analytics dashboard depends on history (message mirror + daily summaries), shared traces (for model speed/token usage), the shared background-job model (nightly insight job), and shared Debug/SSE/job-card UI. Numeric metrics are aggregated live from the base tables; only the LLM-derived insight (mood/word/topic) is precomputed.
 - Browser agent must not be started until the shared job/status/debug/log-export patterns exist.

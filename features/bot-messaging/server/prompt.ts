@@ -18,9 +18,11 @@
  * take this turn) but deliberately **does not enumerate or describe tools** — each
  * tool self-describes through its own MCP description, surfaced to the model via
  * the tools API, so the prompt stays tool-agnostic. It also omits the MVP's
- * memory, mood, and media guidance — that machinery does not exist yet. Revisit
- * the media claims when vision (priority 7) lands. The operator's persona is
- * appended by {@link buildSystemPrompt}.
+ * memory and media guidance — that machinery does not exist yet. Revisit
+ * the media claims when vision (priority 7) lands. The MVP's mood guidance is
+ * gone for good: the Mood feature is deprecated (user, 2026-07-16), so the
+ * persona is the only behavioral layer over this prompt. The operator's persona
+ * is appended by {@link buildSystemPrompt}.
  */
 export const BASE_SYSTEM_PROMPT = `You are a conversational assistant replying to messages in a Telegram chat.
 

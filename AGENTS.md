@@ -107,7 +107,13 @@ Current priority order:
 11. Analytics dashboard (inserted ahead of Image generation by the user, 2026-07-15)
 12. Image generation
 13. Browser agent feature
-14. Mood feature (de-prioritized to lowest by the user, 2026-07-14)
+
+The Mood feature (the bot's own mood state injected into replies) is
+**deprecated and dropped** by the user (2026-07-16). Do not implement it, and do
+not re-add it to the priority list without a new decision from the user. Reply
+behavior comes from the base system prompt plus the active personality only.
+This does not touch the analytics-only mood score in the Analytics dashboard
+(priority 11), which stays.
 
 Features not listed there are not v1 by default. Add a feature to the tracker
 with explicit priority, acceptance criteria, and dependencies before
