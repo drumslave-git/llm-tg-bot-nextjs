@@ -2,7 +2,11 @@ import "server-only";
 
 import type { CallbackQuery } from "@grammyjs/types";
 
-import { decodeMenuCallback, MENU_NOT_YOURS_TOAST } from "@/features/self-improvement/menu";
+import {
+  decodeMenuCallback,
+  MENU_NOT_YOURS_TOAST,
+  MENU_RECORDED_TOAST,
+} from "@/features/self-improvement/menu";
 import {
   handleMenuPress,
   type MenuPressOutcome,
@@ -16,6 +20,9 @@ import type { FeedbackTransport } from "./transport";
  * free-text reply). Presses from anyone but the reactor only get a toast —
  * the group-visible menu is answerable by one user only (user decision; a
  * Telegram group message cannot be shown to a single member).
+ *
+ * Every outcome is answered with a toast rather than a message: an answered menu
+ * deletes itself, so the popup is all the acknowledgement the chat gets.
  */
 
 /** Outcome of one callback update, for tests/logging. */
@@ -53,6 +60,10 @@ export async function processCallbackUpdate(
         text: input.text,
         keyboard: input.keyboard,
       }),
+    // Cosmetic cleanup of an already-stored answer — a chat left with a stale
+    // menu must not fail the press.
+    deleteMenu: () =>
+      transport.deleteMenu({ chatId, messageId: menuMessageId }).catch(() => undefined),
   });
 
   const toast =
@@ -60,7 +71,10 @@ export async function processCallbackUpdate(
       ? MENU_NOT_YOURS_TOAST
       : outcome.status === "unknown"
         ? "This menu is no longer active."
-        : undefined;
+        : outcome.status === "recorded"
+          ? MENU_RECORDED_TOAST
+          : // `awaiting_text` — the menu message itself now carries the instruction.
+            undefined;
   await transport.answerCallback({ callbackQueryId: query.id, text: toast }).catch(() => undefined);
   return outcome;
 }

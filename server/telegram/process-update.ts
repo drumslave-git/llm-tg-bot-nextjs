@@ -83,11 +83,12 @@ export interface ProcessOverrides {
    */
   analyzeAddressing?: BotMessagingDeps["analyzeAddressing"];
   /**
-   * Rewrite a feedback-menu message once a free-text answer is captured (real:
-   * the bot manager's grammy adapter). When absent (no edit capability), the
-   * capture is confirmed with a plain reply instead.
+   * Remove a feedback-menu message once its free-text answer is captured (real:
+   * the bot manager's grammy adapter). Absent (no delete capability) → the menu
+   * is left in place; nothing else is sent either way, since a captured answer
+   * is acknowledged by the menu disappearing, not by a reply.
    */
-  editFeedbackMenu?: (input: { chatId: string; messageId: number; text: string }) => Promise<void>;
+  deleteFeedbackMenu?: (input: { chatId: string; messageId: number }) => Promise<void>;
 }
 
 /** Telegram expires a chat action after ~5s; refresh just under that. */
@@ -378,7 +379,8 @@ export async function processUpdate(
 
   // Feedback capture: a reply to an `awaiting_text` feedback menu from the
   // reactor is the free-text answer to the 👍/👎 menu — record it and stop, the
-  // message is not a turn for the bot to answer (it stays mirrored above).
+  // message is not a turn for the bot to answer (it stays mirrored above). The
+  // menu has served its purpose and is removed; nothing is sent back.
   if (from && !from.is_bot && message.reply_to_message && text.trim()) {
     const captured = await captureFeedbackReply({
       chatId,
@@ -387,19 +389,10 @@ export async function processUpdate(
       text,
     }).catch(() => null);
     if (captured) {
-      if (overrides?.editFeedbackMenu) {
-        await overrides
-          .editFeedbackMenu({
-            chatId,
-            messageId: captured.menuMessageId,
-            text: captured.confirmation,
-          })
-          .catch(() => undefined);
-      } else {
-        await transport
-          .sendReply(captured.confirmation, { replyToMessageId: message.message_id })
-          .catch(() => undefined);
-      }
+      await overrides?.deleteFeedbackMenu?.({
+        chatId,
+        messageId: captured.menuMessageId,
+      }).catch(() => undefined);
       return { status: "ignored", reason: "feedback_captured" };
     }
   }

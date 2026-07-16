@@ -80,6 +80,8 @@ export interface FinishTraceInput {
   outputSummary?: string;
   error?: Trace["error"];
   relatedIds?: Record<string, string[]>;
+  /** Replaces the correlation the trace opened with; see `recorder.ts`. */
+  correlationId?: string;
 }
 
 export async function finishTrace(
@@ -97,6 +99,11 @@ export async function finishTrace(
       // Only overwrite the summary when a new one is provided.
       ...(input.outputSummary !== undefined
         ? { outputSummary: input.outputSummary }
+        : {}),
+      // Likewise the correlation: only an action that learned it by acting
+      // settles with one, and it must not clear what `startTrace` set.
+      ...(input.correlationId !== undefined
+        ? { correlationId: input.correlationId }
         : {}),
     })
     .where(eq(traces.id, id));
@@ -211,10 +218,16 @@ export async function getEventsForTraces(
  * "jump to the trace that handled this message" links from other features — a
  * trace's correlation id is `${chatId}:${messageId}`. When several traces share
  * a correlation id, only the most recent is returned.
+ *
+ * A correlation id is **not** unique to one feature: several features key a
+ * trace on the same message (a reply, an edit of it, feedback collected on it).
+ * Pass `features` when you want the trace of a *particular* kind of action
+ * rather than whichever touched the message last.
  */
 export async function getLatestTraceIdsByCorrelation(
   db: DrizzleDb,
   correlationIds: string[],
+  options: { features?: string[] } = {},
 ): Promise<Map<string, string>> {
   const result = new Map<string, string>();
   const unique = [...new Set(correlationIds.filter(Boolean))];
@@ -223,7 +236,11 @@ export async function getLatestTraceIdsByCorrelation(
   const rows = await db
     .select({ id: traces.id, correlationId: traces.correlationId })
     .from(traces)
-    .where(inArray(traces.correlationId, unique))
+    .where(
+      options.features?.length
+        ? and(inArray(traces.correlationId, unique), inArray(traces.feature, options.features))
+        : inArray(traces.correlationId, unique),
+    )
     .orderBy(desc(traces.startedAt));
 
   for (const row of rows) {

@@ -40,6 +40,8 @@ function mapFeedback(row: UsersFeedbackRow): UserFeedback {
       ? (row.status as FeedbackStatus)
       : "pending",
     model: row.model,
+    reflection: row.reflection,
+    reflectionModel: row.reflectionModel,
     prefsVersion: row.prefsVersion,
     correctionsVersion: row.correctionsVersion,
     createdAt: row.createdAt.toISOString(),
@@ -83,9 +85,9 @@ export interface UpsertFeedback {
 /**
  * Record a reaction: insert a `pending` feedback row, or — when this user
  * already reacted to this message — reopen the existing row (new reaction,
- * status back to `pending`, previous answer and incorporation stamps cleared)
- * so a repeat reaction asks again and the fresh answer is picked up by the next
- * incorporation run.
+ * status back to `pending`, previous answer, reflection and incorporation stamps
+ * cleared) so a repeat reaction asks again and the fresh answer is reflected on
+ * and picked up by the next incorporation run.
  */
 export async function upsertFeedback(db: DrizzleDb, values: UpsertFeedback): Promise<UserFeedback> {
   const [row] = await db
@@ -106,6 +108,8 @@ export async function upsertFeedback(db: DrizzleDb, values: UpsertFeedback): Pro
         status: "pending",
         feedback: null,
         menuMessageId: null,
+        reflection: null,
+        reflectionModel: null,
         prefsVersion: null,
         correctionsVersion: null,
         updatedAt: sql`now()`,
@@ -145,6 +149,19 @@ export async function completeFeedback(
     .where(eq(usersFeedbacks.id, id))
     .returning();
   return row ? mapFeedback(row) : null;
+}
+
+/** Store the bot's self-reflection on an answered feedback. */
+export async function setFeedbackReflection(
+  db: DrizzleDb,
+  id: string,
+  reflection: string,
+  reflectionModel: string,
+): Promise<void> {
+  await db
+    .update(usersFeedbacks)
+    .set({ reflection, reflectionModel, updatedAt: sql`now()` })
+    .where(eq(usersFeedbacks.id, id));
 }
 
 /** Flip a row to `awaiting_text` ("Other" tapped — a reply will carry the answer). */

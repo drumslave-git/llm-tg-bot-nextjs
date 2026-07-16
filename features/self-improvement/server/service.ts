@@ -11,11 +11,9 @@ import { getLlmRuntime } from "@/features/settings/server/service";
 import { FEATURES } from "@/lib/features";
 import { publishEvent } from "@/server/realtime/hub";
 import { startTrace } from "@/server/trace";
-import { getLatestTraceIdsByCorrelation, getTrace } from "@/server/trace/repository";
 import { formatPreferencesContext } from "../format";
 import {
   buildMenuKeyboard,
-  menuConfirmationText,
   menuText,
   MENU_AWAITING_TEXT,
   OTHER_OPTION,
@@ -25,6 +23,8 @@ import {
 import { normalizeModelName } from "../model-name";
 import { optionsForReaction } from "../options";
 import type { CommunicationPreference, SelfCorrection, UserFeedback } from "../types";
+import { getReplyTrace } from "./exchange";
+import { scheduleReflection } from "./reflect";
 import {
   completeFeedback,
   findAwaitingFeedbackByMenu,
@@ -60,24 +60,9 @@ export async function resolveReplyModel(
   telegramMessageId: number,
   db: DrizzleDb = getDb(),
 ): Promise<string> {
-  try {
-    // The reply trace is keyed by the *incoming* message the bot answered, so
-    // resolve the assistant row first and follow its reply pointer.
-    const replyRow = await getChatMessageByTelegramId(db, chatId, telegramMessageId);
-    const anchor = replyRow?.replyToMessageId;
-    if (anchor != null) {
-      const correlation = `${chatId}:${anchor}`;
-      const traceIds = await getLatestTraceIdsByCorrelation(db, [correlation]);
-      const traceId = traceIds.get(correlation);
-      if (traceId) {
-        const trace = await getTrace(db, traceId);
-        const model = trace?.events.find((e) => e.usage?.model)?.usage?.model;
-        if (model) return normalizeModelName(model);
-      }
-    }
-  } catch {
-    // fall through to the configured model
-  }
+  const trace = await getReplyTrace(db, chatId, telegramMessageId);
+  const model = trace?.events.find((e) => e.usage?.model)?.usage?.model;
+  if (model) return normalizeModelName(model);
   const runtime = await getLlmRuntime(db).catch(() => null);
   return normalizeModelName(runtime?.model);
 }
@@ -171,15 +156,21 @@ export async function handleFeedbackReaction(
 
 /** Outcome of a menu press, mapped by the transport to callback-query answers. */
 export type MenuPressOutcome =
-  | { status: "recorded"; feedback: UserFeedback; confirmation: string }
+  | { status: "recorded"; feedback: UserFeedback }
   | { status: "awaiting_text"; feedback: UserFeedback; instruction: string }
   | { status: "not_yours" }
   | { status: "unknown" };
 
 /** Transport ops the menu-press flow needs. */
 export interface MenuPressDeps {
-  /** Rewrite the menu message (confirmation / reply instruction), dropping the keyboard when asked. */
+  /** Rewrite the menu message (the reply instruction), dropping the keyboard when asked. */
   editMenu: (input: { text: string; keyboard: MenuKeyboard | null }) => Promise<void>;
+  /**
+   * Remove the menu message once the answer is stored. The answer is already
+   * persisted by then, so the caller makes this best-effort: a chat left with a
+   * stale menu is cosmetic, and must not fail the flow.
+   */
+  deleteMenu: () => Promise<void>;
   db?: DrizzleDb;
 }
 
@@ -240,8 +231,9 @@ export async function handleMenuPress(
       return { status: "unknown" };
     }
     const updated = await completeFeedback(db, feedback.id, chosen);
-    const confirmation = menuConfirmationText(chosen);
-    await deps.editMenu({ text: confirmation, keyboard: null });
+    // The answer is stored; the menu has done its job and goes away (the press
+    // is acknowledged by the transport's toast, not by a message).
+    await deps.deleteMenu();
     await trace.event({
       type: "output",
       level: "success",
@@ -253,19 +245,19 @@ export async function handleMenuPress(
       outputSummary: chosen,
       relatedIds: { [FEEDBACK_FEATURE.relatedIdsKey]: [feedback.id] },
     });
-    return { status: "recorded", feedback: updated ?? feedback, confirmation };
+    const answered = updated ?? feedback;
+    scheduleReflection(answered, db);
+    return { status: "recorded", feedback: answered };
   } catch (err) {
     await trace.fail(err);
     throw err;
   }
 }
 
-/** A captured free-text answer (so the caller can confirm), or null. */
+/** A captured free-text answer, or null. */
 export interface CapturedFeedback {
   feedback: UserFeedback;
-  /** The confirmation the menu message should be edited to. */
-  confirmation: string;
-  /** The menu message to edit. */
+  /** The menu message to clean up — it has served its purpose. */
   menuMessageId: number;
 }
 
@@ -274,6 +266,10 @@ export interface CapturedFeedback {
  * `awaiting_text` feedback: the message must reply to the menu message and come
  * from the reactor. Returns null when the message is not a feedback answer —
  * the caller then processes it as a normal turn. Traced when captured.
+ *
+ * Nothing is sent back: this flow has no callback query to toast, and the user's
+ * own reply is already in the chat, so the answer is acknowledged by the menu
+ * message disappearing (the caller deletes it).
  */
 export async function captureFeedbackReply(
   rawInput: CaptureReplyInput,
@@ -317,11 +313,9 @@ export async function captureFeedbackReply(
       outputSummary: input.text,
       relatedIds: { [FEEDBACK_FEATURE.relatedIdsKey]: [awaiting.id] },
     });
-    return {
-      feedback: updated ?? awaiting,
-      confirmation: menuConfirmationText(input.text),
-      menuMessageId: input.menuMessageId,
-    };
+    const answered = updated ?? awaiting;
+    scheduleReflection(answered, db);
+    return { feedback: answered, menuMessageId: input.menuMessageId };
   } catch (err) {
     await trace.fail(err);
     throw err;

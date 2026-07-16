@@ -4,7 +4,6 @@ import { randomUUID } from "node:crypto";
 
 import type { DrizzleDb } from "@/db/drizzle";
 import { getDb } from "@/db/drizzle";
-import { getChatMessageByTelegramId } from "@/features/history/server/repository";
 import { FEATURES } from "@/lib/features";
 import { extractJsonObject } from "@/lib/json";
 import { llmUsageOf, type ChatCompletionResult, type ChatMessage } from "@/server/llm/client";
@@ -13,6 +12,8 @@ import { publishEvent } from "@/server/realtime/hub";
 import { startTrace } from "@/server/trace";
 import { normalizeModelName } from "../model-name";
 import type { UserFeedback } from "../types";
+import { renderExchange } from "./exchange";
+import { reflectOnFeedback } from "./reflect";
 import {
   getLatestCorrection,
   getLatestPreference,
@@ -28,6 +29,12 @@ import {
  * The daily incorporation job: distill completed-but-unincorporated feedbacks
  * into a new per-user communication-preferences version and a new global
  * self-corrections version.
+ *
+ * Each feedback is folded as the user's words *plus the bot's own reflection on
+ * why that exchange went the way it did* (see `reflect.ts`), which is what turns
+ * a symptom ("too long") into something a fold can generalize from. A feedback
+ * answered while the LLM was unavailable has no reflection yet, so the run
+ * writes the missing ones before folding — every fold sees the reasoned form.
  *
  * Context discipline (user requirement): each feedback is folded in its own LLM
  * call so a large backlog can never overflow the context, and shared data (the
@@ -67,9 +74,10 @@ export interface SelfImprovementResult {
 const PREFS_FOLD_PROMPT =
   "You maintain a factual profile of what one specific user likes and dislikes about the replies " +
   "of a Telegram chat bot. You are given the current profile and ONE new piece of feedback from " +
-  "that user (the exchange and what they said about it). Update the profile to incorporate the " +
-  "feedback: keep each field to a few short, concrete phrases; deduplicate; keep still-valid " +
-  "existing points; drop points the new feedback contradicts. " +
+  "that user: the exchange, what they said about it, and the bot's own reflection on why it went " +
+  "that way. Update the profile to incorporate the feedback: keep each field to a few short, " +
+  "concrete phrases; deduplicate; keep still-valid existing points; drop points the new feedback " +
+  "contradicts. " +
   'Reply with ONLY a JSON object of the shape {"likes": string, "dislikes": string} — no code ' +
   "fences, no commentary.";
 
@@ -77,37 +85,17 @@ const PREFS_FOLD_PROMPT =
 const CORRECTIONS_FOLD_PROMPT =
   "You maintain a short list of self-correction guidelines for a Telegram chat bot, distilled " +
   "from feedback across many users. You are given the current guidelines and ONE new piece of " +
-  "feedback (the exchange and what the user said about it). Update the guidelines: fold in " +
-  "generalizable complaints or praise; keep them actionable, deduplicated, and few (at most ~10 " +
-  "bullet points). Leave out user-specific preferences — only improvements that apply to " +
-  "everyone. Reply with ONLY the updated guidelines text, no commentary.";
+  "feedback: the exchange, what the user said about it, and the bot's own reflection on why it " +
+  "went that way. Update the guidelines: fold in generalizable complaints or praise; keep them " +
+  "actionable, deduplicated, and few (at most ~10 bullet points). Leave out user-specific " +
+  "preferences — only improvements that apply to everyone. Reply with ONLY the updated " +
+  "guidelines text, no commentary.";
 
 /** The bot persona, stated once per fold call (never repeated per exchange). */
 function personaContext(personalityPrompt: string | null | undefined): string | null {
   const persona = personalityPrompt?.trim();
   if (!persona) return null;
   return `For context, the bot's configured persona:\n${persona}`;
-}
-
-/**
- * Render one feedback as a compact exchange block: the user's message, the
- * bot's reply, and what the user said about it. Loaded from the history mirror
- * (the trace's full bodies stay linked for the operator, but the mirror carries
- * the same exchange text without the repeated per-trace boilerplate).
- */
-async function renderExchange(db: DrizzleDb, feedback: UserFeedback): Promise<string> {
-  const reply = await getChatMessageByTelegramId(db, feedback.chatId, feedback.telegramMessageId);
-  const asked =
-    reply?.replyToMessageId != null
-      ? await getChatMessageByTelegramId(db, feedback.chatId, reply.replyToMessageId)
-      : null;
-  const lines = [
-    `User message: ${asked?.content?.trim() || "(not available)"}`,
-    `Bot reply: ${reply?.content?.trim() || "(not available)"}`,
-    `User reaction: ${feedback.reaction === "up" ? "👍 liked it" : "👎 disliked it"}`,
-    `User feedback: ${feedback.feedback ?? "(none)"}`,
-  ];
-  return lines.join("\n");
 }
 
 /** The preferences profile the model is asked to emit, or null when it did not. */
@@ -166,8 +154,16 @@ export async function runSelfImprovement(deps: SelfImprovementDeps): Promise<Sel
   const fallbackModel = normalizeModelName(deps.model);
   const incorporatedIds = new Set<string>();
   let failed = 0;
-  // Every feedback across both passes is one fold call — the live bar's denominator.
-  const total = prefsBacklog.length + correctionsBacklog.length;
+  // Feedbacks answered while no LLM was reachable never got their reflection —
+  // deduplicated here because a feedback usually sits in both backlogs, and both
+  // folds must read the same reasoned form of it.
+  const unreflected = new Map<string, UserFeedback>();
+  for (const feedback of [...prefsBacklog, ...correctionsBacklog]) {
+    if (!feedback.reflection?.trim()) unreflected.set(feedback.id, feedback);
+  }
+  // Every reflection and every feedback across both passes is one LLM call — the
+  // live bar's denominator.
+  const total = unreflected.size + prefsBacklog.length + correctionsBacklog.length;
   let processed = 0;
 
   /** One fold call, fully traced (request + response with usage). */
@@ -200,6 +196,44 @@ export async function runSelfImprovement(deps: SelfImprovementDeps): Promise<Sel
   }
 
   try {
+    // Pass 0 — reflection backfill. Each one records its own `reflect` trace, so
+    // this pass only notes what it covered and carries the fresh text onto the
+    // backlog rows (both queries returned their own copy of a shared row). A
+    // reflection that still fails is not a fold failure: the feedback is folded
+    // from the user's words alone rather than held back another day.
+    if (unreflected.size > 0) {
+      await trace.event({
+        type: "step",
+        message: `reflecting on ${unreflected.size} feedback(s) answered without one`,
+        data: { feedbackIds: [...unreflected.keys()] },
+      });
+      const written = new Map<string, string>();
+      for (const feedback of unreflected.values()) {
+        deps.onProgress?.({ step: "Reflecting on feedback", current: ++processed, total });
+        const reflection = await reflectOnFeedback(feedback, {
+          complete: deps.complete,
+          personalityPrompt: deps.personalityPrompt,
+          model: deps.model,
+          db,
+        });
+        if (reflection) written.set(feedback.id, reflection);
+      }
+      for (const feedback of [...prefsBacklog, ...correctionsBacklog]) {
+        const reflection = written.get(feedback.id);
+        if (reflection) feedback.reflection = reflection;
+      }
+      if (written.size < unreflected.size) {
+        await trace.event({
+          type: "step",
+          level: "warn",
+          message: "some feedbacks are folded without a reflection",
+          data: {
+            feedbackIds: [...unreflected.keys()].filter((id) => !written.has(id)),
+          },
+        });
+      }
+    }
+
     // Pass 1 — per-user communication preferences.
     let prefsUpdated = 0;
     for (const [userId, feedbacks] of groupByUser(prefsBacklog)) {

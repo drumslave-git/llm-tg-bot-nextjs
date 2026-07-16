@@ -162,6 +162,20 @@
       "when": 1784221598173,
       "tag": "0022_public_hemingway",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1784225985726,
+      "tag": "0023_deep_komodo",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1784227654747,
+      "tag": "0024_correlate_fire_traces_by_message",
+      "breakpoints": true
     }
   ]
 }

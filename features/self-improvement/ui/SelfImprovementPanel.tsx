@@ -38,6 +38,21 @@ const STATUS_TONE: Record<FeedbackStatus, BadgeTone> = {
   completed: "success",
 };
 
+/**
+ * The bot's own account of why the exchange went the way it did, shown under the
+ * words the user actually said. Absent until the reflection lands — it is written
+ * outside the answer, and the daily job retries any that failed.
+ */
+function Reflection({ feedback }: { feedback: UserFeedbackView }) {
+  if (!feedback.reflection) return null;
+  return (
+    <p className="whitespace-pre-wrap text-xs text-muted">
+      <span className="font-medium">Reflection: </span>
+      {feedback.reflection}
+    </p>
+  );
+}
+
 function IncorporationBadges({ feedback }: { feedback: UserFeedbackView }) {
   if (feedback.prefsVersion == null && feedback.correctionsVersion == null) {
     return <span className="text-muted">—</span>;
@@ -70,7 +85,8 @@ export function SelfImprovementPanel({ view }: { view: SelfImprovementView }) {
           <div className="space-y-1">
             <CardTitle>Feedback</CardTitle>
             <CardDescription>
-              Answers collected from 👍/👎 reactions on the bot&apos;s replies.
+              Answers collected from 👍/👎 reactions on the bot&apos;s replies, each with the
+              bot&apos;s own reflection on what went right or wrong and why.
             </CardDescription>
           </div>
         </CardHeader>
@@ -107,7 +123,10 @@ export function SelfImprovementPanel({ view }: { view: SelfImprovementView }) {
                     </TableCell>
                     <TableCell className="max-w-md">
                       {feedback.feedback ? (
-                        <span className="whitespace-pre-wrap">{feedback.feedback}</span>
+                        <div className="space-y-1">
+                          <span className="whitespace-pre-wrap">{feedback.feedback}</span>
+                          <Reflection feedback={feedback} />
+                        </div>
                       ) : (
                         <Badge tone={STATUS_TONE[feedback.status]}>
                           {STATUS_LABEL[feedback.status]}

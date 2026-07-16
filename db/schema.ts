@@ -529,6 +529,11 @@ export type ScheduledTaskInsert = typeof scheduledTasks.$inferInsert;
  * "Other", we await their reply to the menu message) → `completed` (feedback
  * text stored). A repeat reaction reopens/updates the row.
  *
+ * `reflection` is the bot's own account of what went right or wrong in the
+ * reacted reply and why, written by an LLM pass over the reply's trace plus this
+ * feedback (see `features/self-improvement/server/reflect.ts`) and stored on the
+ * same row. It is the reasoned half of the feedback — both folds read it.
+ *
  * `prefs_version` / `corrections_version` record which
  * {@link usersCommunicationPreferences} / {@link selfCorrections} version
  * incorporated this feedback (null = not yet incorporated) — the daily job scans
@@ -557,6 +562,10 @@ export const usersFeedbacks = pgTable(
     menuMessageId: bigint("menu_message_id", { mode: "number" }),
     /** Clean model name that generated the reacted reply (informational). */
     model: text("model").notNull(),
+    /** The bot's self-reflection on the reacted reply; null until it is written. */
+    reflection: text("reflection"),
+    /** Clean model name that wrote {@link reflection}, or null. */
+    reflectionModel: text("reflection_model"),
     /** Preferences version that incorporated this feedback, or null. */
     prefsVersion: integer("prefs_version"),
     /** Self-corrections version that incorporated this feedback, or null. */

@@ -4,7 +4,6 @@ import {
   buildMenuKeyboard,
   decodeMenuCallback,
   encodeMenuCallback,
-  menuConfirmationText,
   menuText,
   OTHER_OPTION,
 } from "./menu";
@@ -58,11 +57,5 @@ describe("menu texts", () => {
   it("asks what was liked/disliked per reaction", () => {
     expect(menuText("up")).toContain("like");
     expect(menuText("down")).toContain("wrong");
-  });
-
-  it("confirms the recorded feedback verbatim", () => {
-    expect(menuConfirmationText("Too long or rambling")).toBe(
-      "Thanks — noted: Too long or rambling",
-    );
   });
 });

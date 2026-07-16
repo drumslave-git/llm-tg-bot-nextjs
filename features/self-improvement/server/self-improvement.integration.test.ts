@@ -7,22 +7,30 @@ import { chatMessages, knownUsers, selfCorrections, usersCommunicationPreference
 import { stopVisionBackfill } from "@/features/vision/server/backfill-scheduler";
 import type { ChatCompletionResult, ChatMessage } from "@/server/llm/client";
 import { startTrace } from "@/server/trace";
-import { listTraces } from "@/server/trace/repository";
+import { getTrace, listTraces } from "@/server/trace/repository";
 import { processCallbackUpdate } from "@/server/telegram/process-callback";
 import { processReactionUpdate } from "@/server/telegram/process-reaction";
 import type { FeedbackTransport } from "@/server/telegram/transport";
 import { simulateUpdate } from "@/test/simulate";
 import { startTestDb, type TestDb } from "@/test/db";
 
-import { encodeMenuCallback, MENU_AWAITING_TEXT, OTHER_OPTION } from "../menu";
+import {
+  encodeMenuCallback,
+  MENU_AWAITING_TEXT,
+  MENU_RECORDED_TOAST,
+  OTHER_OPTION,
+} from "../menu";
 import { LIKE_OPTIONS } from "../options";
 import { runSelfImprovement } from "./analyze";
+import { reflectOnFeedback } from "./reflect";
 import {
   completeFeedback,
+  getFeedback,
   getLatestCorrection,
   getLatestPreference,
   insertCorrection,
   insertPreference,
+  setFeedbackReflection,
   upsertFeedback,
 } from "./repository";
 
@@ -30,8 +38,9 @@ import {
  * Integration coverage for the self-improvement feature against a real
  * Postgres: the reaction → menu → answer collection flows (through the real
  * transport-agnostic processors with a capturing feedback transport), the
- * free-text capture through the real message pipeline, the daily incorporation
- * run with a deterministic LLM, and the resulting prompt injection on a reply.
+ * free-text capture through the real message pipeline, the self-reflection pass
+ * over an answered feedback, the daily incorporation run with a deterministic
+ * LLM, and the resulting prompt injection on a reply.
  */
 
 let ctx: TestDb;
@@ -61,6 +70,8 @@ const USER_ID = "100";
 const USER_MSG_ID = 10;
 const BOT_MSG_ID = 11;
 const MENU_MSG_ID = 500;
+/** A proactively-sent message (scheduled-task fire) — no reply pointer. */
+const FIRED_MSG_ID = 42;
 
 /** Seed a known user plus one mirrored exchange (user #10 → bot reply #11). */
 async function seedExchange(userId = USER_ID): Promise<void> {
@@ -95,9 +106,10 @@ async function seedExchange(userId = USER_ID): Promise<void> {
 function fakeFeedbackTransport() {
   const sendMenu = vi.fn().mockResolvedValue({ messageId: MENU_MSG_ID });
   const editMenu = vi.fn().mockResolvedValue(undefined);
+  const deleteMenu = vi.fn().mockResolvedValue(undefined);
   const answerCallback = vi.fn().mockResolvedValue(undefined);
-  const transport: FeedbackTransport = { sendMenu, editMenu, answerCallback };
-  return { transport, sendMenu, editMenu, answerCallback };
+  const transport: FeedbackTransport = { sendMenu, editMenu, deleteMenu, answerCallback };
+  return { transport, sendMenu, editMenu, deleteMenu, answerCallback };
 }
 
 /** A thumbs reaction update on the seeded bot reply. */
@@ -186,9 +198,9 @@ describe("feedback collection (reaction → menu → answer)", () => {
     expect(await getFeedbackRow()).toBeUndefined();
   });
 
-  it("records a predefined option, edits the menu, and rejects presses from other users", async () => {
+  it("records a predefined option with a toast + menu delete, and rejects presses from other users", async () => {
     await seedExchange();
-    const { transport, sendMenu, editMenu, answerCallback } = fakeFeedbackTransport();
+    const { transport, sendMenu, editMenu, deleteMenu, answerCallback } = fakeFeedbackTransport();
     await processReactionUpdate(reactionUpdate("👍"), transport);
     const feedbackId = (await getFeedbackRow())!.id;
     const menuMessage = {
@@ -212,9 +224,9 @@ describe("feedback collection (reaction → menu → answer)", () => {
       expect.objectContaining({ text: expect.stringContaining("person who reacted") }),
     );
     expect((await getFeedbackRow())!.status).toBe("pending");
-    expect(editMenu).not.toHaveBeenCalled();
+    expect(deleteMenu).not.toHaveBeenCalled();
 
-    // The reactor picks option 1 → completed + confirmation edit.
+    // The reactor picks option 1 → completed, menu gone, acknowledged by a toast.
     const pressed = await processCallbackUpdate(
       {
         id: "cb-2",
@@ -229,13 +241,12 @@ describe("feedback collection (reaction → menu → answer)", () => {
       status: "completed",
       feedback: LIKE_OPTIONS[1],
     });
-    expect(editMenu).toHaveBeenCalledWith(
-      expect.objectContaining({
-        messageId: MENU_MSG_ID,
-        text: `Thanks — noted: ${LIKE_OPTIONS[1]}`,
-        keyboard: null,
-      }),
+    expect(deleteMenu).toHaveBeenCalledWith({ chatId: CHAT_ID, messageId: MENU_MSG_ID });
+    expect(answerCallback).toHaveBeenLastCalledWith(
+      expect.objectContaining({ text: MENU_RECORDED_TOAST }),
     );
+    // No confirmation message is left behind — the menu is never rewritten.
+    expect(editMenu).not.toHaveBeenCalled();
     expect(sendMenu).toHaveBeenCalledOnce(); // no second menu
   });
 
@@ -265,6 +276,7 @@ describe("feedback collection (reaction → menu → answer)", () => {
 
     // The reactor replies to the menu message → captured, not answered by the LLM.
     const generateReply = vi.fn();
+    const deleteFeedbackMenu = vi.fn().mockResolvedValue(undefined);
     const res = await simulateUpdate(
       {
         text: "too sarcastic, keep it factual",
@@ -273,12 +285,13 @@ describe("feedback collection (reaction → menu → answer)", () => {
         from: { id: Number(USER_ID), username: "alice", firstName: "Alice" },
         replyTo: { messageId: MENU_MSG_ID },
       },
-      { generateReply },
+      { generateReply, deleteFeedbackMenu },
     );
     expect(res.outcome).toEqual({ status: "ignored", reason: "feedback_captured" });
     expect(generateReply).not.toHaveBeenCalled();
-    // Without a menu editor the capture confirms via a plain reply.
-    expect(res.replies).toEqual(["Thanks — noted: too sarcastic, keep it factual"]);
+    // The answer is acknowledged by the menu going away — nothing is sent back.
+    expect(res.replies).toEqual([]);
+    expect(deleteFeedbackMenu).toHaveBeenCalledWith({ chatId: CHAT_ID, messageId: MENU_MSG_ID });
     expect(await getFeedbackRow()).toMatchObject({
       status: "completed",
       feedback: "too sarcastic, keep it factual",
@@ -310,18 +323,28 @@ describe("feedback collection (reaction → menu → answer)", () => {
   });
 });
 
-/** Deterministic fold LLM: JSON for preference folds, text for correction folds. */
-function fakeFoldLlm(outputs?: { likes?: string; dislikes?: string; correction?: string }) {
+/**
+ * Deterministic LLM for the daily run, answering by the system prompt it is
+ * given: a reflection, a preferences profile (JSON), or correction guidelines.
+ */
+function fakeFoldLlm(outputs?: {
+  likes?: string;
+  dislikes?: string;
+  correction?: string;
+  reflection?: string;
+}) {
   const calls: ChatMessage[][] = [];
   const complete = async (messages: ChatMessage[]): Promise<ChatCompletionResult> => {
     calls.push(messages);
     const system = String(messages[0].content);
-    const content = system.includes("factual profile")
-      ? JSON.stringify({
-          likes: outputs?.likes ?? "short answers",
-          dislikes: outputs?.dislikes ?? "rambling",
-        })
-      : (outputs?.correction ?? "Be more concise.");
+    const content = system.includes("reviewing one of your own replies")
+      ? (outputs?.reflection ?? "Padded a one-line answer with background nobody asked for.")
+      : system.includes("factual profile")
+        ? JSON.stringify({
+            likes: outputs?.likes ?? "short answers",
+            dislikes: outputs?.dislikes ?? "rambling",
+          })
+        : (outputs?.correction ?? "Be more concise.");
     return {
       content,
       model: "docker.io/ai/gemma3:12b",
@@ -348,6 +371,213 @@ async function seedCompletedFeedback(userId: string, feedback: string) {
   return row.id;
 }
 
+describe("self-reflection (reflectOnFeedback)", () => {
+  /** The reply trace the reflection reads: how the bot produced the reacted reply. */
+  async function seedReplyTrace() {
+    const trace = await startTrace(
+      {
+        feature: "bot-messaging",
+        action: "reply",
+        trigger: { kind: "telegram", actor: USER_ID, correlationId: `${CHAT_ID}:${USER_MSG_ID}` },
+      },
+      ctx.db,
+    );
+    await trace.event({
+      type: "llm_request",
+      message: "request",
+      data: {
+        messages: [
+          { role: "system", content: "You are a bot. Always give the full background." },
+          { role: "user", content: "what's the weather?" },
+        ],
+      },
+    });
+    await trace.event({
+      type: "external_call",
+      message: "tool: web_search",
+      data: { args: { query: "weather" }, result: { text: "Sunny, 25°C" } },
+    });
+    await trace.event({
+      type: "output",
+      level: "success",
+      message: "send message",
+      data: { content: "Sunny, 25°C.", messageId: BOT_MSG_ID },
+    });
+    await trace.succeed();
+  }
+
+  it("reflects from the reply trace and stores the result on the feedback row", async () => {
+    const feedbackId = await seedCompletedFeedback(USER_ID, "too long");
+    await seedReplyTrace();
+    const reflection = "The persona demanded full background, so a one-line question got an essay.";
+    const complete = vi.fn().mockResolvedValue({
+      content: reflection,
+      model: "docker.io/ai/gemma3:12b",
+      latencyMs: 1,
+    });
+
+    const result = await reflectOnFeedback((await getFeedback(ctx.db, feedbackId))!, {
+      complete,
+      model: "docker.io/ai/gemma3:12b",
+      db: ctx.db,
+    });
+
+    expect(result).toBe(reflection);
+    expect(await getFeedback(ctx.db, feedbackId)).toMatchObject({
+      reflection,
+      reflectionModel: "gemma3:12b", // clean name — registry prefix stripped
+    });
+    // The call saw the whole causal chain: prompt, tool + result, reply, feedback.
+    const asked = String(complete.mock.calls[0][0].at(-1).content);
+    expect(asked).toContain("Always give the full background");
+    expect(asked).toContain("tool: web_search");
+    expect(asked).toContain("Sunny, 25°C.");
+    expect(asked).toContain("User feedback: too long");
+    // Traced under user-feedback, linked back to the feedback row.
+    const traces = await listTraces(ctx.db, { feature: "user-feedback" });
+    expect(traces.traces[0]).toMatchObject({
+      status: "success",
+      action: "reflect",
+      relatedIds: { users_feedbacks: [feedbackId] },
+    });
+  });
+
+  it("reflects on a proactively-sent message from the trace that delivered it", async () => {
+    // A scheduled-task fire has no incoming message to key on, so it settles on
+    // what it delivered — the reacted message itself, not a reply anchor.
+    await seedExchange();
+    await ctx.db.insert(chatMessages).values({
+      chatId: CHAT_ID,
+      telegramMessageId: FIRED_MSG_ID,
+      role: "assistant",
+      content: "Hey. Just checking in.",
+      replyToMessageId: null,
+      sentAt: new Date("2026-07-14T12:00:00Z"),
+    });
+    const fire = await startTrace(
+      {
+        feature: "scheduled-tasks",
+        action: "fire",
+        trigger: { kind: "cron", actor: CHAT_ID, correlationId: "task-uuid" },
+      },
+      ctx.db,
+    );
+    await fire.event({
+      type: "llm_request",
+      message: "request",
+      data: { messages: [{ role: "system", content: "Check in briefly. Never sound scripted." }] },
+    });
+    await fire.event({
+      type: "output",
+      level: "success",
+      message: "send message",
+      data: { content: "Hey. Just checking in.", messageId: FIRED_MSG_ID },
+    });
+    await fire.succeed({ correlationId: `${CHAT_ID}:${FIRED_MSG_ID}` });
+
+    const row = await upsertFeedback(ctx.db, {
+      id: crypto.randomUUID(),
+      chatId: CHAT_ID,
+      telegramMessageId: FIRED_MSG_ID,
+      userId: USER_ID,
+      reaction: "up",
+      model: "gemma3:12b",
+    });
+    await completeFeedback(ctx.db, row.id, "Right tone");
+    const complete = vi
+      .fn()
+      .mockResolvedValue({ content: "Stayed short and unscripted.", model: "m", latencyMs: 1 });
+
+    await reflectOnFeedback((await getFeedback(ctx.db, row.id))!, { complete, db: ctx.db });
+
+    // The fire's own prompt reached the reflection — no reply pointer involved.
+    const asked = String(complete.mock.calls[0][0].at(-1).content);
+    expect(asked).toContain("Never sound scripted");
+    expect(asked).toContain("Hey. Just checking in.");
+  });
+
+  it("reads the producing trace, not the feedback traces keyed on the same message", async () => {
+    // The menu/answer/reflect traces all key on the reacted message, so an
+    // unscoped "latest trace on this message" would return one of those — and a
+    // second reflection would read its own previous output back to itself.
+    const feedbackId = await seedCompletedFeedback(USER_ID, "too long");
+    await seedReplyTrace();
+    const complete = vi
+      .fn()
+      .mockResolvedValue({ content: "Went long.", model: "m", latencyMs: 1 });
+
+    // Two runs: the first leaves a `reflect` trace on `CHAT_ID:BOT_MSG_ID`.
+    await reflectOnFeedback((await getFeedback(ctx.db, feedbackId))!, { complete, db: ctx.db });
+    await reflectOnFeedback((await getFeedback(ctx.db, feedbackId))!, { complete, db: ctx.db });
+
+    // The second still read the bot-messaging reply trace, not the first
+    // reflection. The reflection prompt's own wording is the tell: it can only
+    // appear here if the lookup handed back a `reflect` trace.
+    const asked = String(complete.mock.calls[1][0].at(-1).content);
+    expect(asked).toContain("Always give the full background");
+    expect(asked).not.toContain("reviewing one of your own replies");
+    const header = (await listTraces(ctx.db, { feature: "user-feedback" })).traces[0];
+    const events = (await getTrace(ctx.db, header.id))!.events;
+    expect(events.some((e) => e.message.includes("no reply trace"))).toBe(false);
+  });
+
+  it("reflects on the exchange alone when the reply has no trace, and says so", async () => {
+    const feedbackId = await seedCompletedFeedback(USER_ID, "wrong tone");
+    const complete = vi
+      .fn()
+      .mockResolvedValue({ content: "Answered a real question flippantly.", model: "m", latencyMs: 1 });
+
+    await reflectOnFeedback((await getFeedback(ctx.db, feedbackId))!, { complete, db: ctx.db });
+
+    // No trace to reason from — the exchange from the history mirror stands in.
+    const asked = String(complete.mock.calls[0][0].at(-1).content);
+    expect(asked).toContain("what's the weather?");
+    expect(asked).toContain("Sunny, 25°C.");
+    expect((await getFeedback(ctx.db, feedbackId))!.reflection).toBe(
+      "Answered a real question flippantly.",
+    );
+    // The operator can see the reflection was the thinner kind.
+    const header = (await listTraces(ctx.db, { feature: "user-feedback" })).traces[0];
+    const events = (await getTrace(ctx.db, header.id))!.events;
+    expect(events.some((e) => e.level === "warn" && e.message.includes("no reply trace"))).toBe(
+      true,
+    );
+  });
+
+  it("leaves the reflection null when the call fails, for the next incorporation run", async () => {
+    const feedbackId = await seedCompletedFeedback(USER_ID, "too long");
+    const complete = vi.fn().mockRejectedValue(new Error("provider down"));
+
+    expect(
+      await reflectOnFeedback((await getFeedback(ctx.db, feedbackId))!, { complete, db: ctx.db }),
+    ).toBeNull();
+    expect(await getFeedback(ctx.db, feedbackId)).toMatchObject({
+      reflection: null,
+      reflectionModel: null,
+    });
+    const traces = await listTraces(ctx.db, { feature: "user-feedback" });
+    expect(traces.traces[0]).toMatchObject({ status: "skipped", action: "reflect" });
+  });
+
+  it("does not reflect on a feedback the user has not answered yet", async () => {
+    await seedExchange();
+    const pending = await upsertFeedback(ctx.db, {
+      id: crypto.randomUUID(),
+      chatId: CHAT_ID,
+      telegramMessageId: BOT_MSG_ID,
+      userId: USER_ID,
+      reaction: "down",
+      model: "gemma3:12b",
+    });
+    const complete = vi.fn();
+
+    expect(await reflectOnFeedback(pending, { complete, db: ctx.db })).toBeNull();
+    expect(complete).not.toHaveBeenCalled();
+    // Nothing happened, so nothing is recorded — Debug stays free of noise.
+    expect((await listTraces(ctx.db, { feature: "user-feedback" })).total).toBe(0);
+  });
+});
+
 describe("daily incorporation (runSelfImprovement)", () => {
   it("folds the backlog into new preference versions per user + one correction version, stamping every feedback", async () => {
     await seedCompletedFeedback("100", "too long");
@@ -367,16 +597,27 @@ describe("daily incorporation (runSelfImprovement)", () => {
       incorporated: 2,
       failed: 0,
     });
-    // 2 preference folds + 2 correction folds — one LLM call per feedback per pass.
-    expect(llm.calls).toHaveLength(4);
+    // 2 reflections (neither feedback had one) + 2 preference folds + 2 correction
+    // folds — one LLM call per feedback per pass.
+    expect(llm.calls).toHaveLength(6);
     // The persona is stated once per call, never repeated per exchange.
     for (const call of llm.calls) {
       const personaMentions = call.filter((m) => String(m.content).includes("You are a pirate."));
       expect(personaMentions).toHaveLength(1);
     }
-    // The exchange context reaches the fold from the history mirror.
-    expect(String(llm.calls[0].at(-1)!.content)).toContain("what's the weather?");
-    expect(String(llm.calls[0].at(-1)!.content)).toContain("Sunny, 25°C.");
+    // Both folds read the exchange from the history mirror, and the reflection the
+    // backfill wrote moments earlier.
+    const prefsCall = llm.calls.find((c) => String(c[0].content).includes("factual profile"))!;
+    expect(String(prefsCall.at(-1)!.content)).toContain("what's the weather?");
+    expect(String(prefsCall.at(-1)!.content)).toContain("Sunny, 25°C.");
+    expect(String(prefsCall.at(-1)!.content)).toContain(
+      "Padded a one-line answer with background nobody asked for.",
+    );
+    // The reflections are stored, not just passed through.
+    for (const row of await ctx.db.select().from(usersFeedbacks)) {
+      expect(row.reflection).toBe("Padded a one-line answer with background nobody asked for.");
+      expect(row.reflectionModel).toBe("gemma3:12b");
+    }
 
     for (const userId of ["100", "200"]) {
       expect(await getLatestPreference(ctx.db, userId)).toMatchObject({
@@ -405,6 +646,23 @@ describe("daily incorporation (runSelfImprovement)", () => {
     const again = await runSelfImprovement({ complete: llm.complete, db: ctx.db });
     expect(again.summary).toBe("nothing to incorporate");
     expect((await listTraces(ctx.db, { feature: "self-improvement" })).total).toBe(1);
+  });
+
+  it("skips the reflection backfill for a feedback that already has one, and folds from it", async () => {
+    const feedbackId = await seedCompletedFeedback("100", "too long");
+    // The usual case: the answer was reflected on the moment it arrived.
+    await setFeedbackReflection(ctx.db, feedbackId, "Buried the answer in caveats.", "gemma3:12b");
+    const llm = fakeFoldLlm();
+
+    await runSelfImprovement({ complete: llm.complete, db: ctx.db });
+
+    // 1 preference fold + 1 correction fold — nothing to re-reflect.
+    expect(llm.calls).toHaveLength(2);
+    for (const call of llm.calls) {
+      expect(String(call[0].content)).not.toContain("reviewing one of your own replies");
+      // Both folds reason from the stored reflection, not just the user's words.
+      expect(String(call.at(-1)!.content)).toContain("Buried the answer in caveats.");
+    }
   });
 
   it("seeds the next version from the previous one", async () => {

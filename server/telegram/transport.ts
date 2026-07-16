@@ -63,6 +63,12 @@ export interface FeedbackTransport {
     text: string;
     keyboard: MenuKeyboard | null;
   }): Promise<void>;
+  /**
+   * Remove a menu message once its answer is stored, so the chat keeps no
+   * feedback chatter. Telegram refuses to delete messages older than 48h, so
+   * callers treat a failure as cosmetic.
+   */
+  deleteMenu(input: { chatId: string; messageId: number }): Promise<void>;
   /** Answer a callback query (stops the button spinner; optional toast text). */
   answerCallback(input: { callbackQueryId: string; text?: string }): Promise<void>;
 }

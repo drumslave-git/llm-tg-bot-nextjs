@@ -61,10 +61,14 @@ export function buildMenuKeyboard(reaction: FeedbackReaction, feedbackId: string
   return rows;
 }
 
-/** Confirmation the menu is edited to once an option (or free text) is stored. */
-export function menuConfirmationText(feedback: string): string {
-  return `Thanks — noted: ${feedback}`;
-}
+/**
+ * Toast shown to the reactor once their answer is stored. A confirmation
+ * *message* would be chat noise (user decision) — the menu message is deleted
+ * instead and this transient popup is the only acknowledgement. Telegram only
+ * offers a toast in answer to a button press, so the free-text flow, which has
+ * no callback query to answer, is acknowledged by the menu simply disappearing.
+ */
+export const MENU_RECORDED_TOAST = "Thanks — noted.";
 
 /** Instruction the menu is edited to after "Other" is tapped. */
 export const MENU_AWAITING_TEXT =

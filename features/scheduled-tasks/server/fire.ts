@@ -172,9 +172,15 @@ export async function fireScheduledTask(task: ScheduledTask, deps: FireDeps): Pr
       // swallow — the message was delivered; the mirror is a side record
     }
 
+    // A fire has no incoming message to key on, so it opens on the task id and
+    // settles on what it delivered. That puts it on the app-wide
+    // `<chatId>:<messageId>` convention: feedback on this message can resolve the
+    // trace behind it, and the chat-scoped trace queries count it like any other
+    // message in the chat. The task itself stays linked via `relatedIds`.
     await trace.succeed({
       outputSummary: outgoing,
       relatedIds: { [FEATURE.relatedIdsKey]: [task.id] },
+      correlationId: `${task.chatId}:${messageId}`,
     });
     return { ok: true, text: outgoing, messageId };
   } catch (err) {

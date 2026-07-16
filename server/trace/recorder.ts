@@ -23,7 +23,8 @@ import { finishTrace, insertEvent, insertTrace } from "./repository";
  * the schema stays extension-free and portable.
  *
  * Traces are operator-facing debug data (never returned to end users), so full
- * error messages are recorded for debugging.
+ * error messages are recorded for debugging — including the `cause` chain, which
+ * is where wrapped failures keep the part that actually explains them.
  */
 
 export interface StartTraceInput {
@@ -44,6 +45,14 @@ export interface EventInput {
 export interface FinishInput {
   outputSummary?: string;
   relatedIds?: Record<string, string[]>;
+  /**
+   * Correlation to settle with, for an action that only *learns* its correlation
+   * by acting. A proactive send has no incoming message to key on at
+   * `startTrace` — it knows its `<chatId>:<messageId>` only once Telegram accepts
+   * the message — so it opens on what it has and settles on what it delivered.
+   * Omitted → the correlation given at `startTrace` stands.
+   */
+  correlationId?: string;
 }
 
 export interface TraceRecorder {
@@ -58,10 +67,37 @@ export interface TraceRecorder {
   fail(error: unknown, input?: FinishInput): Promise<void>;
 }
 
+/**
+ * Depth cap on the cause chain — enough for the deepest real wrapping (a driver
+ * error inside an ORM error inside an `ApiError`), and a guard against a cyclic
+ * `cause` looping forever.
+ */
+const MAX_CAUSE_DEPTH = 5;
+
+/**
+ * An error's message followed by its `cause` chain. The top-level message is
+ * often the least useful part of a wrapped failure — Drizzle reports
+ * `Failed query: insert into …` and puts the reason (`column "x" does not
+ * exist`) in `cause`, so recording only the message tells an operator what ran
+ * but never why it failed.
+ */
+function toErrorMessage(error: unknown): string {
+  const parts: string[] = [];
+  let current: unknown = error;
+  for (let depth = 0; current != null && depth < MAX_CAUSE_DEPTH; depth += 1) {
+    const message = current instanceof Error ? current.message : String(current);
+    // A wrapper that just restates its cause adds nothing to the timeline.
+    if (message && !parts.includes(message)) parts.push(message);
+    if (!(current instanceof Error)) break;
+    current = current.cause;
+  }
+  return parts.join("\ncaused by: ") || String(error);
+}
+
 function toTraceError(error: unknown): NonNullable<Trace["error"]> {
-  if (isApiError(error)) return { code: error.code, message: error.message };
-  if (error instanceof Error) return { message: error.message };
-  return { message: String(error) };
+  const message = toErrorMessage(error);
+  if (isApiError(error)) return { code: error.code, message };
+  return { message };
 }
 
 /**
@@ -132,6 +168,7 @@ export async function startTrace(
         finishedAt: new Date().toISOString(),
         outputSummary: finish?.outputSummary,
         relatedIds: finish?.relatedIds,
+        correlationId: finish?.correlationId,
       });
       notify();
     },
@@ -144,6 +181,7 @@ export async function startTrace(
         finishedAt: new Date().toISOString(),
         outputSummary: finish?.outputSummary ?? reason,
         relatedIds: finish?.relatedIds,
+        correlationId: finish?.correlationId,
       });
       notify();
     },
@@ -158,6 +196,7 @@ export async function startTrace(
         outputSummary: finish?.outputSummary,
         error: traceError,
         relatedIds: finish?.relatedIds,
+        correlationId: finish?.correlationId,
       });
       notify();
     },

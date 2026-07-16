@@ -120,6 +120,9 @@ function grammyFeedbackTransport(ctx: Context): FeedbackTransport {
         ...(input.keyboard ? { reply_markup: toInlineKeyboard(input.keyboard) } : {}),
       });
     },
+    async deleteMenu(input) {
+      await ctx.api.deleteMessage(input.chatId, input.messageId);
+    },
     async answerCallback(input) {
       await ctx.api.answerCallbackQuery(input.callbackQueryId, {
         ...(input.text ? { text: input.text } : {}),
@@ -143,14 +146,8 @@ async function onMessage(ctx: Context): Promise<void> {
   };
   const feedback = grammyFeedbackTransport(ctx);
   await processUpdate(update, grammyTransport(ctx), {
-    // A captured feedback answer edits the menu message in place.
-    editFeedbackMenu: (input) =>
-      feedback.editMenu({
-        chatId: input.chatId,
-        messageId: input.messageId,
-        text: input.text,
-        keyboard: null,
-      }),
+    // A captured feedback answer retires the menu message it answered.
+    deleteFeedbackMenu: (input) => feedback.deleteMenu(input),
   });
 }
 

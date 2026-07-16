@@ -27,6 +27,15 @@ export interface UserFeedback {
   status: FeedbackStatus;
   /** Clean model name that generated the reacted reply (informational). */
   model: string;
+  /**
+   * The bot's own account of what went right or wrong in the reacted reply and
+   * why, written from the reply's trace plus this feedback. Null until it is
+   * written (and while the answer is still missing — there is nothing to explain
+   * yet). Both incorporation folds read it alongside the raw feedback.
+   */
+  reflection: string | null;
+  /** Clean model name that wrote {@link reflection}, or null. */
+  reflectionModel: string | null;
   /** Preferences version that incorporated this feedback, or null. */
   prefsVersion: number | null;
   /** Self-corrections version that incorporated this feedback, or null. */

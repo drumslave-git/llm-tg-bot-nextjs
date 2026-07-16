@@ -68,6 +68,45 @@ describe("startTrace (recorder → Drizzle)", () => {
     expect(errorEvents[0].level).toBe("error");
   });
 
+  it("records the cause chain, where a wrapped failure keeps its real reason", async () => {
+    // The shape that motivated this: Drizzle reports the query it ran and puts
+    // the reason the database gave in `cause`. Recording only the top message
+    // tells an operator what ran but never why it failed.
+    const driverError = new Error('column "reflection" of relation "x" does not exist');
+    const trace = await startTrace(baseInput, ctx.db);
+    await trace.fail(new Error("Failed query: insert into \"x\"", { cause: driverError }));
+
+    const stored = await getTrace(ctx.db, trace.id);
+    expect(stored!.error!.message).toBe(
+      'Failed query: insert into "x"\ncaused by: column "reflection" of relation "x" does not exist',
+    );
+    // The timeline event carries the same full text, not a trimmed one.
+    expect(stored!.events.find((e) => e.type === "error")!.message).toContain("caused by:");
+  });
+
+  it("keeps an ApiError's code while still unwrapping its cause", async () => {
+    const trace = await startTrace(baseInput, ctx.db);
+    await trace.fail(
+      ApiError.serviceUnavailable("LLM is not configured", { cause: new Error("ECONNREFUSED") }),
+    );
+
+    const stored = await getTrace(ctx.db, trace.id);
+    expect(stored!.error).toEqual({
+      code: "service_unavailable",
+      message: "LLM is not configured\ncaused by: ECONNREFUSED",
+    });
+  });
+
+  it("does not repeat a wrapper that only restates its cause, or loop on a cycle", async () => {
+    const looping = new Error("boom") as Error & { cause?: unknown };
+    looping.cause = looping;
+    const trace = await startTrace(baseInput, ctx.db);
+    await trace.fail(looping);
+
+    const stored = await getTrace(ctx.db, trace.id);
+    expect(stored!.error!.message).toBe("boom");
+  });
+
   it("records skips with a reason", async () => {
     const trace = await startTrace(baseInput, ctx.db);
     await trace.skip("not addressed to bot");

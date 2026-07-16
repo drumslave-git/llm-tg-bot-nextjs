@@ -125,13 +125,97 @@ Realtime: the dashboard now updates **live over SSE** (user decision — not pol
 
 **Priority 9 — Scheduled tasks (done):** user-configurable standing directives (`scheduled_tasks` table, migration `0011`) that fire on a wall-clock schedule — the LLM writes an in-character message *performing* the directive and it is posted to the chat. New `features/scheduled-tasks/*`: client-safe `types.ts` + `schedule.ts` (dependency-free `Intl` once/daily/weekly wall-clock math — `computeNextRun`/`describeSchedule`/`normalizeSchedule`, ported from the MVP); server `repository.ts`/`schema.ts`/`service.ts` (CRUD + schedule validation + next-run computation in the operator timezone + trace recording), `fire.ts` (compose base+persona system prompt + directive → generate → deliver → mirror to history → trace under `scheduled-tasks`; capped `recentDeliveries` seeds wording variation for recurring fires), `scheduler.ts` (`globalThis` singleton), `mcp-tools.ts` (5 tools). **Trigger = a new shared in-process periodic primitive** `server/jobs/interval-scheduler.ts` (fixed-interval ticker + overlap guard — the sibling of `idle-scheduler.ts`, since time-based firing can't idle-defer), wrapped by the feature scheduler: each 30s tick, under the `withAdvisoryLock` cross-process lock, scans due tasks, fires each, advances `next_run_at` (a spent one-shot → null → disabled); firing pauses during maintenance. Started from `register-node`. **Creation = MCP tools + dashboard, NOT owner-gated** (user decision — any chat participant manages that chat's tasks): `tasks_create/update/delete/list/get` bound to the current chat via the extended tool context (`chatId`+`userId`+`threadId`); `/scheduled-tasks` page (create with a known-chat picker, edit, enable/disable, delete, "Run due now") live over the `tasks` SSE topic; `GET/POST /api/scheduled-tasks`, `PATCH/DELETE /api/scheduled-tasks/[id]`, `GET/POST /api/scheduled-tasks/run`. New operator `settings.timezone` (IANA, default UTC) + a Settings field. Verified live on the dev server: `/scheduled-tasks` renders with the real chat dropdown (a DM + a group); created a daily task (correct next-run, `success` create trace on `/debug?feature=scheduled-tasks`, 77ms), then deleted it (dev DB left clean); no console errors. **The full fire path is proven by a simulated-fire integration test** (`runDueScheduledTasks` extracted as the testable due-run core; a capturing reply sink + deterministic generator drive due-scan → fire → deliver → mirror-to-history → advance against real Postgres, no bot/LLM) — covering delivery, wording variation, one-shot self-disable, empty-output skip, and nothing-due. The only sliver not exercised in-process is the thin grammy `sendChatMessage` adapter calling Telegram's API.
 
-**Self-improvement system (user-requested 2026-07-14, done):** the bot learns from 👍/👎 reactions on its replies. New `features/self-improvement/*`: a reaction on a bot reply opens a `users_feedbacks` row and posts an **inline options menu** (5 predefined like/dislike options + free-text "Other"; in groups only the reactor can answer — presses from others get a toast; "Other" → "reply to this message", captured by the pipeline and **not** answered by the LLM). A **daily incorporation job** (interval-scheduler singleton, due at `settings.self_improvement_run_time` in the operator timezone, default 04:00, advisory-locked, "Run now" on the dashboard) folds completed feedbacks — **one LLM call per feedback**, persona stated once per call, exchange text from the history mirror — into versioned **`users_communication_preferences`** (per user, seeded from the previous version) and versioned global **`self_corrections`**, stamping each feedback with the versions that incorporated it. Every reply then injects the **latest correction into the system prompt** (like the personality) and the **sender's latest preferences as a system context** (like the known-user block), both traced. `model` columns are informational and always a **clean model name** (`normalizeModelName` strips `docker.io/ai/…` prefixes; resolved from the reply trace's `usage.model`, falling back to settings). Tables in migration `0013`; features `user-feedback` + `self-improvement`; `feedback` SSE topic; `/self-improvement` page (job card, feedback table, preferences, correction) + `GET/POST /api/self-improvement(/run)`; Telegram intake via `allowed_updates` += `message_reaction`/`callback_query` (poller restart needed; groups additionally need the bot to be **admin** to receive reactions — Telegram constraint).
+**Self-improvement system (user-requested 2026-07-14, extended 2026-07-16, done):** the bot learns from 👍/👎 reactions on its replies. New `features/self-improvement/*`: a reaction on a bot reply opens a `users_feedbacks` row and posts an **inline options menu** (5 predefined like/dislike options + free-text "Other"; in groups only the reactor can answer — presses from others get a toast; "Other" → "reply to this message", captured by the pipeline and **not** answered by the LLM). An answer leaves **no confirmation message** (user decision 2026-07-16): the menu is deleted and a button press is acknowledged by a **toast** only. Each answer is then **self-reflected on** — an LLM pass reads the reply's own trace (prompt, tools, reply) plus the feedback and writes what went right/wrong **and why** onto the same row (`reflection`), which is what both folds reason from. A **daily incorporation job** (interval-scheduler singleton, due at `settings.self_improvement_run_time` in the operator timezone, default 04:00, advisory-locked, "Run now" on the dashboard) folds completed feedbacks — **one LLM call per feedback**, persona stated once per call, exchange text from the history mirror — into versioned **`users_communication_preferences`** (per user, seeded from the previous version) and versioned global **`self_corrections`**, stamping each feedback with the versions that incorporated it. Every reply then injects the **latest correction into the system prompt** (like the personality) and the **sender's latest preferences as a system context** (like the known-user block), both traced. `model` columns are informational and always a **clean model name** (`normalizeModelName` strips `docker.io/ai/…` prefixes; resolved from the reply trace's `usage.model`, falling back to settings). Tables in migration `0013`; features `user-feedback` + `self-improvement`; `feedback` SSE topic; `/self-improvement` page (job card, feedback table, preferences, correction) + `GET/POST /api/self-improvement(/run)`; Telegram intake via `allowed_updates` += `message_reaction`/`callback_query` (poller restart needed; groups additionally need the bot to be **admin** to receive reactions — Telegram constraint).
 
 **History is now feature-complete (2026-07-14, user-directed):** it gained **daily topic summarization, pgvector semantic recall, and the `history_recall_topics` MCP tool** — see the top session-log entry. Recall spans the whole conversation: the last 24 hours are injected verbatim, the literal tools (search / date range / by id) handle exact lookups, and the recall tool searches embedded daily topic summaries by meaning for anything older, handing back message ids to read the originals. Embeddings are DB-configured (own URL/key/model, falling back to the LLM connection) with a real probe that verifies the model's vector width against the stored column width.
 
 Next: **Priority 12 — Image generation** (Analytics landed 2026-07-15 as the new priority 11, ahead of Image generation per the user; the remaining order is Image generation → Browser agent → Mood, now 12 → 13 → 14). Image generation: generate images through a configured provider with dashboard/debug visibility and downloadable traces — the provider boundary is the open design question (which is a decision to put to the user, per `decisions-ask-dont-document`), and it should reuse the DB-backed settings pattern (`config-in-db-not-env`) rather than an env key. Flows are verified with the **bot-less simulation harness** (`simulateUpdate` / injected deps against real Postgres) — a real bot token is not a testing gate, only the live Telegram send/receive adapters remain out of in-process scope.
 
 ### Session log
+
+- 2026-07-16 (Self-improvement follow-up, user-requested): **feedback answers are
+  acknowledged by a toast, and every answer is self-reflected on (done).**
+  - **Decisions (user, AskUserQuestion — recorded in Decision Notes):** (1) an
+    answered menu is **deleted**, not rewritten to a confirmation ("no need for
+    confirmation message after feedback, its annoying"); (2) the reflection runs
+    **detached from the Telegram flow, with a backfill in the daily job** (grammy
+    handles updates one at a time, so an inline inference would stall the bot for
+    every other chat); (3) the reflection reads a **curated rendering** of the
+    reply trace, not the raw events (context discipline).
+  - **No confirmation message:** `menuConfirmationText` → `MENU_RECORDED_TOAST`; a
+    press answers the callback query with the toast and `deleteMenu`s the message
+    (new op on the `FeedbackTransport` seam + the grammy adapter,
+    `ctx.api.deleteMessage`). The free-text flow has no callback to toast, so it
+    sends **nothing** — `process-update`'s `editFeedbackMenu` override became
+    `deleteFeedbackMenu`, and the answer is acknowledged by the menu vanishing.
+    Both deletes are best-effort at the dep site (Telegram refuses >48h; the
+    answer is already stored, so a stale menu is cosmetic and must not fail).
+  - **Data model (migration `0023_deep_komodo`, additive):** `users_feedbacks`
+    += `reflection` + `reflection_model`, both cleared on a repeat reaction (the
+    row reopens, so the old reasoning no longer applies).
+  - **Self-reflection (`server/reflect.ts`):** `reflectOnFeedback` renders how the
+    reply was produced, asks the model what went right/wrong **and why** (persona
+    stated once, as in the folds), and stores the text + clean model name on the
+    row. Its own `user-feedback`/`reflect` trace records every outcome, so a
+    missing reflection is always explained in Debug; it never throws.
+    `scheduleReflection` is the detached kickoff from both answer paths (resolves
+    the LLM runtime itself; no LLM configured → no-op, the daily job retries).
+  - **New `server/exchange.ts`:** `getReplyTrace` (the trace behind a bot reply —
+    extracted from `resolveReplyModel`, now its second consumer), `renderExchange`
+    (moved out of `analyze.ts`, now shared by the folds and the reflection's
+    no-trace fallback, and it carries the reflection line), and `renderReplyTrace`
+    (curated: prompt messages, tool calls + results, the sent reply, failures;
+    clipped at 3k/message, 1k/tool payload, 16k total).
+  - **Folds read the reflection:** `runSelfImprovement` gained a **pass 0** that
+    reflects on any completed feedback that has none (deduplicated across the two
+    backlogs, counted in the job's live progress bar), then carries the fresh text
+    onto both backlogs. A reflection that still fails is **not** a fold failure —
+    the feedback folds from the user's words alone rather than being held back.
+    Both fold prompts now say they are given the reflection.
+  - **Dashboard:** the reflection renders under the user's words in the
+    `/self-improvement` feedback table (no new column).
+  - Tests: `self-improvement.integration.test.ts` **9 → 14** (+5 new: reflect from
+    the reply trace incl. prompt/tool/reply/feedback reaching the call + clean
+    model stamping + `relatedIds`; reflect from the exchange alone when there is
+    no trace, with the warn event; failed call leaves it null + `skipped` trace;
+    no reflection for an unanswered feedback and **no trace at all**; the fold
+    backfill skipped for an already-reflected feedback), 4 rewritten for the
+    toast/delete flow and the backfill's call count. `menu.test.ts` lost its
+    confirmation-text case.
+  - **Operator-reported failure + the two gaps it exposed (same session):** the
+    operator restarted the bot, reacted 👍, and the flow died on
+    `Failed query: insert into "users_feedbacks" …`. Root cause: **the migration
+    was generated but never applied** to the dev DB, so new code ran on the old
+    schema and `upsertFeedback`'s `ON CONFLICT … DO UPDATE` set columns that did
+    not exist. Applied `0023`; the repeat-reaction path works. Two real gaps came
+    out of the trace they sent:
+    - **The trace could not say why.** `toTraceError` recorded only
+      `error.message` and dropped `error.cause` — where Drizzle keeps the reason
+      (`column "reflection" … does not exist`). It now walks the `cause` chain
+      (`\ncaused by: `, depth-capped at 5, duplicate-suppressed, cycle-safe),
+      which improves **every** feature's error traces and closes a gap against
+      the recorder's own stated intent. +3 trace integration tests.
+    - **The reflection ran blind on the reacted message.** It was a
+      *scheduled-task fire* ("Hey. Just checking in.", `reply_to_message_id` null),
+      and `getReplyTrace` only followed reply pointers → fell back to the
+      exchange, which prints `User message: (not available)`. Fixed via the two
+      Decision Notes rows above (settle-with-correlation + producer scoping).
+      `renderReplyTrace` needed **no change** — being curated generically, it
+      renders a fire trace as-is. +2 integration tests.
+  - **Verified live** (dev server on 3200, real Postgres, real local LLM): "Run
+    now" → `success :: 1 user profile(s) updated, corrections updated, 1
+    feedback(s) incorporated`; the backfill reflected the orphaned feedback in
+    9.5s and folded to prefs v3 + corrections v3. Migration `0024` re-keyed the
+    historical fire traces (`0f7882bc-…` → `312973896:919`), and the live lookup
+    now resolves the **fire** trace where the unscoped one resolved the
+    **reflect** trace — the self-reference, demonstrated on real rows.
+  - Checks: lint ✓ (0 warnings), typecheck ✓, unit 439 ✓, integration 235 ✓
+    (self-improvement 9 → 16, trace 7 → 10). `build` **not run** — a dev server is
+    live on 3200 (`dont-clobber-running-dev-server`); typecheck covers type validity.
+  - **Pre-existing failure, not from this work:** `process-update.integration.test.ts`
+    > "ignores un-addressed group chatter" expects 0 `bot-messaging` traces but the
+    addressing analyzer (commit 9f04e87) opens one. Confirmed failing on a clean
+    tree at 39f3396 by stashing this work; flagged separately, left untouched.
 
 - 2026-07-15 (Priority 11): **Analytics dashboard (done)** — a rich ECharts stats
   dashboard, inserted ahead of Image generation at the user's request.
@@ -2594,6 +2678,11 @@ writing `docs/decisions/*.md`. This table is the lightweight record.
 | Feedback "Other" free-text capture (self-improvement) | done | user | **Reply to the menu message**: tapping "Other" edits the menu to "Reply to this message with your feedback"; the pipeline captures a reply to that menu from the reactor as the answer (`feedback_captured` — never answered by the LLM, still mirrored to history). Chosen over "next message from the user" (ambiguous in busy groups). |
 | Self-improvement daily run time | done | user | **A Settings field** (`settings.self_improvement_run_time`, `HH:MM` in the operator timezone, default **04:00**) per `config-in-db-not-env`, not a code constant. The job is an interval-scheduler singleton (60s tick) with wall-clock due-math + advisory lock; dashboard "Run now" forces a run. The last-run marker is in-memory — a restart may re-trigger the day's run, which is an idempotent no-op on an empty backlog (accepted). |
 | Feedback menu options (self-improvement) | done | user | The proposed **5+5 code-constant lists** — 👍: Helpful & accurate · Right tone/personality · Good length & format · Funny/entertaining · Understood the context; 👎: Inaccurate or wrong · Wrong tone · Too long or rambling · Missed the point/context · Generic or boring — plus "Other — write your own" on each. Stored feedback is the option's text (renames don't corrupt stored rows). |
+| Feedback answer acknowledgement (self-improvement) | done | user (2026-07-16) | **No confirmation message** — "its annoying". An answered menu is **deleted**; a button press is acknowledged by a **toast** only (`MENU_RECORDED_TOAST`, via `answerCallbackQuery`). The free-text flow has no callback query to answer, so it sends **nothing** at all — the menu disappearing is the acknowledgement, and the user's own reply is already in the chat. Deletes are best-effort (Telegram refuses >48h; the answer is already stored, so a stale menu is cosmetic). Rejected: keeping the menu with its keyboard removed; deleting only on a press. |
+| Feedback self-reflection — timing (self-improvement) | done | user (2026-07-16) | **Detached from the Telegram flow + backfilled by the daily job.** grammy handles updates one at a time, so an inline inference (tens of seconds on the local model) would stall the bot for every other chat; the answer is stored and acknowledged first, then `scheduleReflection` runs the call outside the turn. Because a detached call can be lost (no LLM configured, provider down), `runSelfImprovement` reflects on any completed feedback that still has none before folding it — self-healing, and both folds always see the reasoned form. A reflection that still fails is not a fold failure: the feedback folds from the user's words alone rather than being held back another day. Rejected: inline/blocking; detached with no backfill. |
+| Trace correlation for proactive sends | done | user (2026-07-16) | **A trace may settle with the correlation it only learns by acting.** `FinishInput.correlationId` (recorder) + `finishTrace` patch it; `scheduled-tasks/fire` opens on the task id (all it has) and settles on `${chatId}:${messageId}` once Telegram accepts the message, putting it on the app-wide `<chatId>:<messageId>` convention. The task stays linked via `relatedIds`. Found because feedback on a fired message could not reach the prompt that caused it — the reflection degraded to the exchange. **Two knock-ons:** (1) fires now match the chat-scoped trace queries (`correlation_id LIKE '<chatId>:%'`), so **Analytics counts scheduled-task messages against their chat** — previously a UUID correlation excluded them; (2) a correlation is **not unique to a feature**, so any "the trace that produced this message" lookup must be feature-scoped — see the next row. Migration `0024` (hand-written data migration) carries historical fire traces over. Rejected: looking traces up by the `output` event's `data.messageId` (needs a jsonb index and chat-scoping care — `trace_events` carries no chat id); accepting the gap. |
+| Producer-scoped trace lookup (self-improvement) | done | agent (constraint surfaced by the above) | `getLatestTraceIdsByCorrelation` gained an optional `features` filter, and `getReplyTrace` scopes to the **message-producing** features (`bot-messaging`, `scheduled-tasks`). Required, not defensive: the feedback flows key `menu`/`answer`/`reflect` traces on the reacted message too, so the unscoped "latest trace on this message" returns a feedback trace — and on a re-run, **the reflection's own previous trace, reading itself**. Verified on live data: scoped → the `scheduled-tasks/fire` trace; unscoped → the `user-feedback/reflect` trace. Covered by a test proven to fail without the scoping. |
+| Feedback self-reflection — trace input (self-improvement) | done | user (2026-07-16) | The reflection reads a **curated rendering** of the reply's trace (`renderReplyTrace`): the final `llm_request`'s prompt messages, `external_call` tool args + results, the sent reply, and any failures — clipped at 3k/message, 1k/tool payload, 16k total. Same context discipline as the per-feedback folds: one call must never be able to overflow the model's context. This is **not** a `debug-show-full-raw-bodies` exception — that rule governs what the operator sees in Debug (the full trace is still there, linked); this is what the *model* is fed. Rejected: piping the raw trace events in. |
 | Model columns on feedback artifacts (self-improvement) | done | user | `model` on `users_feedbacks`/`users_communication_preferences`/`self_corrections` is **informational only** and always a **clean model name** (`gemma3:12b`, never `docker.io/ai/…` — `normalizeModelName` takes the segment after the last `/`, keeping the `:tag`). Resolved from the reply trace's `llm_response` `usage.model`, falling back to the configured model. |
 | Incorporation context discipline (self-improvement) | done | user | Prev version + feedbacks + related exchanges → new version, with **one LLM call per feedback** so a large backlog can never overflow the context, and shared data (persona/system prompt) **stated once per call, never repeated per exchange**. The exchange text (user message + bot reply) comes from the history mirror — same content as the trace bodies without the per-trace boilerplate; the full raw bodies stay one click away on the linked reply trace. A failed/unparseable fold leaves its feedback unstamped for the next run. |
 | Vector search scope (history completion) | done | user | **Embed daily topic summaries only** — not every message. The daily job compresses each finished chat-day into a few self-contained topics, each embedded and carrying the Telegram message ids it came from; search finds the topic, the ids lead back to the exact originals. Rejected: embedding every message (an embedding call per message incl. group chatter, a far larger vector table, and noisy hits on "ok"/"lol"), and messages-only-no-summaries (loses the compression that keeps old-context recall token-cheap). |
