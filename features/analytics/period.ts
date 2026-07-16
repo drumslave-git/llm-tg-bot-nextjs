@@ -2,8 +2,8 @@
  * Pure bucket math for the analytics charts — dependency-free via `Intl`, so it
  * is client-safe and directly unit-testable.
  *
- * The period selector is **day / week / month / all-time**, and it drives every
- * metric. A chart is "the last N buckets up to now" at the chosen granularity,
+ * The period selector is **day / week / month / year / all-time**, and it drives
+ * every metric. A chart is "the last N buckets up to now" at the chosen granularity,
  * bucketed by the operator's wall clock (not UTC). The **exact same** bucket-key
  * format is produced here in JS (to build the dense, gap-free x-axis) and by
  * Postgres `to_char(date_trunc(...))` in the repository (to group the values) — the
@@ -20,6 +20,7 @@ export const DEFAULT_BUCKET_COUNT: Record<Granularity, number> = {
   day: 30,
   week: 26,
   month: 24,
+  year: 10,
   all: 1,
 };
 
@@ -55,7 +56,7 @@ export function zonedParts(instant: Date, timeZone: string): ZonedParts {
 }
 
 /** The `date_trunc` unit for a granularity (null for `all`, which has no unit). */
-export function truncUnit(granularity: Granularity): "day" | "week" | "month" | null {
+export function truncUnit(granularity: Granularity): "day" | "week" | "month" | "year" | null {
   return granularity === "all" ? null : granularity;
 }
 
@@ -72,6 +73,8 @@ export function bucketFormat(granularity: Granularity): string {
       return "YYYY-MM-DD";
     case "month":
       return "YYYY-MM";
+    case "year":
+      return "YYYY";
     case "all":
       return "all";
   }
@@ -99,6 +102,8 @@ export function bucketKey(parts: ZonedParts, granularity: Granularity): string {
     }
     case "month":
       return `${parts.year}-${pad2(parts.month)}`;
+    case "year":
+      return `${parts.year}`;
     case "all":
       return "all";
   }
@@ -134,6 +139,8 @@ function bucketStart(parts: ZonedParts, granularity: Granularity): ZonedParts {
     }
     case "month":
       return { year: parts.year, month: parts.month, day: 1, hour: 0 };
+    case "year":
+      return { year: parts.year, month: 1, day: 1, hour: 0 };
     case "all":
       return { ...parts };
   }
@@ -154,6 +161,8 @@ function stepBack(parts: ZonedParts, granularity: Granularity): ZonedParts {
       return parts.month === 1
         ? { year: parts.year - 1, month: 12, day: 1, hour: 0 }
         : { year: parts.year, month: parts.month - 1, day: 1, hour: 0 };
+    case "year":
+      return { year: parts.year - 1, month: 1, day: 1, hour: 0 };
     case "all":
       return { ...parts };
   }

@@ -42,6 +42,15 @@ export interface ApiErrorBody {
   };
 }
 
+/**
+ * JSON body returned for any successful request — the other half of the response
+ * contract, kept beside {@link ApiErrorBody} because a client that reads one reads
+ * the other. The route wrapper in `server/http` is what produces it.
+ */
+export interface ApiOkBody<T> {
+  data: T;
+}
+
 /** Options for constructing an {@link ApiError}. */
 export interface ApiErrorOptions {
   /** Structured, client-safe detail. */

@@ -5,7 +5,7 @@ import { getDb } from "@/db/drizzle";
 import { formatKnownUserLabel } from "@/features/known-users/format";
 import { getKnownUsersByIds } from "@/features/known-users/server/repository";
 import { FEATURES } from "@/lib/features";
-import type { ChatCompletionResult, ChatMessage } from "@/server/llm/client";
+import { llmUsageOf, type ChatCompletionResult, type ChatMessage } from "@/server/llm/client";
 import type { JobProgress } from "@/server/jobs/progress";
 import { publishEvent } from "@/server/realtime/hub";
 import { startTrace } from "@/server/trace";
@@ -140,13 +140,7 @@ export async function runMemoryConsolidation(deps: ConsolidateDeps): Promise<Con
         type: "llm_response",
         message: "response",
         data: completion.responseBody ?? { content: completion.content },
-        usage: {
-          model: completion.model,
-          promptTokens: completion.usage?.promptTokens,
-          completionTokens: completion.usage?.completionTokens,
-          totalTokens: completion.usage?.totalTokens,
-          latencyMs: completion.latencyMs,
-        },
+        usage: llmUsageOf(completion),
       });
       return completion.content;
     } catch (err) {

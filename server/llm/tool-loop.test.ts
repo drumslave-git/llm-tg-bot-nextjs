@@ -1,5 +1,5 @@
 import type { ChatCompletionMessageToolCall } from "openai/resources/chat/completions";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { McpToolCallResult } from "@/server/mcp/tool-result";
 import { runToolLoop, type ToolCallRecord, type ToolLoopRound } from "./tool-loop";
@@ -123,5 +123,78 @@ describe("runToolLoop", () => {
     const result = await runToolLoop({ seed: [], complete, callTool, maxRounds: 2 });
     expect(result.loopDetected).toBe(true);
     expect(complete).toHaveBeenCalledTimes(2);
+  });
+});
+
+// Mock the OpenAI SDK so chatCompletionWithTools can be exercised end-to-end
+// against a scripted provider response, the same way client.test.ts does.
+const createMock = vi.fn();
+vi.mock("openai", () => {
+  class OpenAI {
+    chat = { completions: { create: createMock } };
+    models = { list: vi.fn() };
+  }
+  class APIError extends Error {}
+  class APIConnectionError extends Error {}
+  class APIConnectionTimeoutError extends Error {}
+  return { default: OpenAI, APIError, APIConnectionError, APIConnectionTimeoutError };
+});
+
+/**
+ * The invariant that actually broke: both completion paths return the same
+ * `ChatCompletionResult`, so they must agree on what its fields mean. They did not —
+ * the plain path recorded the provider's answer as `model` while this one
+ * substituted the requested id, so merely enabling tools changed the recorded model
+ * name and split one model's stats in two.
+ */
+describe("chatCompletionWithTools — result identity", () => {
+  const conn = { baseUrl: "http://localhost:11434", apiKey: null };
+  const bundlePath =
+    "/models/bundles/sha256/95c8f7ac704f39390021259feb3d4849e85b42dca6b63014479fa4c3d48b4d86/model/gemma-4-26B-A4B-it-UD-Q4_K_XL.gguf";
+
+  afterEach(() => createMock.mockReset());
+
+  it("reports the requested id and the served one, exactly like the plain path", async () => {
+    const { chatCompletionWithTools } = await import("./tool-loop");
+    const { chatCompletion } = await import("./client");
+    createMock.mockResolvedValue({
+      model: bundlePath,
+      choices: [{ message: { role: "assistant", content: "hello" } }],
+      usage: { prompt_tokens: 3, completion_tokens: 1, total_tokens: 4 },
+    });
+
+    const withTools = await chatCompletionWithTools(conn, {
+      model: "docker.io/ai/gemma4:26B",
+      messages: [{ role: "user", content: "hi" }],
+      tools: [],
+      callTool: async () => okResult(""),
+    });
+    const plain = await chatCompletion(conn, {
+      model: "docker.io/ai/gemma4:26B",
+      messages: [{ role: "user", content: "hi" }],
+    });
+
+    expect(withTools.model).toBe("docker.io/ai/gemma4:26B");
+    expect(withTools.servedModel).toBe(bundlePath);
+    // The whole point: turning tools on must not change how a call is identified.
+    expect(withTools.model).toBe(plain.model);
+    expect(withTools.servedModel).toBe(plain.servedModel);
+  });
+
+  it("leaves servedModel unset when the provider reports no model", async () => {
+    const { chatCompletionWithTools } = await import("./tool-loop");
+    createMock.mockResolvedValue({
+      choices: [{ message: { role: "assistant", content: "hello" } }],
+    });
+
+    const result = await chatCompletionWithTools(conn, {
+      model: "gemma4:26B",
+      messages: [{ role: "user", content: "hi" }],
+      tools: [],
+      callTool: async () => okResult(""),
+    });
+
+    expect(result.model).toBe("gemma4:26B");
+    expect(result.servedModel).toBeUndefined();
   });
 });

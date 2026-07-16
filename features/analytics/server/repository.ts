@@ -180,20 +180,78 @@ export async function getMediaTotal(
 }
 
 export interface ModelStatRaw {
+  /** Clean model name — normalized in SQL, see {@link normalizedModelExpr}. */
   model: string;
+  /** The trace `feature` this call was made under (e.g. `vision`, `bot-messaging`). */
+  feature: string;
+  /** The trace `action` (e.g. `describe`, `reply`, `summarize`). */
+  action: string;
   calls: number;
   latencySum: number;
+  /** Median latency (ms) — the typical call, unmoved by one 90s outlier. */
+  latencyP50: number | null;
+  /** 95th-percentile latency (ms) — the tail an operator actually feels. */
+  latencyP95: number | null;
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
 }
 
 /**
- * Raw per-(reported)-model LLM usage across the trace timeline (all features, not
- * just conversation — this is system-level model performance). Grouped by the
- * model string exactly as the provider reported it; the service normalizes and
- * merges registry-prefixed variants. Latency is summed so the merge can recompute
- * a correct mean.
+ * The recorded model id reduced to its clean name, in SQL.
+ *
+ * This is `normalizeModelName` (features/self-improvement/model-name.ts) expressed
+ * for Postgres — trim, drop any path-style prefix up to the last `/`, fall back to
+ * `unknown` — and the two must keep agreeing; `model-name.test.ts` pins the rule.
+ *
+ * It has to happen here rather than in the service because the grouping key must be
+ * the *clean* name: percentiles are computed by the aggregate, and no amount of
+ * post-hoc merging in JS can combine two groups' percentiles back into a correct
+ * one. Sums could be merged afterwards; a median cannot.
+ */
+function normalizedModelExpr(raw: SQL): SQL {
+  return sql`nullif(regexp_replace(btrim(${raw}), '^.*/', ''), '')`;
+}
+
+/**
+ * The model a usage row should be *attributed* to: the id that was requested.
+ *
+ * `usage.model` now always holds the requested id, so this is normally just that.
+ * The `case` handles rows written before that was true, when `model` held whatever
+ * the provider answered with. Docker Model Runner answers a tag with the bundle
+ * path of the file it loaded —
+ * `/models/bundles/sha256/<digest>/model/<file>.gguf` — and since the digest **is**
+ * the model id, such a row is a resolved tag, not a different model. Attributing it
+ * to the filename split one configured model across two rows in the dashboard.
+ *
+ * Old rows carry no record of the requested tag, so the digest is the honest thing
+ * to show: it identifies the bundle exactly, whereas the filename inside it is a
+ * packaging detail and the tag would be a guess. `docker model ls` maps the short
+ * digest straight back to the tag.
+ */
+function attributedModelExpr(raw: SQL): SQL {
+  return sql`case
+    when ${raw} ~ '^/models/bundles/sha256/[0-9a-f]+/'
+      then 'bundle ' || substring(${raw} from '^/models/bundles/sha256/([0-9a-f]{12})')
+    else coalesce(${normalizedModelExpr(raw)}, 'unknown')
+  end`;
+}
+
+/**
+ * Raw LLM usage across the whole trace timeline, grouped by **(model, feature,
+ * action)** — the request type, not just the model.
+ *
+ * A single model serves work with wildly different cost profiles: describing an
+ * image is not a text reply, and a one-line auxiliary classification is not a
+ * tool-looping conversation turn. Collapsing them into one per-model mean produced
+ * an average of unlike things — a number that moved when the *mix* changed and told
+ * you nothing about any actual request. The trace's own `feature`/`action` is
+ * already exactly this taxonomy, so it is what we group by.
+ *
+ * Percentiles come from the same scan because a mean latency over a
+ * heavy-tailed distribution is the specific statistic that hides a slow tail.
+ * Latency is also summed so the service can re-derive a correct mean when it merges
+ * registry-prefixed model variants.
  */
 export async function getModelStatsRaw(
   db: DrizzleDb,
@@ -201,16 +259,24 @@ export async function getModelStatsRaw(
 ): Promise<ModelStatRaw[]> {
   const rows = await db.execute<{
     model: string;
+    feature: string;
+    action: string;
     calls: number;
     latency_sum: string;
+    latency_p50: string | null;
+    latency_p95: string | null;
     prompt_tokens: string;
     completion_tokens: string;
     total_tokens: string;
   }>(sql`
     select
-      e.usage->>'model' as model,
+      ${attributedModelExpr(sql`e.usage->>'model'`)} as model,
+      t.feature as feature,
+      t.action as action,
       count(*)::int as calls,
       coalesce(sum((e.usage->>'latencyMs')::numeric), 0) as latency_sum,
+      percentile_cont(0.5) within group (order by (e.usage->>'latencyMs')::numeric) as latency_p50,
+      percentile_cont(0.95) within group (order by (e.usage->>'latencyMs')::numeric) as latency_p95,
       coalesce(sum((e.usage->>'promptTokens')::numeric), 0) as prompt_tokens,
       coalesce(sum((e.usage->>'completionTokens')::numeric), 0) as completion_tokens,
       coalesce(sum((e.usage->>'totalTokens')::numeric), 0) as total_tokens
@@ -220,12 +286,16 @@ export async function getModelStatsRaw(
       and e.usage is not null
       and (e.usage->>'model') is not null
       and t.started_at >= ${params.startUtc}
-    group by 1
+    group by 1, 2, 3
   `);
   return rows.rows.map((r) => ({
     model: r.model,
+    feature: r.feature,
+    action: r.action,
     calls: Number(r.calls),
     latencySum: Number(r.latency_sum),
+    latencyP50: r.latency_p50 === null ? null : Math.round(Number(r.latency_p50)),
+    latencyP95: r.latency_p95 === null ? null : Math.round(Number(r.latency_p95)),
     promptTokens: Number(r.prompt_tokens),
     completionTokens: Number(r.completion_tokens),
     totalTokens: Number(r.total_tokens),
@@ -330,10 +400,12 @@ export interface PendingInsightDay {
 }
 
 /**
- * (chat, day) pairs whose LLM insight is missing or stale — the same self-healing
- * scan the summarizer uses: a day is owed when it has no insight row, or when its
- * live message count no longer matches the stored one. The current (unfinished)
- * day is excluded.
+ * (chat, day) pairs that have no stored insight yet. A day is owed only when it
+ * has never been scored — a *scored* day is final, and is never silently re-read
+ * because its message count drifted. Correcting an existing score is an explicit
+ * operator action ({@link deleteInsightsForPeriod} + a run), so the job's token
+ * spend is predictable and nothing rewrites itself behind your back. The current
+ * (unfinished) day is excluded.
  */
 export async function listDaysNeedingInsight(
   db: DrizzleDb,
@@ -354,7 +426,7 @@ export async function listDaysNeedingInsight(
     left join chat_day_insights i
       on i.chat_id = days.chat_id and i.insight_date = days.insight_date
     where days.insight_date < ${params.today}
-      and (i.id is null or i.message_count <> days.message_count)
+      and i.id is null
     order by days.insight_date asc, days.chat_id asc
     limit ${params.limit}
   `);
@@ -365,22 +437,88 @@ export async function listDaysNeedingInsight(
   }));
 }
 
-/** Every scored (chat, day) — the source rows every period roll-up is built from. */
-export async function listAllInsightDays(
-  db: DrizzleDb,
-): Promise<{ chatId: string; insightDate: string }[]> {
-  const rows = await db.execute<{ chat_id: string; insight_date: string }>(sql`
-    select chat_id, insight_date from chat_day_insights
+/** Every distinct scored date (`YYYY-MM-DD`), newest first — the regenerate picker's source. */
+export async function listInsightDates(db: DrizzleDb): Promise<string[]> {
+  const rows = await db.execute<{ insight_date: string }>(sql`
+    select distinct insight_date from chat_day_insights order by insight_date desc
   `);
-  return rows.rows.map((r) => ({ chatId: r.chat_id, insightDate: r.insight_date }));
+  return rows.rows.map((r) => r.insight_date);
 }
 
-/** The keys of every stored period roll-up, as `granularity|bucket|scope|chat_id`. */
-export async function listExistingPeriodKeys(db: DrizzleDb): Promise<Set<string>> {
-  const rows = await db.execute<{ granularity: string; bucket: string; scope: string; chat_id: string }>(sql`
-    select granularity, bucket, scope, chat_id from period_insights
+/**
+ * Drop every stored insight covering a period — the day scores *and* the roll-ups
+ * built from them — so the next run recomputes them from the messages.
+ *
+ * Deleting the day rows is what re-arms the work: a day with no row is owed (see
+ * {@link listDaysNeedingInsight}), so a regenerate that dies half-way is picked up
+ * by the next nightly run rather than leaving a permanent hole. The roll-ups go too
+ * because a roll-up whose day rows have been dropped is a stale claim about days
+ * that no longer exist.
+ */
+export async function deleteInsightsForPeriod(
+  db: DrizzleDb,
+  params: { granularity: Granularity; bucket: string },
+): Promise<{ days: number; periods: number }> {
+  const dateFilter = periodDateFilter(params.granularity, params.bucket);
+  const dayWhere = dateFilter ? sql`where ${dateFilter}` : sql``;
+  const days = await db.execute<{ n: number }>(sql`
+    with deleted as (delete from chat_day_insights ${dayWhere} returning 1)
+    select count(*)::int as n from deleted
   `);
-  return new Set(rows.rows.map((r) => `${r.granularity}|${r.bucket}|${r.scope}|${r.chat_id}`));
+
+  // A day's score feeds every period containing it, so dropping a range of days
+  // invalidates roll-ups at *every* granularity that overlaps the range — not just
+  // the one asked for. `all` overlaps everything, so it clears the table.
+  const periodWhere =
+    params.granularity === "all"
+      ? sql``
+      : sql`where granularity = 'all' or ${periodOverlapFilter(params.granularity, params.bucket)}`;
+  const periods = await db.execute<{ n: number }>(sql`
+    with deleted as (delete from period_insights ${periodWhere} returning 1)
+    select count(*)::int as n from deleted
+  `);
+
+  return { days: Number(days.rows[0]?.n ?? 0), periods: Number(periods.rows[0]?.n ?? 0) };
+}
+
+/**
+ * Matches every stored period row whose date range overlaps the given bucket, by
+ * comparing each row's own first/last day. A week can straddle two months and a
+ * month sits inside a year, so a containment test on the bucket string alone would
+ * miss rows that genuinely covered a dropped day.
+ */
+function periodOverlapFilter(granularity: Granularity, bucket: string): SQL {
+  const [start, end] = periodDayRange(granularity, bucket);
+  // Each row's span, derived from its granularity + bucket key.
+  const rowStart = sql`case granularity
+    when 'day' then bucket
+    when 'week' then bucket
+    when 'month' then bucket || '-01'
+    when 'year' then bucket || '-01-01'
+  end`;
+  const rowEnd = sql`case granularity
+    when 'day' then bucket
+    when 'week' then to_char(to_date(bucket, 'YYYY-MM-DD') + 6, 'YYYY-MM-DD')
+    when 'month' then to_char((to_date(bucket || '-01', 'YYYY-MM-DD') + interval '1 month' - interval '1 day')::date, 'YYYY-MM-DD')
+    when 'year' then bucket || '-12-31'
+  end`;
+  return sql`(granularity <> 'all' and ${rowStart} <= ${end} and ${rowEnd} >= ${start})`;
+}
+
+/** The inclusive first/last `YYYY-MM-DD` a period bucket covers. */
+function periodDayRange(granularity: Granularity, bucket: string): [string, string] {
+  switch (granularity) {
+    case "day":
+      return [bucket, bucket];
+    case "week":
+      return [bucket, addDaysToDateStr(bucket, 6)];
+    case "month":
+      return [`${bucket}-01`, `${bucket}-31`];
+    case "year":
+      return [`${bucket}-01-01`, `${bucket}-12-31`];
+    case "all":
+      return ["0000-01-01", "9999-12-31"];
+  }
 }
 
 /** How many (chat, day) pairs still need an insight — for the dashboard backlog. */
@@ -471,6 +609,7 @@ function periodDateFilter(granularity: Granularity, bucket: string): SQL | null 
     case "week":
       return sql`insight_date >= ${bucket} and insight_date <= ${addDaysToDateStr(bucket, 6)}`;
     case "month":
+    case "year":
       return sql`insight_date like ${`${bucket}-%`}`;
     case "all":
       return null;

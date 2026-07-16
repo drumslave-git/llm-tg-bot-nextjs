@@ -7,7 +7,7 @@ import { buildSystemPrompt } from "@/features/bot-messaging/server/prompt";
 import { FEATURES } from "@/lib/features";
 import { buildLanguageInstruction } from "@/lib/language";
 import type { ChatCompletionResult, ChatMessage } from "@/server/llm/client";
-import { sanitizeMessagesForTrace } from "@/server/llm/client";
+import { llmUsageOf, sanitizeMessagesForTrace } from "@/server/llm/client";
 import { startTrace } from "@/server/trace";
 
 import type { ScheduledTask } from "../types";
@@ -140,13 +140,7 @@ export async function fireScheduledTask(task: ScheduledTask, deps: FireDeps): Pr
       type: "llm_response",
       message: "response",
       data: reply.responseBody ?? { content: reply.content },
-      usage: {
-        model: reply.model,
-        promptTokens: reply.usage?.promptTokens,
-        completionTokens: reply.usage?.completionTokens,
-        totalTokens: reply.usage?.totalTokens,
-        latencyMs: reply.latencyMs,
-      },
+      usage: llmUsageOf(reply),
     });
 
     const outgoing = formatReply(reply.content);

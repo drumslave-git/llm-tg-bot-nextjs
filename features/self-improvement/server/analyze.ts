@@ -7,7 +7,7 @@ import { getDb } from "@/db/drizzle";
 import { getChatMessageByTelegramId } from "@/features/history/server/repository";
 import { FEATURES } from "@/lib/features";
 import { extractJsonObject } from "@/lib/json";
-import type { ChatCompletionResult, ChatMessage } from "@/server/llm/client";
+import { llmUsageOf, type ChatCompletionResult, type ChatMessage } from "@/server/llm/client";
 import type { JobProgress } from "@/server/jobs/progress";
 import { publishEvent } from "@/server/realtime/hub";
 import { startTrace } from "@/server/trace";
@@ -184,13 +184,7 @@ export async function runSelfImprovement(deps: SelfImprovementDeps): Promise<Sel
         type: "llm_response",
         message: "response",
         data: result.responseBody ?? { content: result.content },
-        usage: {
-          model: result.model,
-          promptTokens: result.usage?.promptTokens,
-          completionTokens: result.usage?.completionTokens,
-          totalTokens: result.usage?.totalTokens,
-          latencyMs: result.latencyMs,
-        },
+        usage: llmUsageOf(result),
       });
       return result;
     } catch (err) {

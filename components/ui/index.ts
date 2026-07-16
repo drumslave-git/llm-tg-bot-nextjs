@@ -21,6 +21,7 @@ export { Input, fieldBase } from "./Input";
 export { Label } from "./Label";
 export { PageHeader } from "./PageHeader";
 export { Progress, type ProgressTone } from "./Progress";
+export { SegmentedControl, type SegmentedOption } from "./SegmentedControl";
 export { Select } from "./Select";
 export { Separator } from "./Separator";
 export { Skeleton, Spinner } from "./Skeleton";

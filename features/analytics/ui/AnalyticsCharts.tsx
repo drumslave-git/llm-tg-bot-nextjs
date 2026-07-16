@@ -4,11 +4,11 @@ import type { EChartsOption } from "echarts";
 import dynamic from "next/dynamic";
 import { useCallback } from "react";
 
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui";
-
 import { formatCompact } from "../format";
-import type { AnalyticsMetrics, Granularity, MoodPoint } from "../types";
+import type { CardFilters, Granularity, NamedSeries, SeriesPayload, SeriesSection } from "../types";
 import { STATUS, type ChartTheme } from "./chart-theme";
+import { CardBody, FilterableCard, type FilterOption } from "./FilterableCard";
+import { useCardData } from "./useCardData";
 
 // The chart is canvas-bound (ECharts): load it client-only so ECharts never
 // enters the server render. Reserves the height to avoid layout shift.
@@ -26,27 +26,29 @@ function shortBucket(label: string, granularity: Granularity): string {
       return label.slice(5);
     case "month":
       return label; // "2026-07"
+    case "year":
+      return label; // "2026"
     case "all":
       return "All time";
   }
 }
 
-interface SeriesSpec {
-  name: string;
-  data: number[];
-  slot?: number;
-  color?: string;
-}
-
 /** Shared line-chart option builder themed from the resolved palette. */
 function lineOption(
   theme: ChartTheme,
-  input: { buckets: string[]; granularity: Granularity; series: SeriesSpec[]; yMax?: number; area?: boolean },
+  input: {
+    buckets: string[];
+    granularity: Granularity;
+    series: NamedSeries[];
+    yMax?: number;
+    area?: boolean;
+    colors?: string[];
+  },
 ): EChartsOption {
   const multi = input.series.length > 1;
   return {
     grid: { left: 8, right: 16, top: multi ? 34 : 12, bottom: 4, containLabel: true },
-    color: input.series.map((s, i) => s.color ?? theme.series[s.slot ?? i]),
+    color: input.series.map((_, i) => input.colors?.[i] ?? theme.series[i]),
     legend: multi
       ? { show: true, top: 0, left: 0, itemWidth: 12, itemHeight: 4, textStyle: { color: theme.secondary, fontSize: 12 } }
       : undefined,
@@ -76,117 +78,106 @@ function lineOption(
       type: "line" as const,
       data: s.data,
       smooth: false,
-      showSymbol: input.buckets.length <= 1,
+      // A lone point would be invisible as a line, and a series with gaps (mood
+      // only exists for scored days) needs its islands marked.
+      showSymbol: input.buckets.length <= 1 || s.data.some((v) => v === null),
+      connectNulls: false,
       lineStyle: { width: 2 },
       areaStyle: input.area ? { opacity: 0.12 } : undefined,
     })),
   };
 }
 
-/** One titled chart card whose option is rebuilt from the theme. */
-function LineChartCard({
-  title,
-  description,
-  buckets,
-  granularity,
-  series,
-  yMax,
+function ChartFor({
+  payload,
   area,
+  colors,
 }: {
-  title: string;
-  description?: string;
-  buckets: string[];
-  granularity: Granularity;
-  series: SeriesSpec[];
-  yMax?: number;
+  payload: SeriesPayload;
   area?: boolean;
+  colors?: string[];
 }) {
+  const { buckets, granularity, series, yMax } = payload;
   const build = useCallback(
-    (theme: ChartTheme) => lineOption(theme, { buckets, granularity, series, yMax, area }),
-    [buckets, granularity, series, yMax, area],
+    (theme: ChartTheme) => lineOption(theme, { buckets, granularity, series, yMax, area, colors }),
+    [buckets, granularity, series, yMax, area, colors],
   );
-  return (
-    <Card>
-      <CardHeader>
-        <div>
-          <CardTitle>{title}</CardTitle>
-          {description ? <CardDescription>{description}</CardDescription> : null}
-        </div>
-      </CardHeader>
-      <CardContent>
-        <Chart buildOption={build} ariaLabel={title} />
-      </CardContent>
-    </Card>
-  );
+  return <Chart buildOption={build} ariaLabel={payload.section} />;
 }
 
 /**
- * The chart grid: message volume, token volume, user activity, and the mood trend.
- * All series keep a single y-scale (never dual-axis) and share the period axis.
+ * One filtered chart card. Every series section answers with the same
+ * `{ buckets, series }` shape, so this single component is every chart on the
+ * dashboard — message volume, tokens, users, and the mood trend differ only by
+ * which section they ask for and how they are titled.
  */
-export function AnalyticsCharts({ metrics, mood }: { metrics: AnalyticsMetrics; mood: MoodPoint[] }) {
-  const { buckets, granularity } = metrics;
-  const perUser = metrics.scope === "user";
-
-  const userSeries: SeriesSpec[] = [{ name: "Active users", data: metrics.users.active, slot: 0 }];
-  if (metrics.users.new) userSeries.push({ name: "New users", data: metrics.users.new, slot: 1 });
-
+export function SeriesCard({
+  section,
+  title,
+  description,
+  chats,
+  users,
+  defaultFilters,
+  area,
+  colors,
+  emptyMessage = "No data for this period.",
+}: {
+  section: SeriesSection;
+  title: string;
+  description?: string;
+  chats: FilterOption[];
+  users: FilterOption[];
+  defaultFilters?: CardFilters;
+  area?: boolean;
+  colors?: string[];
+  emptyMessage?: string;
+}) {
   return (
-    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-      <LineChartCard
-        title="Message volume"
-        description={perUser ? "This user's messages per period" : "Messages per period"}
-        buckets={buckets}
-        granularity={granularity}
-        series={[
-          { name: "From users", data: metrics.volume.human, slot: 0 },
-          { name: "Bot replies", data: metrics.volume.bot, slot: 1 },
-        ]}
-      />
-      <LineChartCard
-        title="Tokens"
-        description="Processed (prompt) vs generated (completion)"
-        buckets={buckets}
-        granularity={granularity}
-        series={[
-          { name: "Processed", data: metrics.tokens.processed, slot: 0 },
-          { name: "Generated", data: metrics.tokens.generated, slot: 1 },
-        ]}
-        area
-      />
-      <LineChartCard
-        title="Users"
-        description={perUser ? "Activity for the selected user" : "Active and newly-seen users"}
-        buckets={buckets}
-        granularity={granularity}
-        series={userSeries}
-      />
-      {mood.length > 0 ? (
-        <LineChartCard
-          title="Mood trend"
-          description="Conversation mood (0–100) per period, from the insight job"
-          buckets={mood.map((p) => p.bucket)}
-          granularity={granularity}
-          series={[{ name: "Mood", data: mood.map((p) => p.moodScore), color: STATUS.good }]}
-          yMax={100}
-          area
+    <FilterableCard
+      title={title}
+      description={description}
+      chats={chats}
+      users={users}
+      defaultFilters={defaultFilters}
+    >
+      {(filters) => (
+        <SeriesBody
+          section={section}
+          filters={filters}
+          area={area}
+          colors={colors}
+          emptyMessage={emptyMessage}
         />
-      ) : (
-        <Card>
-          <CardHeader>
-            <div>
-              <CardTitle>Mood trend</CardTitle>
-              <CardDescription>Conversation mood (0–100) per period</CardDescription>
-            </div>
-          </CardHeader>
-          <CardContent>
-            <p className="py-10 text-center text-sm text-muted">
-              No mood data yet — the nightly insight job scores each finished day. Run it from the card
-              below to populate this.
-            </p>
-          </CardContent>
-        </Card>
       )}
-    </div>
+    </FilterableCard>
   );
 }
+
+function SeriesBody({
+  section,
+  filters,
+  area,
+  colors,
+  emptyMessage,
+}: {
+  section: SeriesSection;
+  filters: CardFilters;
+  area?: boolean;
+  colors?: string[];
+  emptyMessage: string;
+}) {
+  const { data, error, loading } = useCardData<SeriesPayload>("/api/analytics/series", filters, {
+    section,
+  });
+  // A series of nothing but gaps has no chart to draw — say so rather than
+  // rendering empty axes.
+  const hasData = data != null && data.series.some((s) => s.data.some((v) => v !== null));
+  return (
+    <CardBody loading={loading} error={error} hasData={hasData} emptyMessage={emptyMessage}>
+      {data ? <ChartFor payload={data} area={area} colors={colors} /> : null}
+    </CardBody>
+  );
+}
+
+/** The mood trend's line is tied to the mood palette, not the generic series slots. */
+export const MOOD_COLORS = [STATUS.good];

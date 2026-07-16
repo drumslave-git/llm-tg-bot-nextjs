@@ -102,4 +102,84 @@ describe("chatCompletion", () => {
       chatCompletion(conn, { model: "m", messages: [{ role: "user", content: "hi" }] }),
     ).rejects.toMatchObject({ code: "service_unavailable" });
   });
+
+  /**
+   * A provider may resolve the requested tag to something else and report that.
+   * Docker Model Runner answers `docker.io/ai/gemma4:26B` with the bundle path of
+   * the file it loaded. Recording that as the call's identity made one configured
+   * model appear as two in the dashboard, so identity stays the requested id and the
+   * provider's answer is kept beside it.
+   */
+  it("keeps the requested id as the identity and records what was served", async () => {
+    const { chatCompletion } = await import("./client");
+    const bundlePath =
+      "/models/bundles/sha256/95c8f7ac704f39390021259feb3d4849e85b42dca6b63014479fa4c3d48b4d86/model/gemma-4-26B-A4B-it-UD-Q4_K_XL.gguf";
+    createMock.mockResolvedValue({
+      model: bundlePath,
+      choices: [{ message: { content: "hi" } }],
+    });
+
+    const result = await chatCompletion(conn, {
+      model: "docker.io/ai/gemma4:26B",
+      messages: [{ role: "user", content: "hi" }],
+    });
+
+    expect(result.model).toBe("docker.io/ai/gemma4:26B");
+    expect(result.servedModel).toBe(bundlePath);
+  });
+
+  it("leaves servedModel unset when the provider reports no model", async () => {
+    const { chatCompletion } = await import("./client");
+    createMock.mockResolvedValue({ choices: [{ message: { content: "hi" } }] });
+
+    const result = await chatCompletion(conn, {
+      model: "gemma4:26B",
+      messages: [{ role: "user", content: "hi" }],
+    });
+
+    expect(result.model).toBe("gemma4:26B");
+    expect(result.servedModel).toBeUndefined();
+  });
+});
+
+describe("llmUsageOf", () => {
+  it("records the requested id and the served one side by side", async () => {
+    const { llmUsageOf } = await import("./client");
+    expect(
+      llmUsageOf({
+        model: "docker.io/ai/gemma4:26B",
+        servedModel: "/models/bundles/sha256/abc/model/x.gguf",
+        usage: { promptTokens: 1, completionTokens: 2, totalTokens: 3 },
+        latencyMs: 5,
+      }),
+    ).toEqual({
+      model: "docker.io/ai/gemma4:26B",
+      servedModel: "/models/bundles/sha256/abc/model/x.gguf",
+      promptTokens: 1,
+      completionTokens: 2,
+      totalTokens: 3,
+      latencyMs: 5,
+    });
+  });
+
+  it("tolerates a completion that reported no usage", async () => {
+    const { llmUsageOf } = await import("./client");
+    const usage = llmUsageOf({ model: "m", latencyMs: 2 });
+    expect(usage).toMatchObject({ model: "m", latencyMs: 2 });
+    expect(usage.promptTokens).toBeUndefined();
+  });
+});
+
+describe("servedModelOf", () => {
+  it("reads the model a response claims to have served", async () => {
+    const { servedModelOf } = await import("./client");
+    expect(servedModelOf({ model: "gemma4:26B" })).toBe("gemma4:26B");
+  });
+
+  it("is undefined when the response claims nothing usable", async () => {
+    const { servedModelOf } = await import("./client");
+    for (const body of [null, undefined, {}, { model: "" }, { model: "   " }, { model: 7 }, "nope"]) {
+      expect(servedModelOf(body)).toBeUndefined();
+    }
+  });
 });

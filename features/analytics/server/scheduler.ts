@@ -19,9 +19,11 @@ import { withAdvisoryLock } from "@/server/jobs/lock";
 import { chatCompletion } from "@/server/llm/client";
 import { publishEvent } from "@/server/realtime/hub";
 
-import type { AnalyticsJobInfo } from "../types";
-import { runAnalyticsInsights } from "./insights";
-import { countDaysNeedingInsight } from "./repository";
+import { weekBucketOf } from "../period";
+
+import { GRANULARITIES, type AnalyticsJobInfo, type Granularity } from "../types";
+import { regenerateAnalyticsInsights, runAnalyticsInsights } from "./insights";
+import { countDaysNeedingInsight, listInsightDates } from "./repository";
 
 /**
  * In-process daily scheduler for the analytics insight job — the same shape as the
@@ -41,26 +43,41 @@ const TICK_MS = 60_000;
 const FEATURE = FEATURES["analytics-insights"];
 const STORE_KEY = Symbol.for("llm-tg-bot.analytics.scheduler");
 
+/** A queued drop-and-regenerate, consumed by the next tick. */
+export interface RegenerateRequest {
+  granularity: Granularity;
+  bucket: string;
+}
+
 interface SchedulerStore {
   scheduler: IntervalScheduler;
   lastDailyRunAt: Date | null;
   forceNext: boolean;
+  /** Set by the dashboard; the next tick regenerates instead of scoring what is owed. */
+  pendingRegenerate: RegenerateRequest | null;
   lastResult: { at: string; summary: string } | null;
 }
 
-/** One insight run with the real collaborators, under the advisory lock. */
-async function runJob(ctx?: IntervalRunContext): Promise<string> {
+/**
+ * One insight run with the real collaborators, under the advisory lock. A
+ * `regenerate` request drops the period's stored insights first; everything else
+ * about the pass — the LLM, the lock, the progress reporting — is identical, which
+ * is why regenerate goes through the scheduler rather than running beside it.
+ */
+async function runJob(ctx?: IntervalRunContext, regenerate?: RegenerateRequest | null): Promise<string> {
   const llm = await getLlmRuntime().catch(() => null);
   if (!llm) return "LLM not configured";
   const timeZone = await getTimezone().catch(() => "UTC");
   const conn = { baseUrl: llm.baseUrl, apiKey: llm.apiKey };
+  const deps = {
+    complete: (messages: Parameters<typeof chatCompletion>[1]["messages"]) =>
+      chatCompletion(conn, { model: llm.model, messages }),
+    timeZone,
+    onProgress: ctx?.reportProgress,
+  };
 
   const outcome = await withAdvisoryLock("analytics", () =>
-    runAnalyticsInsights({
-      complete: (messages) => chatCompletion(conn, { model: llm.model, messages }),
-      timeZone,
-      onProgress: ctx?.reportProgress,
-    }),
+    regenerate ? regenerateAnalyticsInsights(deps, regenerate) : runAnalyticsInsights(deps),
   );
   if (!outcome.ran) return "skipped (locked elsewhere)";
   return outcome.result.summary;
@@ -70,6 +87,9 @@ async function runJob(ctx?: IntervalRunContext): Promise<string> {
 async function runTick(store: SchedulerStore, ctx?: IntervalRunContext): Promise<{ summary: string }> {
   const forced = store.forceNext;
   store.forceNext = false;
+  // Claimed before the run so a failure can't leave it queued to fire again.
+  const regenerate = store.pendingRegenerate;
+  store.pendingRegenerate = null;
 
   if (!forced) {
     const [timezone, runTime] = await Promise.all([
@@ -86,7 +106,7 @@ async function runTick(store: SchedulerStore, ctx?: IntervalRunContext): Promise
     store.lastDailyRunAt = now;
   }
 
-  const summary = await runJob(ctx);
+  const summary = await runJob(ctx, regenerate);
   store.lastResult = { at: new Date().toISOString(), summary };
   return { summary };
 }
@@ -97,6 +117,7 @@ function store(): SchedulerStore {
     const s: SchedulerStore = {
       lastDailyRunAt: null,
       forceNext: false,
+      pendingRegenerate: null,
       lastResult: null,
       scheduler: createIntervalScheduler({
         name: "analytics",
@@ -127,6 +148,48 @@ export function runAnalyticsInsightsNow(): Promise<void> {
   return s.scheduler.runNow();
 }
 
+/**
+ * Drop a period's stored insights and compute them again, as soon as possible
+ * (dashboard "Regenerate"). Destructive: the rows are gone the moment the run
+ * starts, and the re-score costs one LLM pass per dropped day.
+ */
+export function regenerateAnalyticsInsightsNow(request: RegenerateRequest): Promise<void> {
+  const s = store();
+  s.pendingRegenerate = request;
+  s.forceNext = true;
+  return s.scheduler.runNow();
+}
+
+/** The bucket key a scored `YYYY-MM-DD` belongs to, at a granularity. */
+function bucketKeyOfDate(date: string, granularity: Granularity): string {
+  switch (granularity) {
+    case "day":
+      return date;
+    case "week":
+      return weekBucketOf(date);
+    case "month":
+      return date.slice(0, 7);
+    case "year":
+      return date.slice(0, 4);
+    case "all":
+      return "all";
+  }
+}
+
+/**
+ * The buckets that actually hold scored days, per granularity — the regenerate
+ * picker only ever offers periods there is something to drop. Derived from one
+ * scan of the scored dates, newest first.
+ */
+export async function getRegenerateBuckets(): Promise<Record<Granularity, string[]>> {
+  const dates = await listInsightDates(getDb()).catch(() => []);
+  const out = {} as Record<Granularity, string[]>;
+  for (const g of GRANULARITIES) {
+    out[g] = g === "all" ? ["all"] : [...new Set(dates.map((d) => bucketKeyOfDate(d, g)))];
+  }
+  return out;
+}
+
 /** Current job info — reads settings and counts the outstanding backlog. */
 export async function getAnalyticsJobInfo(): Promise<AnalyticsJobInfo> {
   const s = store();
@@ -138,7 +201,10 @@ export async function getAnalyticsJobInfo(): Promise<AnalyticsJobInfo> {
   const now = new Date();
   const zoned = zonedDate(now, timezone);
   const today = `${zoned.year}-${String(zoned.month).padStart(2, "0")}-${String(zoned.day).padStart(2, "0")}`;
-  const pendingDays = await countDaysNeedingInsight(getDb(), { timeZone: timezone, today }).catch(() => 0);
+  const [pendingDays, regenerateBuckets] = await Promise.all([
+    countDaysNeedingInsight(getDb(), { timeZone: timezone, today }).catch(() => 0),
+    getRegenerateBuckets(),
+  ]);
 
   const due = isDailyRunDue({ timeOfDay: runTime, now, timeZone: timezone, lastRunAt: s.lastDailyRunAt });
   const next = due ? now : computeNextRun({ scheduleKind: "daily", timeOfDay: runTime }, now, timezone);
@@ -151,5 +217,6 @@ export async function getAnalyticsJobInfo(): Promise<AnalyticsJobInfo> {
     lastResult: s.lastResult,
     pendingDays,
     llmConfigured: llm != null,
+    regenerateBuckets,
   };
 }

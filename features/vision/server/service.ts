@@ -5,7 +5,7 @@ import type { Message } from "@grammyjs/types";
 import type { DrizzleDb } from "@/db/drizzle";
 import { getDb } from "@/db/drizzle";
 import { FEATURES } from "@/lib/features";
-import { sanitizeMessagesForTrace, type ChatCompletionResult, type ChatMessage } from "@/server/llm/client";
+import { llmUsageOf, sanitizeMessagesForTrace, type ChatCompletionResult, type ChatMessage } from "@/server/llm/client";
 import { publishEvent } from "@/server/realtime/hub";
 import { startTrace } from "@/server/trace";
 
@@ -256,13 +256,7 @@ export async function describeAndStore(
       type: "llm_response",
       message: "describe response",
       data: { content: result.content },
-      usage: {
-        model: result.model,
-        promptTokens: result.usage?.promptTokens,
-        completionTokens: result.usage?.completionTokens,
-        totalTokens: result.usage?.totalTokens,
-        latencyMs: result.latencyMs,
-      },
+      usage: llmUsageOf(result),
     });
 
     const description = result.content.trim();

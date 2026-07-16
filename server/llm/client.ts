@@ -50,7 +50,27 @@ export interface ChatUsage {
 /** Result of a chat completion: the assistant text plus metadata for tracing. */
 export interface ChatCompletionResult {
   content: string;
+  /**
+   * The model **we asked for** — the id configured in Settings. This is a call's
+   * stable identity: it is what the operator chose, it does not change with the
+   * provider's mood, and it is the only name that matches the dashboard.
+   *
+   * Deliberately *not* the provider's answer. Docker Model Runner resolves a tag to
+   * the artifact it loaded and reports that instead — `docker.io/ai/gemma4:26B`
+   * comes back as `/models/bundles/sha256/<digest>/model/…​.gguf`. Recording that as
+   * the identity made one configured model appear as two, split by which code path
+   * happened to run. See {@link servedModel} for the provider's answer, which is
+   * kept rather than discarded.
+   */
   model: string;
+  /**
+   * What the provider said it actually served, verbatim, when it said anything.
+   *
+   * Worth keeping separately: if this stops matching {@link model}, the endpoint is
+   * serving something other than what was configured — which is real information,
+   * and the reason this isn't simply thrown away.
+   */
+  servedModel?: string;
   usage?: ChatUsage;
   latencyMs: number;
   /** Exact request payload sent to the endpoint (for Debug bodies). */
@@ -141,6 +161,54 @@ export function toLlmError(err: unknown, baseUrl: string): ApiError {
 }
 
 /**
+ * The trace `usage` payload for a completion — the one place a
+ * {@link ChatCompletionResult} is turned into what gets recorded.
+ *
+ * Every feature used to hand-build this object identically, which is how the two
+ * completion paths drifted apart without anyone noticing: each call site faithfully
+ * copied `result.model`, and the *meaning* of that field silently differed
+ * depending on whether tools were enabled. One builder means a call is recorded the
+ * same way no matter which feature made it.
+ */
+export function llmUsageOf(result: {
+  model: string;
+  servedModel?: string;
+  usage?: ChatUsage;
+  latencyMs: number;
+}): {
+  model: string;
+  servedModel?: string;
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
+  latencyMs: number;
+} {
+  return {
+    model: result.model,
+    servedModel: result.servedModel,
+    promptTokens: result.usage?.promptTokens,
+    completionTokens: result.usage?.completionTokens,
+    totalTokens: result.usage?.totalTokens,
+    latencyMs: result.latencyMs,
+  };
+}
+
+/**
+ * The model an OpenAI-compatible response claims to have served, or `undefined`
+ * when it claims nothing.
+ *
+ * Shared by both completion paths ({@link chatCompletion} and the tool loop) so the
+ * two can never disagree about what a `ChatCompletionResult` means. They did
+ * disagree: the plain path recorded the provider's answer while the tool loop
+ * substituted the requested id, so enabling tools silently changed the recorded
+ * model name and one model showed up as two.
+ */
+export function servedModelOf(responseBody: unknown): string | undefined {
+  const reported = (responseBody as { model?: unknown } | null | undefined)?.model;
+  return typeof reported === "string" && reported.trim() ? reported : undefined;
+}
+
+/**
  * List distinct model ids from an OpenAI-compatible endpoint, sorted. Doubles as
  * the connection health probe: success proves the endpoint is reachable and the
  * key (if any) is accepted. `timeoutMs` bounds the wait (shorter for status
@@ -196,7 +264,8 @@ export async function chatCompletion(
     }
     return {
       content,
-      model: completion.model || input.model,
+      model: input.model,
+      servedModel: servedModelOf(completion),
       usage: completion.usage
         ? {
             promptTokens: completion.usage.prompt_tokens,

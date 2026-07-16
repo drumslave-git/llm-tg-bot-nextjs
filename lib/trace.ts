@@ -56,7 +56,22 @@ export type TraceTrigger = z.infer<typeof traceTriggerSchema>;
 
 /** Token usage for LLM-related events. */
 export const llmUsageSchema = z.object({
+  /**
+   * The model **requested** — the id configured in Settings. A call's stable
+   * identity, and what every `model` column and the analytics group by.
+   */
   model: z.string().optional(),
+  /**
+   * What the provider reported serving, when it differs from {@link model}.
+   *
+   * Recorded because a provider may resolve a tag to something else: Docker Model
+   * Runner answers `docker.io/ai/gemma4:26B` with the bundle path of the file it
+   * loaded (`/models/bundles/sha256/<digest>/model/….gguf` — the digest being the
+   * model id, so it is the same model). Kept out of `model` so that resolution
+   * cannot fragment a model's stats, and kept at all so a provider serving the
+   * *wrong* thing is still visible in Debug.
+   */
+  servedModel: z.string().optional(),
   promptTokens: z.number().int().nonnegative().optional(),
   completionTokens: z.number().int().nonnegative().optional(),
   totalTokens: z.number().int().nonnegative().optional(),

@@ -5,7 +5,7 @@ import { getDb } from "@/db/drizzle";
 import { normalizeModelName } from "@/features/self-improvement/model-name";
 import { zonedDate } from "@/features/scheduled-tasks/schedule";
 import { FEATURES } from "@/lib/features";
-import type { ChatCompletionResult, ChatMessage } from "@/server/llm/client";
+import { llmUsageOf, type ChatCompletionResult, type ChatMessage } from "@/server/llm/client";
 import type { JobProgress } from "@/server/jobs/progress";
 import { publishEvent } from "@/server/realtime/hub";
 import { startTrace } from "@/server/trace";
@@ -23,31 +23,38 @@ import {
   PERIOD_INSIGHT_PROMPT,
 } from "./prompt";
 import {
+  deleteInsightsForPeriod,
   getDayMessages,
   getDaySummaryTopics,
-  listAllInsightDays,
   listDayInsightsForPeriod,
   listDaysNeedingInsight,
-  listExistingPeriodKeys,
+  type PendingInsightDay,
   type PeriodDayRow,
   upsertChatDayInsight,
   upsertPeriodInsight,
 } from "./repository";
 
 /**
- * The nightly analytics insight job. It scores each finished chat-day's mood, top
- * topic, and word (one LLM call, self-healing), then rolls those day rows up into
- * a **word of the period + top topic + aggregate mood for every period the day
- * touches** — the day, its week, its month, and all-time — for both the global and
- * the per-chat view. That is what makes "word of the day/week/month/all time" and
+ * The analytics insight job. It scores each finished chat-day's mood, top topic,
+ * and word (one LLM call), then rolls those day rows up into a **word of the period
+ * + top topic + aggregate mood for every period the day touches** — the day, its
+ * week, its month, its year, and all-time — for both the global and the per-chat
+ * view. That is what makes "word of the day/week/month/year/all time" and
  * "most-discussed topic" available at every granularity the selector offers.
  *
  * A roll-up over a single day row copies that row's word/topic (no LLM); a roll-up
  * over several days makes one LLM call. Mood is always a deterministic
  * message-weighted average, so it never depends on a fragile parse.
  *
+ * **Work is only ever added by an unscored day.** A scored day is final: the job
+ * never re-reads it because its message count drifted, and never reconciles stored
+ * roll-ups against what it thinks they should be. Both of those were self-healing
+ * scans, and both made the nightly token spend a function of invisible state.
+ * Rewriting a scored day is an operator action — {@link regenerateAnalyticsInsights}
+ * drops the rows, which re-arms them through the ordinary unscored-day path.
+ *
  * Fails **closed** per unit: an unusable model response leaves the stored row
- * untouched. Idempotent: an unchanged day/period is skipped, costing no tokens.
+ * untouched, and the day stays owed for the next run.
  */
 
 const FEATURE = FEATURES["analytics-insights"];
@@ -91,13 +98,14 @@ function targetKey(t: PeriodTarget): string {
   return `${t.granularity}|${t.bucket}|${t.scope}|${t.chatId}`;
 }
 
-/** Every period bucket a (date, chat) touches — day/week/month/all × global/chat. */
+/** Every period bucket a (date, chat) touches — day/week/month/year/all × global/chat. */
 function periodsForDay(date: string, chatId: string): PeriodTarget[] {
   const [year, month] = date.split("-");
   const buckets: [Granularity, string][] = [
     ["day", date],
     ["week", weekBucketOf(date)],
     ["month", `${year}-${month}`],
+    ["year", year],
     ["all", "all"],
   ];
   const out: PeriodTarget[] = [];
@@ -108,6 +116,17 @@ function periodsForDay(date: string, chatId: string): PeriodTarget[] {
   return out;
 }
 
+/**
+ * How many distinct calendar days a period's rows cover.
+ *
+ * Not `rows.length`: the rows are (chat, day) pairs, so a *global* roll-up returns
+ * one row per chat per day. Counting rows made a one-day global bucket with two
+ * active chats report "2 days".
+ */
+function distinctDays(days: { insightDate: string }[]): number {
+  return new Set(days.map((d) => d.insightDate)).size;
+}
+
 /** Message-weighted mean mood across a period's day rows. */
 function weightedMood(days: { moodScore: number; messageCount: number }[]): number {
   const totalMsgs = days.reduce((a, d) => a + d.messageCount, 0);
@@ -115,45 +134,76 @@ function weightedMood(days: { moodScore: number; messageCount: number }[]): numb
   return Math.round(days.reduce((a, d) => a + d.moodScore * d.messageCount, 0) / totalMsgs);
 }
 
+/** The (chat, day) pairs owed a score right now. */
+async function pendingDays(db: DrizzleDb, deps: AnalyticsInsightsDeps): Promise<PendingInsightDay[]> {
+  const now = deps.now ?? new Date();
+  const zoned = zonedDate(now, deps.timeZone);
+  const today = `${zoned.year}-${String(zoned.month).padStart(2, "0")}-${String(zoned.day).padStart(2, "0")}`;
+  return listDaysNeedingInsight(db, { timeZone: deps.timeZone, today, limit: MAX_DAYS_PER_RUN });
+}
+
+/**
+ * The nightly run: score whatever days are owed and roll up the periods they
+ * touch. Costs nothing when nothing is owed.
+ */
 export async function runAnalyticsInsights(
   deps: AnalyticsInsightsDeps,
 ): Promise<AnalyticsInsightsResult> {
   const db = deps.db ?? getDb();
-  const now = deps.now ?? new Date();
-  const zoned = zonedDate(now, deps.timeZone);
-  const today = `${zoned.year}-${String(zoned.month).padStart(2, "0")}-${String(zoned.day).padStart(2, "0")}`;
-
-  const pending = await listDaysNeedingInsight(db, {
-    timeZone: deps.timeZone,
-    today,
-    limit: MAX_DAYS_PER_RUN,
+  const pending = await pendingDays(db, deps);
+  if (pending.length === 0) return { ...EMPTY, summary: "nothing to compute" };
+  return runInsightPass(deps, db, pending, {
+    action: "insights",
+    inputSummary: `${pending.length} day(s) pending`,
   });
+}
 
-  // Self-heal: any period a scored day *should* have but doesn't (e.g. a new
-  // granularity was added after the day was first scored) is backfilled, so the
-  // roll-up never depends on a day being re-scored in the same run.
-  const [allDays, existingKeys] = await Promise.all([
-    listAllInsightDays(db),
-    listExistingPeriodKeys(db),
-  ]);
-  const missing = new Map<string, PeriodTarget>();
-  for (const d of allDays) {
-    for (const t of periodsForDay(d.insightDate, d.chatId)) {
-      const key = targetKey(t);
-      if (!existingKeys.has(key)) missing.set(key, t);
-    }
+/**
+ * Drop every insight covering a period and compute it again from the messages.
+ * The operator's answer to a score that is wrong or was produced by a since-changed
+ * prompt — and the only way a scored day is ever re-read.
+ *
+ * Deletion is deliberately wider than the requested bucket: dropping a day's score
+ * invalidates every roll-up containing that day, at every granularity. The re-score
+ * then rebuilds exactly the periods the re-scored days touch.
+ */
+export async function regenerateAnalyticsInsights(
+  deps: AnalyticsInsightsDeps,
+  params: { granularity: Granularity; bucket: string },
+): Promise<AnalyticsInsightsResult> {
+  const db = deps.db ?? getDb();
+  const dropped = await deleteInsightsForPeriod(db, params);
+  const pending = await pendingDays(db, deps);
+  if (pending.length === 0) {
+    return {
+      ...EMPTY,
+      summary: `dropped ${dropped.days} day score(s) and ${dropped.periods} roll-up(s); no finished day to re-score`,
+    };
   }
+  return runInsightPass(deps, db, pending, {
+    action: "regenerate",
+    inputSummary: `${params.granularity} ${params.bucket}: dropped ${dropped.days} day score(s), ${dropped.periods} roll-up(s); re-scoring ${pending.length} day(s)`,
+    dropped,
+  });
+}
 
-  if (pending.length === 0 && missing.size === 0) {
-    return { ...EMPTY, summary: "nothing to compute" };
-  }
-
+/**
+ * The scoring + roll-up pass shared by the nightly run and a regenerate. The two
+ * differ only in how the work was chosen, so the LLM passes, the tracing, and the
+ * failure handling live here once.
+ */
+async function runInsightPass(
+  deps: AnalyticsInsightsDeps,
+  db: DrizzleDb,
+  pending: PendingInsightDay[],
+  meta: { action: string; inputSummary: string; dropped?: { days: number; periods: number } },
+): Promise<AnalyticsInsightsResult> {
   const trace = await startTrace(
     {
       feature: FEATURE.id,
-      action: "insights",
+      action: meta.action,
       trigger: { kind: "system", actor: "analytics" },
-      inputSummary: `${pending.length} day(s) pending, ${missing.size} period(s) to backfill`,
+      inputSummary: meta.inputSummary,
     },
     db,
   );
@@ -173,13 +223,7 @@ export async function runAnalyticsInsights(
         type: "llm_response",
         message: "response",
         data: completion.responseBody ?? { content: completion.content },
-        usage: {
-          model: completion.model,
-          promptTokens: completion.usage?.promptTokens,
-          completionTokens: completion.usage?.completionTokens,
-          totalTokens: completion.usage?.totalTokens,
-          latencyMs: completion.latencyMs,
-        },
+        usage: llmUsageOf(completion),
       });
       return { content: completion.content, model: normalizeModelName(completion.model) };
     } catch (err) {
@@ -194,9 +238,8 @@ export async function runAnalyticsInsights(
   }
 
   try {
-    // Seed with the missing periods to backfill; Pass 1 adds the periods of any
-    // freshly-scored day.
-    const touched = new Map<string, PeriodTarget>(missing);
+    // Every period a freshly-scored day belongs to, deduped — the roll-up set.
+    const touched = new Map<string, PeriodTarget>();
 
     /* Pass 1 — score each pending (chat, day). */
     let dayIdx = 0;
@@ -340,7 +383,7 @@ export async function runAnalyticsInsights(
         topTopic,
         moodScore,
         moodLabel: moodLabelForScore(moodScore),
-        sourceDays: days.length,
+        sourceDays: distinctDays(days),
         messageCount,
         model,
       });
@@ -348,6 +391,7 @@ export async function runAnalyticsInsights(
     }
 
     const summary =
+      (meta.dropped ? `${meta.dropped.days} day score(s) dropped, ` : "") +
       `${result.daysComputed} day(s) scored, ${result.periodsComputed} period(s) rolled up` +
       (result.daysFailed + result.periodsFailed > 0
         ? `, ${result.daysFailed + result.periodsFailed} left pending`

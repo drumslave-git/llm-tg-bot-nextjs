@@ -2,7 +2,7 @@ import "server-only";
 
 import { z, type ZodType } from "zod";
 
-import { ApiError, isApiError, type ApiErrorBody } from "@/lib/api-error";
+import { ApiError, isApiError, type ApiErrorBody, type ApiOkBody } from "@/lib/api-error";
 
 /**
  * Shared Route Handler infrastructure.
@@ -13,10 +13,12 @@ import { ApiError, isApiError, type ApiErrorBody } from "@/lib/api-error";
  * every feature.
  */
 
-/** Standard success envelope. Keeps a stable shape for clients and tests. */
-export interface ApiOkBody<T> {
-  data: T;
-}
+/**
+ * Standard success envelope. Re-exported so Route Handlers keep importing their
+ * response contract from one place; it is defined in `lib/api-error` so client
+ * code can read it without reaching through this server-only module.
+ */
+export type { ApiOkBody };
 
 /** JSON response for a successful result. */
 export function ok<T>(data: T, init?: ResponseInit): Response {

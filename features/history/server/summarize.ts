@@ -4,7 +4,7 @@ import type { DrizzleDb } from "@/db/drizzle";
 import { getDb } from "@/db/drizzle";
 import { FEATURES } from "@/lib/features";
 import type { TraceTrigger } from "@/lib/trace";
-import type { ChatCompletionResult, ChatMessage } from "@/server/llm/client";
+import { llmUsageOf, type ChatCompletionResult, type ChatMessage } from "@/server/llm/client";
 import type { JobProgress } from "@/server/jobs/progress";
 import { publishEvent } from "@/server/realtime/hub";
 import { startTrace } from "@/server/trace";
@@ -196,13 +196,7 @@ export async function summarizeChatDay(
         type: "llm_response",
         message: batches.length > 1 ? `response (batch ${index + 1}/${batches.length})` : "response",
         data: completion.responseBody ?? { content: completion.content },
-        usage: {
-          model: completion.model,
-          promptTokens: completion.usage?.promptTokens,
-          completionTokens: completion.usage?.completionTokens,
-          totalTokens: completion.usage?.totalTokens,
-          latencyMs: completion.latencyMs,
-        },
+        usage: llmUsageOf(completion),
       });
       topics.push(...parseSummaryTopics(completion.content));
     }

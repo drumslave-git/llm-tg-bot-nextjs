@@ -11,6 +11,7 @@ import type { McpToolCallResult } from "@/server/mcp/tool-result";
 import {
   CHAT_COMPLETION_TIMEOUT_MS,
   createOpenAiClient,
+  servedModelOf,
   toLlmError,
   type ChatCompletionResult,
   type ChatMessage,
@@ -270,6 +271,11 @@ export async function chatCompletionWithTools(
   return {
     content: result.content,
     model: input.model,
+    // The loop's last round, which is the response that produced the answer. This
+    // used to be dropped on the floor: the loop returned only the requested id, so
+    // a reply made with tools recorded a different model name than the identical
+    // reply made without them.
+    servedModel: servedModelOf(result.responseBody),
     usage: result.usage,
     latencyMs: result.latencyMs,
     requestBody,
