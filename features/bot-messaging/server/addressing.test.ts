@@ -2,11 +2,13 @@ import type { Message, MessageEntity } from "@grammyjs/types";
 import { describe, expect, it } from "vitest";
 
 import { BOT, makeMessage, makeUser } from "@/test/__mocks__/telegram";
-import { checkAddressed } from "./addressing";
+import { checkAddressed, displayNameMatchable, messageNamesBot } from "./addressing";
 
 /** The bot resolves to id 42; any other id is a different participant. */
 function user(id: number) {
-  return id === BOT.id ? makeUser(id, { is_bot: true, first_name: "MyBot" }) : makeUser(id, { first_name: "Someone" });
+  return id === BOT.id
+    ? makeUser(id, { is_bot: true, first_name: BOT.displayName })
+    : makeUser(id, { first_name: "Someone" });
 }
 
 /** A group message; only the fields addressing reads are required. */
@@ -34,6 +36,20 @@ describe("checkAddressed", () => {
 
   it("ignores plain group chatter", () => {
     expect(checkAddressed(msg({ text: "just talking" }), "group", BOT).addressed).toBe(false);
+  });
+
+  it("addresses a message that speaks the display name", () => {
+    expect(checkAddressed(msg({ text: "aria, what time is it?" }), "group", BOT)).toMatchObject({
+      addressed: true,
+      source: "name",
+    });
+  });
+
+  it("addresses the display name mid-sentence and regardless of case", () => {
+    expect(checkAddressed(msg({ text: "so ARIA should know this" }), "group", BOT)).toMatchObject({
+      addressed: true,
+      source: "name",
+    });
   });
 
   it("addresses a reply to one of the bot's messages", () => {
@@ -78,5 +94,69 @@ describe("checkAddressed", () => {
 
   it("ignores channels and other chat types", () => {
     expect(checkAddressed(msg({ text: "@mybot" }), "channel", BOT).addressed).toBe(false);
+  });
+});
+
+describe("checkAddressed — handing off to the analyzer", () => {
+  it("leaves group text the cheap checks could not settle undecided", () => {
+    expect(checkAddressed(msg({ text: "how was your weekend?" }), "group", BOT)).toEqual({
+      addressed: false,
+      needsAnalyzer: true,
+    });
+  });
+
+  it("does not hand off a message it already settled", () => {
+    expect(checkAddressed(msg({ text: "aria hi" }), "group", BOT).needsAnalyzer).toBeUndefined();
+  });
+
+  it("does not hand off captionless media — there is no text to judge", () => {
+    expect(checkAddressed(msg({}), "group", BOT)).toEqual({ addressed: false });
+  });
+
+  it("does not hand off private chats or channels", () => {
+    expect(checkAddressed(msg({ text: "hi" }), "private", BOT).needsAnalyzer).toBeUndefined();
+    expect(checkAddressed(msg({ text: "hi" }), "channel", BOT).needsAnalyzer).toBeUndefined();
+  });
+
+  it("does not hand off when the display name is too generic to be worth finding", () => {
+    const generic = { ...BOT, displayName: "Bot" };
+    expect(checkAddressed(msg({ text: "the bot is down again" }), "group", generic)).toEqual({
+      addressed: false,
+    });
+  });
+});
+
+describe("messageNamesBot", () => {
+  it("requires the name to stand as its own word", () => {
+    expect(messageNamesBot("aria!", "Aria")).toBe(true);
+    expect(messageNamesBot("arias and songs", "Aria")).toBe(false);
+    expect(messageNamesBot("Arianna said hi", "Aria")).toBe(false);
+  });
+
+  it("does not match the name inside someone else's @handle", () => {
+    expect(messageNamesBot("@ariafan hello", "Aria")).toBe(false);
+    expect(messageNamesBot("@aria hello", "Aria")).toBe(false);
+  });
+
+  // `\b`/`\w` are ASCII-only, so an ASCII-boundary regex treats every Cyrillic
+  // letter as a boundary: a bot named "Бот" would answer to "работа".
+  it("applies word boundaries outside the ASCII range", () => {
+    expect(messageNamesBot("работа не ждет", "Бот")).toBe(false);
+    expect(messageNamesBot("Бот, привет", "Бот")).toBe(true);
+  });
+
+  it("does not match a name it was told not to look for", () => {
+    expect(messageNamesBot("the bot is down", "Bot")).toBe(false);
+    expect(messageNamesBot("hi al", "Al")).toBe(false);
+  });
+});
+
+describe("displayNameMatchable", () => {
+  it("rejects generic names and names too short to match cleanly", () => {
+    expect(displayNameMatchable("Aria")).toBe(true);
+    expect(displayNameMatchable("Bot")).toBe(false);
+    expect(displayNameMatchable("ASSISTANT")).toBe(false);
+    expect(displayNameMatchable("Al")).toBe(false);
+    expect(displayNameMatchable("  ")).toBe(false);
   });
 });

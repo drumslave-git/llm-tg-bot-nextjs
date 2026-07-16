@@ -135,7 +135,9 @@ async function onMessage(ctx: Context): Promise<void> {
 
   const update: IncomingUpdate = {
     message,
-    botInfo: { id: ctx.me.id, username: ctx.me.username },
+    // `first_name` is the bot's display name — what people call it in a group,
+    // as opposed to the @username they type. Both drive the addressing check.
+    botInfo: { id: ctx.me.id, username: ctx.me.username, displayName: ctx.me.first_name },
     // The token is only needed when the turn carries media; resolve it lazily.
     resolveToken: () => getTelegramBotToken(),
   };

@@ -93,4 +93,51 @@ describe.skipIf(!LIVE)("processUpdate against the real configured LLM", () => {
     },
     180_000,
   );
+
+  /**
+   * The addressing analyzer is the one piece a unit test cannot vouch for: its
+   * whole job is to judge a name written in a form no rule of ours enumerates, so
+   * "does the prompt actually work" is a question only a real model answers.
+   * Both directions matter — a bot that answers everything is as broken as one
+   * that answers nothing.
+   */
+  describe("LLM addressing check in a group", () => {
+    const BOT = { id: 424_242, username: "SimBot", displayName: "Aria" };
+
+    it(
+      "answers a message that calls it by name in another alphabet",
+      async () => {
+        const res = await simulateUpdate({
+          text: "Ариа, ответь одним словом.",
+          chatId: CHAT_ID,
+          chatType: "supergroup",
+          messageId: 4001,
+          botInfo: BOT,
+          from: { id: Number(USER_ID), username: "livetest", firstName: "Live" },
+        });
+
+        expect(res.outcome.status).toBe("replied");
+        expect(res.replies[0].trim().length).toBeGreaterThan(0);
+      },
+      180_000,
+    );
+
+    it(
+      "stays out of group chatter that names it nowhere",
+      async () => {
+        const res = await simulateUpdate({
+          text: "Как у вас прошли выходные?",
+          chatId: CHAT_ID,
+          chatType: "supergroup",
+          messageId: 4002,
+          botInfo: BOT,
+          from: { id: Number(USER_ID), username: "livetest", firstName: "Live" },
+        });
+
+        expect(res.outcome).toMatchObject({ status: "ignored", reason: "not_addressed" });
+        expect(res.replies).toHaveLength(0);
+      },
+      180_000,
+    );
+  });
 });

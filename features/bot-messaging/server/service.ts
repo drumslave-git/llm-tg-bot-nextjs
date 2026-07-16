@@ -8,8 +8,9 @@ import { FEATURES } from "@/lib/features";
 import { buildLanguageInstruction } from "@/lib/language";
 import type { ChatContentPart, ChatMessage, ChatUsage } from "@/server/llm/client";
 import { llmUsageOf, sanitizeRequestBodyForTrace } from "@/server/llm/client";
-import { startTrace } from "@/server/trace";
-import { checkAddressed, type AddressSource, type BotIdentity } from "./addressing";
+import { startTrace, type TraceRecorder } from "@/server/trace";
+import { buildAnalyzerMessages, parseAnalyzerVerdict } from "./address-analyzer";
+import { checkAddressed, type AddressResult, type AddressSource, type BotIdentity } from "./addressing";
 import { checkMaintenance, isOwner, type BotPolicy } from "./policy";
 import { buildAddressingHint, buildSystemPrompt, hasPersonality } from "./prompt";
 import { formatReply } from "./reply";
@@ -20,8 +21,13 @@ import { formatReply } from "./reply";
  * delivery, and trace recording. Collaborators (reply generation, delivery) are
  * injected so the policy is unit-testable without a live LLM or Telegram.
  *
- * Only messages the bot actually acts on are traced; ordinary un-addressed group
- * chatter returns an `ignored` outcome without writing a trace (avoids noise).
+ * Messages the bot acts on are traced. So is every message it *asked the LLM
+ * about* and then stayed silent on (see {@link BotMessagingDeps.analyzeAddressing}):
+ * a bot that ignores a message someone believes they addressed is precisely the
+ * complaint an operator has to be able to explain, and a decision with no trace
+ * cannot be explained. Chatter rejected by the cheap deterministic checks is
+ * still dropped untraced — that is the bulk of a group's traffic and tracing it
+ * would bury everything else.
  */
 
 const FEATURE = FEATURES["bot-messaging"];
@@ -94,6 +100,15 @@ export interface BotMessagingDeps {
     onToolCall?: (call: ReplyToolCall) => void | Promise<void>,
     onRequest?: (requestBody: unknown) => void | Promise<void>,
   ) => Promise<GeneratedReply>;
+  /**
+   * Run one plain completion for the addressing analyzer (real: `chatCompletion`
+   * with the configured model). Called only for a group message the deterministic
+   * checks left undecided — i.e. one that could be naming the bot in another
+   * alphabet or an inflected form — so a chat's ordinary traffic costs nothing.
+   * Absent → the analyzer step is skipped entirely and such a message is treated
+   * as not addressed (the pre-analyzer behavior).
+   */
+  analyzeAddressing?: (messages: ChatMessage[]) => Promise<GeneratedReply>;
   /** Deliver a reply back to the originating chat; resolves with its delivered id. */
   sendReply: (text: string) => Promise<SentMessage>;
   /**
@@ -199,6 +214,55 @@ function ignored(reason: IgnoreReason, source?: AddressSource): HandleOutcome {
 }
 
 /**
+ * Settle an undecided group message with one LLM call: is the bot's display name
+ * here in another alphabet, or declined? Records the full request and response on
+ * the trace.
+ *
+ * Never throws. A provider failure resolves to "not addressed" — the message
+ * never clearly named the bot, so silence is the honest outcome, and barging into
+ * a group conversation on the strength of a failed call is worse than missing
+ * one summons.
+ */
+async function runAddressAnalyzer(
+  incoming: IncomingMessage,
+  deps: BotMessagingDeps,
+  trace: TraceRecorder,
+): Promise<AddressResult> {
+  const analyze = deps.analyzeAddressing;
+  if (!analyze) return { addressed: false };
+
+  const messages = buildAnalyzerMessages({
+    bot: deps.bot,
+    chatType: incoming.chatType,
+    text: incoming.text,
+  });
+  await trace.event({
+    type: "llm_request",
+    message: "addressing analyzer request",
+    data: { messages },
+  });
+  try {
+    const result = await analyze(messages);
+    await trace.event({
+      type: "llm_response",
+      message: "addressing analyzer response",
+      data: result.responseBody ?? { content: result.content },
+      usage: llmUsageOf(result),
+    });
+    const verdict = parseAnalyzerVerdict(result.content);
+    return { addressed: verdict.addressed, source: "analyzer", reason: verdict.reason };
+  } catch (err) {
+    await trace.event({
+      type: "error",
+      level: "warn",
+      message: "addressing analyzer failed — staying silent",
+      data: { error: err instanceof Error ? err.message : String(err) },
+    });
+    return { addressed: false, source: "analyzer", reason: "analyzer call failed" };
+  }
+}
+
+/**
  * Handle one incoming Telegram message end to end: decide, generate, deliver,
  * and trace. Cheap ignore checks run before any trace is opened.
  */
@@ -215,16 +279,11 @@ export async function handleIncomingMessage(
   // is processed like any other message rather than ignored as empty.
   if (!text && !incoming.hasVision) return ignored("no_content");
 
-  const decision = checkAddressed(incoming.message, incoming.chatType, deps.bot);
-  if (!decision.addressed) return ignored("not_addressed");
-
-  // Maintenance gate: the bot stays fully functional for the owner; everyone
-  // else is turned away with a static notice (not silence) and generates no LLM
-  // reply. The block is still traced so the operator sees who was turned away.
-  const owner = isOwner({ fromId: incoming.fromId }, deps.policy);
-  const maintenance = checkMaintenance({ policy: deps.policy, owner });
-  if (maintenance.blocked) {
-    const trace = await startTrace(
+  // One trace per handled message, opened on first need and shared by every path
+  // below (analyzer, maintenance, reply) — a message must never produce two.
+  let trace: TraceRecorder | null = null;
+  const openTrace = async (): Promise<TraceRecorder> =>
+    (trace ??= await startTrace(
       {
         feature: FEATURE.id,
         action: "reply",
@@ -233,15 +292,45 @@ export async function handleIncomingMessage(
           actor: incoming.fromId != null ? String(incoming.fromId) : String(incoming.chatId),
           correlationId: `${incoming.chatId}:${incoming.messageId}`,
         },
+        // The whole incoming message, never trimmed.
         inputSummary: text,
       },
       db,
-    );
+    ));
+
+  let decision = checkAddressed(incoming.message, incoming.chatType, deps.bot);
+  if (!decision.addressed && decision.needsAnalyzer && deps.analyzeAddressing) {
+    trace = await openTrace();
+    decision = await runAddressAnalyzer(incoming, deps, trace);
+  }
+  if (!decision.addressed) {
+    // Only the analyzer path has a trace open here; chatter the cheap checks
+    // rejected leaves nothing behind.
+    if (trace) {
+      await trace.event({
+        type: "step",
+        message: "addressing check",
+        data: { addressed: false, source: decision.source, reason: decision.reason },
+      });
+      await trace.skip(undefined, {
+        outputSummary: `not addressed — ${decision.reason ?? "no reference to the bot"}`,
+      });
+    }
+    return ignored("not_addressed", decision.source);
+  }
+
+  // Maintenance gate: the bot stays fully functional for the owner; everyone
+  // else is turned away with a static notice (not silence) and generates no LLM
+  // reply. The block is still traced so the operator sees who was turned away.
+  const owner = isOwner({ fromId: incoming.fromId }, deps.policy);
+  const maintenance = checkMaintenance({ policy: deps.policy, owner });
+  if (maintenance.blocked) {
+    const trace = await openTrace();
     await trace.event({
       type: "step",
       level: "success",
       message: "addressing check",
-      data: { addressed: true, reason: decision.source },
+      data: { addressed: true, source: decision.source, reason: decision.reason },
     });
     await trace.event({
       type: "step",
@@ -267,20 +356,7 @@ export async function handleIncomingMessage(
   // Addressed: show "typing…" immediately and keep it up until the turn settles.
   const stopTyping = deps.startTyping();
   try {
-    const trace = await startTrace(
-      {
-        feature: FEATURE.id,
-        action: "reply",
-        trigger: {
-          kind: "telegram",
-          actor: incoming.fromId != null ? String(incoming.fromId) : String(incoming.chatId),
-          correlationId: `${incoming.chatId}:${incoming.messageId}`,
-        },
-        // The whole incoming message, never trimmed.
-        inputSummary: text,
-      },
-      db,
-    );
+    const trace = await openTrace();
 
     try {
       // 1. Addressing decision (a passed check → green).
@@ -288,7 +364,7 @@ export async function handleIncomingMessage(
         type: "step",
         level: "success",
         message: "addressing check",
-        data: { addressed: true, reason: decision.source },
+        data: { addressed: true, source: decision.source, reason: decision.reason },
       });
 
       // 2. Compose the system prompt (base + operator personality + learned

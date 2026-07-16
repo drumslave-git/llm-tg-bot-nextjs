@@ -77,6 +77,12 @@ export interface ProcessOverrides {
    */
   generateReply?: BotMessagingDeps["generateReply"];
   /**
+   * Inject a deterministic addressing analyzer instead of hitting the configured
+   * LLM, so a test can drive the "is this group message naming the bot?" verdict
+   * without a provider. When absent, the real DB-configured LLM is used.
+   */
+  analyzeAddressing?: BotMessagingDeps["analyzeAddressing"];
+  /**
    * Rewrite a feedback-menu message once a free-text answer is captured (real:
    * the bot manager's grammy adapter). When absent (no edit capability), the
    * capture is confirmed with a plain reply instead.
@@ -288,6 +294,22 @@ function buildDeps(
               onToolCall?.({ name: rec.name, args: rec.args, result: rec.result, ok: rec.ok }),
           }),
         );
+      }),
+    // Settles a group message that named nobody recognizable but might still be
+    // calling the bot by name in another alphabet or an inflected form. A plain
+    // completion — no tools, no history, no persona: it is a single classification
+    // of one message, not a conversation.
+    analyzeAddressing:
+      overrides?.analyzeAddressing ??
+      (async (messages: ChatMessage[]) => {
+        const runtime = await getLlmRuntime();
+        if (!runtime) {
+          throw ApiError.serviceUnavailable(
+            "LLM is not configured — set the endpoint and model in Settings",
+          );
+        }
+        const conn = { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey };
+        return chatCompletion(conn, { model: runtime.model, messages });
       }),
     async sendReply(text: string) {
       return transport.sendReply(text, { replyToMessageId: currentMessageId });

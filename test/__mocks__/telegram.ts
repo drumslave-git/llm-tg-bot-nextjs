@@ -10,8 +10,13 @@ import type { BotIdentity } from "@/features/bot-messaging/server/addressing";
  * else defaults sensibly.
  */
 
-/** The bot identity used across messaging tests. */
-export const BOT: BotIdentity = { id: 42, username: "MyBot" };
+/**
+ * The bot identity used across messaging tests. The display name is deliberately
+ * *not* a variation of the username: addressing treats the spoken name and the
+ * @handle as separate routes, so a shared string would let either one pass a test
+ * meant for the other.
+ */
+export const BOT: BotIdentity = { id: 42, username: "MyBot", displayName: "Aria" };
 
 /** Build a minimal Telegram `User`. Defaults to a human named `User<id>`. */
 export function makeUser(id: number, overrides: Partial<User> = {}): User {
@@ -19,7 +24,11 @@ export function makeUser(id: number, overrides: Partial<User> = {}): User {
 }
 
 /** The {@link BOT} as a Telegram `User` (its own reply author / mention target). */
-export const BOT_USER: User = makeUser(BOT.id, { is_bot: true, first_name: "MyBot" });
+export const BOT_USER: User = makeUser(BOT.id, {
+  is_bot: true,
+  first_name: BOT.displayName,
+  username: BOT.username,
+});
 
 /**
  * Build a minimal but well-formed Telegram `Message`. Defaults to a private

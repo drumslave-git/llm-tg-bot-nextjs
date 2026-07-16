@@ -491,7 +491,11 @@ describe("handleIncomingMessage", () => {
     ]);
     // Addressing check is a passed check (green).
     expect(byMessage("addressing check").level).toBe("success");
-    expect(byMessage("addressing check").data).toEqual({ addressed: true, reason: "private" });
+    expect(byMessage("addressing check").data).toEqual({
+      addressed: true,
+      source: "private",
+      reason: undefined,
+    });
     // Request event carries the whole request body (model + full messages), not
     // just the messages — the exact object the generator sent to the provider.
     expect(byMessage("request").data.model).toBe("m");
@@ -595,5 +599,162 @@ describe("handleIncomingMessage", () => {
     expect((d.sendReply as ReturnType<typeof vi.fn>).mock.calls[0][0]).toMatch(/couldn't generate/i);
     // Typing is always stopped, even on the error path.
     expect(stopTyping).toHaveBeenCalledOnce();
+  });
+});
+
+/**
+ * The analyzer only ever sees a group message the deterministic checks could not
+ * settle — i.e. one that may be calling the bot by name in another alphabet or an
+ * inflected form.
+ */
+describe("handleIncomingMessage — LLM addressing check", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  /** A group message naming neither the @handle nor the literal display name. */
+  function groupChatter(text: string) {
+    const m = makeMessage({ message_id: 7, chat: { id: 5, type: "group" }, text });
+    return incoming({ message: m, chatType: "group", text });
+  }
+
+  /** An analyzer that answers with one classification. */
+  function analyzer(nameMatch: string) {
+    return vi.fn().mockResolvedValue({
+      content: `{"name_match": "${nameMatch}"}`,
+      model: "m",
+      latencyMs: 3,
+      responseBody: { id: "cmpl-1" },
+    });
+  }
+
+  it("replies when the analyzer finds the name in another alphabet", async () => {
+    const analyzeAddressing = analyzer("other_alphabet");
+    const d = deps({ analyzeAddressing });
+    const out = await handleIncomingMessage(groupChatter("Ари, привет"), d);
+
+    expect(out).toEqual({ status: "replied", text: "hi back" });
+    expect(analyzeAddressing).toHaveBeenCalledOnce();
+    // The analyzer is asked about this message, and only this message.
+    const messages = analyzeAddressing.mock.calls[0][0];
+    expect(messages[1].content).toContain("Ари, привет");
+    expect(recorder.succeed).toHaveBeenCalledOnce();
+  });
+
+  it("replies when the analyzer finds an inflected form of the name", async () => {
+    const d = deps({ analyzeAddressing: analyzer("inflected") });
+    expect(await handleIncomingMessage(groupChatter("Арию спросите"), d)).toEqual({
+      status: "replied",
+      text: "hi back",
+    });
+  });
+
+  // The whole point of tracing the analyzer: a message the bot stayed silent on
+  // is the one an operator needs explained.
+  it("traces and skips — not silently drops — a message the analyzer rejects", async () => {
+    const d = deps({ analyzeAddressing: analyzer("absent") });
+    const out = await handleIncomingMessage(groupChatter("how was your weekend?"), d);
+
+    expect(out).toEqual({ status: "ignored", reason: "not_addressed", source: "analyzer" });
+    expect(d.generateReply).not.toHaveBeenCalled();
+    expect(d.sendReply).not.toHaveBeenCalled();
+    expect(d.startTyping).not.toHaveBeenCalled();
+    expect(recorder.skip).toHaveBeenCalledOnce();
+    expect(recorder.skip.mock.calls[0][1]).toEqual({
+      outputSummary: "not addressed — display name absent",
+    });
+
+    // Full request and response bodies are on the trace, then the verdict.
+    const events = recorder.event.mock.calls.map((c) => c[0]);
+    expect(events.map((e) => e.message)).toEqual([
+      "addressing analyzer request",
+      "addressing analyzer response",
+      "addressing check",
+    ]);
+    expect(events[1].data).toEqual({ id: "cmpl-1" });
+    expect(events[2].data).toEqual({
+      addressed: false,
+      source: "analyzer",
+      reason: "display name absent",
+    });
+  });
+
+  it("opens exactly one trace for a message the analyzer accepts", async () => {
+    const d = deps({ analyzeAddressing: analyzer("other_alphabet") });
+    await handleIncomingMessage(groupChatter("Ариа, ты тут?"), d);
+
+    expect(startTrace).toHaveBeenCalledOnce();
+    // The analyzer's exchange and the reply's land on the same trace, in order.
+    const events = recorder.event.mock.calls.map((c) => c[0]);
+    expect(events.map((e) => e.message)).toEqual([
+      "addressing analyzer request",
+      "addressing analyzer response",
+      "addressing check",
+      "system prompt composed",
+      "history window loaded",
+      "request",
+      "response",
+      "send message",
+    ]);
+  });
+
+  // A failed classification is not evidence the bot was called.
+  it("stays silent and does not fail the trace when the analyzer call throws", async () => {
+    const analyzeAddressing = vi.fn().mockRejectedValue(new Error("provider down"));
+    const d = deps({ analyzeAddressing });
+    const out = await handleIncomingMessage(groupChatter("anyone around?"), d);
+
+    expect(out).toEqual({ status: "ignored", reason: "not_addressed", source: "analyzer" });
+    expect(d.sendReply).not.toHaveBeenCalled();
+    expect(recorder.fail).not.toHaveBeenCalled();
+    expect(recorder.skip).toHaveBeenCalledOnce();
+    const failure = recorder.event.mock.calls
+      .map((c) => c[0])
+      .find((e) => e.message === "addressing analyzer failed — staying silent");
+    expect(failure.data).toEqual({ error: "provider down" });
+  });
+
+  it("does not pay for the analyzer when the message already named the bot", async () => {
+    const analyzeAddressing = analyzer("exact");
+    const d = deps({ analyzeAddressing });
+    const m = makeMessage({
+      message_id: 7,
+      chat: { id: 5, type: "group" },
+      text: "aria, hello",
+    });
+    const out = await handleIncomingMessage(
+      incoming({ message: m, chatType: "group", text: "aria, hello" }),
+      d,
+    );
+
+    expect(out).toEqual({ status: "replied", text: "hi back" });
+    expect(analyzeAddressing).not.toHaveBeenCalled();
+  });
+
+  it("does not consult the analyzer in a private chat", async () => {
+    const analyzeAddressing = analyzer("absent");
+    const d = deps({ analyzeAddressing });
+    const out = await handleIncomingMessage(incoming({ text: "hello there" }), d);
+
+    expect(out).toEqual({ status: "replied", text: "hi back" });
+    expect(analyzeAddressing).not.toHaveBeenCalled();
+  });
+
+  it("tells the model it was called by name when the analyzer decided so", async () => {
+    const d = deps({
+      analyzeAddressing: analyzer("inflected"),
+      loadCurrentTurn: vi.fn().mockResolvedValue({
+        content: "[#7] Bob (@bob): Арию спросите",
+        senderLabel: "Bob (@bob)",
+        data: {},
+      }),
+    });
+    await handleIncomingMessage(groupChatter("Арию спросите"), d);
+
+    const messages = (d.generateReply as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    const hint = messages.find((msg: { content: string }) =>
+      String(msg.content).includes("called you by name"),
+    );
+    expect(hint.content).toContain("Bob (@bob)");
   });
 });

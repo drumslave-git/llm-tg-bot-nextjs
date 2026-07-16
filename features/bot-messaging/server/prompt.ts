@@ -122,6 +122,10 @@ const ADDRESS_PHRASES: Record<string, string> = {
   mention: "mentioned you",
   reply: "replied to one of your messages",
   command: "sent you a command",
+  name: "called you by name",
+  // The analyzer only ever fires on a name reference, so it reads the same to the
+  // model — how we worked out that the name was there is our business, not its.
+  analyzer: "called you by name",
 };
 
 export interface AddressingHintOptions {

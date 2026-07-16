@@ -16,7 +16,7 @@ import type { BotIdentity, IncomingUpdate, ReplyTransport } from "@/server/teleg
  * assertions, or omit it to hit the real configured LLM.
  */
 
-const DEFAULT_BOT: BotIdentity = { id: 424_242, username: "SimBot" };
+const DEFAULT_BOT: BotIdentity = { id: 424_242, username: "SimBot", displayName: "Sim" };
 
 /** A synthetic Telegram sender. `id` is required; the rest default sensibly. */
 export interface SimUser {
