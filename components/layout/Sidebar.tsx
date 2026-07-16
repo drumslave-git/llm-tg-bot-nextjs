@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Bot, Sparkles } from "lucide-react";
+import { buildInfo } from "@/lib/build-info";
 import { cn } from "@/lib/cn";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -87,7 +88,12 @@ export function Sidebar({
           <Bot className="h-5 w-5" />
         </span>
         <div className="min-w-0">
-          <div className="truncate text-sm font-semibold">llm-tg-bot</div>
+          <div className="flex items-center gap-1.5">
+            <span className="truncate text-sm font-semibold">llm-tg-bot</span>
+            <span className="shrink-0 rounded bg-surface-2 px-1.5 py-0.5 font-mono text-[10px] leading-none text-faint">
+              v{buildInfo.version}
+            </span>
+          </div>
           <div className="truncate text-xs text-faint">Control dashboard</div>
         </div>
       </div>

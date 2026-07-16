@@ -1,4 +1,4 @@
-import { buildInfo } from "@/server/build-info";
+import { buildInfo } from "@/lib/build-info";
 import { defineRoute } from "@/server/http";
 import { getHealth } from "@/server/status";
 

@@ -15,7 +15,7 @@ import {
 } from "@/components/ui";
 import { BotControl } from "@/features/bot-messaging/ui/BotControl";
 import { getSettings } from "@/features/settings/server/service";
-import { buildInfo } from "@/server/build-info";
+import { buildInfo } from "@/lib/build-info";
 import { getSystemStatus } from "@/server/status";
 import { getBotStatus } from "@/server/telegram/bot-manager";
 
