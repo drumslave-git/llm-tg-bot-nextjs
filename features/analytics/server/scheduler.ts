@@ -12,6 +12,7 @@ import { FEATURES } from "@/lib/features";
 import { isDailyRunDue } from "@/server/jobs/daily-due";
 import {
   createIntervalScheduler,
+  type IntervalRunContext,
   type IntervalScheduler,
 } from "@/server/jobs/interval-scheduler";
 import { withAdvisoryLock } from "@/server/jobs/lock";
@@ -48,7 +49,7 @@ interface SchedulerStore {
 }
 
 /** One insight run with the real collaborators, under the advisory lock. */
-async function runJob(): Promise<string> {
+async function runJob(ctx?: IntervalRunContext): Promise<string> {
   const llm = await getLlmRuntime().catch(() => null);
   if (!llm) return "LLM not configured";
   const timeZone = await getTimezone().catch(() => "UTC");
@@ -58,6 +59,7 @@ async function runJob(): Promise<string> {
     runAnalyticsInsights({
       complete: (messages) => chatCompletion(conn, { model: llm.model, messages }),
       timeZone,
+      onProgress: ctx?.reportProgress,
     }),
   );
   if (!outcome.ran) return "skipped (locked elsewhere)";
@@ -65,7 +67,7 @@ async function runJob(): Promise<string> {
 }
 
 /** One poll tick: run when forced, or when the daily wall-clock time is due. */
-async function runTick(store: SchedulerStore): Promise<{ summary: string }> {
+async function runTick(store: SchedulerStore, ctx?: IntervalRunContext): Promise<{ summary: string }> {
   const forced = store.forceNext;
   store.forceNext = false;
 
@@ -84,7 +86,7 @@ async function runTick(store: SchedulerStore): Promise<{ summary: string }> {
     store.lastDailyRunAt = now;
   }
 
-  const summary = await runJob();
+  const summary = await runJob(ctx);
   store.lastResult = { at: new Date().toISOString(), summary };
   return { summary };
 }
@@ -100,7 +102,7 @@ function store(): SchedulerStore {
         name: "analytics",
         tickMs: TICK_MS,
         onStatusChange: () => publishEvent(FEATURE.realtimeTopic, { feature: FEATURE.id }),
-        run: () => runTick(s as SchedulerStore),
+        run: (ctx) => runTick(s as SchedulerStore, ctx),
       }),
     };
     g[STORE_KEY] = s;

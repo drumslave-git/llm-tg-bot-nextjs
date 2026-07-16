@@ -5,6 +5,7 @@ import { getDb } from "@/db/drizzle";
 import { FEATURES } from "@/lib/features";
 import type { TraceTrigger } from "@/lib/trace";
 import type { ChatCompletionResult, ChatMessage } from "@/server/llm/client";
+import type { JobProgress } from "@/server/jobs/progress";
 import { publishEvent } from "@/server/realtime/hub";
 import { startTrace } from "@/server/trace";
 
@@ -23,6 +24,7 @@ import { fallbackSpeakerLabel } from "./format";
 import { getChatMessagesForDay } from "./repository";
 import { resolveSpeakerLabels } from "./service";
 import {
+  countDaysNeedingSummary,
   listDaysNeedingSummary,
   replaceSummariesForDay,
   type InsertChatSummary,
@@ -74,6 +76,8 @@ export interface SummarizeDeps {
   /** Operator timezone — the wall clock a "day" is measured against. */
   timeZone: string;
   now?: () => Date;
+  /** Publish live per-day progress to the scheduler (drives the Jobs dashboard). */
+  onProgress?: (progress: JobProgress | null) => void;
 }
 
 /** Outcome of summarizing one chat-day. */
@@ -299,6 +303,9 @@ export async function runSummarization(
   let days = 0;
   let topics = 0;
   const failed = new Set<string>();
+  // The backlog when the run starts is this run's denominator for the live bar;
+  // days leave the scan as they are summarized, so it only shrinks from here.
+  const total = await countDaysNeedingSummary(db, { timeZone: deps.timeZone, today });
 
   while (days + failed.size < MAX_DAYS_PER_RUN) {
     const pending = await listDaysNeedingSummary(db, {
@@ -312,6 +319,11 @@ export async function runSummarization(
     if (next.length === 0) break;
 
     for (const day of next) {
+      deps.onProgress?.({
+        step: `Summarizing ${day.chatId} ${day.summaryDate}`,
+        current: days + failed.size + 1,
+        total,
+      });
       try {
         const result = await summarizeChatDay(
           { chatId: day.chatId, summaryDate: day.summaryDate },

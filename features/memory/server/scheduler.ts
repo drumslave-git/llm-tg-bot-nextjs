@@ -14,6 +14,7 @@ import { isDailyRunDue } from "@/server/jobs/daily-due";
 import {
   createIntervalScheduler,
   type IntervalJobStatus,
+  type IntervalRunContext,
   type IntervalScheduler,
 } from "@/server/jobs/interval-scheduler";
 import { withAdvisoryLock } from "@/server/jobs/lock";
@@ -73,17 +74,19 @@ async function resolveDeps(): Promise<ConsolidateDeps | null> {
 }
 
 /** One consolidation run with the real collaborators, under the advisory lock. */
-async function runJob(): Promise<string> {
+async function runJob(ctx?: IntervalRunContext): Promise<string> {
   const deps = await resolveDeps();
   if (!deps) return "LLM not configured";
 
-  const outcome = await withAdvisoryLock("memory", () => runMemoryConsolidation(deps));
+  const outcome = await withAdvisoryLock("memory", () =>
+    runMemoryConsolidation({ ...deps, onProgress: ctx?.reportProgress }),
+  );
   if (!outcome.ran) return "skipped (locked elsewhere)";
   return outcome.result.summary;
 }
 
 /** One poll tick: run when forced, or when the daily wall-clock time is due. */
-async function runTick(store: SchedulerStore): Promise<{ summary: string }> {
+async function runTick(store: SchedulerStore, ctx?: IntervalRunContext): Promise<{ summary: string }> {
   const forced = store.forceNext;
   store.forceNext = false;
 
@@ -107,7 +110,7 @@ async function runTick(store: SchedulerStore): Promise<{ summary: string }> {
     store.lastDailyRunAt = now;
   }
 
-  const summary = await runJob();
+  const summary = await runJob(ctx);
   store.lastResult = { at: new Date().toISOString(), summary };
   return { summary };
 }
@@ -123,7 +126,7 @@ function store(): SchedulerStore {
         name: "memory",
         tickMs: TICK_MS,
         onStatusChange: () => publishEvent(FEATURE.realtimeTopic, { feature: FEATURE.id }),
-        run: () => runTick(s as SchedulerStore),
+        run: (ctx) => runTick(s as SchedulerStore, ctx),
       }),
     };
     g[STORE_KEY] = s;

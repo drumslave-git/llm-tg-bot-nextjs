@@ -1,5 +1,7 @@
 import "server-only";
 
+import type { JobProgress } from "./progress";
+
 /**
  * Shared in-process fixed-interval scheduler — the operating model for
  * *time-based* background jobs (recorded decision, priority 9). It is the sibling
@@ -27,11 +29,19 @@ export interface IntervalJobStatus {
   lastSummary: string | null;
   /** Last tick's error message, or null when the last tick succeeded. */
   lastError: string | null;
+  /** What the job is doing right now, or null when no tick is executing. */
+  progress: JobProgress | null;
 }
 
 export interface IntervalJobResult {
   /** One-line human summary recorded as `lastSummary`. */
   summary: string;
+}
+
+/** Passed to the job body so it can publish live progress. */
+export interface IntervalRunContext {
+  /** Publish live "what it does now" progress; pass null to clear it. */
+  reportProgress: (progress: JobProgress | null) => void;
 }
 
 export interface IntervalSchedulerOptions {
@@ -40,7 +50,7 @@ export interface IntervalSchedulerOptions {
   /** Tick period in ms. */
   tickMs: number;
   /** The job body, invoked once per tick. Overlapping ticks are skipped. */
-  run: () => Promise<IntervalJobResult>;
+  run: (ctx: IntervalRunContext) => Promise<IntervalJobResult>;
   /** Notified on every status change (e.g. to publish an SSE event). */
   onStatusChange?: (status: IntervalJobStatus) => void;
 }
@@ -63,13 +73,19 @@ export function createIntervalScheduler(options: IntervalSchedulerOptions): Inte
   let lastTickAt: string | null = null;
   let lastSummary: string | null = null;
   let lastError: string | null = null;
+  let progress: JobProgress | null = null;
 
   function snapshot(): IntervalJobStatus {
-    return { running: timer !== null, ticking, lastTickAt, lastSummary, lastError };
+    return { running: timer !== null, ticking, lastTickAt, lastSummary, lastError, progress };
   }
 
   function notify(): void {
     options.onStatusChange?.(snapshot());
+  }
+
+  function reportProgress(next: JobProgress | null): void {
+    progress = next;
+    notify();
   }
 
   async function tick(): Promise<void> {
@@ -77,7 +93,7 @@ export function createIntervalScheduler(options: IntervalSchedulerOptions): Inte
     ticking = true;
     notify();
     try {
-      const result = await options.run();
+      const result = await options.run({ reportProgress });
       lastSummary = result.summary;
       lastError = null;
     } catch (err) {
@@ -86,6 +102,8 @@ export function createIntervalScheduler(options: IntervalSchedulerOptions): Inte
       console.error(`Job "${options.name}" tick failed:`, lastError);
     } finally {
       lastTickAt = new Date().toISOString();
+      // The tick is over — drop any live progress before we notify the settle.
+      progress = null;
       ticking = false;
       notify();
     }

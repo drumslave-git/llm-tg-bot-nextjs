@@ -13,9 +13,11 @@ import { chatCompletion, type ChatCompletionResult, type ChatMessage } from "@/s
 import {
   createIntervalScheduler,
   type IntervalJobStatus,
+  type IntervalRunContext,
   type IntervalScheduler,
 } from "@/server/jobs/interval-scheduler";
 import { withAdvisoryLock } from "@/server/jobs/lock";
+import type { JobProgress } from "@/server/jobs/progress";
 import { publishEvent } from "@/server/realtime/hub";
 import { sendChatMessage } from "@/server/telegram/bot-manager";
 
@@ -67,6 +69,8 @@ export interface DueRunDeps {
   recordReply?: (input: { chatId: string; telegramMessageId: number; content: string }) => Promise<void>;
   /** Now, for the due scan + schedule advance. Defaults to the wall clock. */
   now?: Date;
+  /** Publish live per-task progress to the scheduler (drives the Jobs dashboard). */
+  onProgress?: (progress: JobProgress | null) => void;
   db?: DrizzleDb;
 }
 
@@ -87,6 +91,11 @@ export async function runDueScheduledTasks(deps: DueRunDeps): Promise<{ fired: n
   let fired = 0;
   let failed = 0;
   for (const task of due) {
+    deps.onProgress?.({
+      step: `Firing: ${task.instruction.slice(0, 60)}`,
+      current: fired + failed + 1,
+      total: due.length,
+    });
     // The fired message must be in the chat's configured language, like a normal
     // reply. A private chat's id is the user id (positive); a group's is negative,
     // so the sign selects which registry to read. Unset → the default language.
@@ -127,7 +136,7 @@ export async function runDueScheduledTasks(deps: DueRunDeps): Promise<{ fired: n
 }
 
 /** One poll tick: wire the real LLM + bot collaborators and fire due tasks under the lock. */
-async function runTick(): Promise<{ summary: string }> {
+async function runTick(ctx?: IntervalRunContext): Promise<{ summary: string }> {
   // Pause firing during maintenance — the bot is owner-only then, so it should
   // not push proactive task messages into arbitrary chats.
   const policy = await getBotPolicy().catch(() => null);
@@ -147,6 +156,7 @@ async function runTick(): Promise<{ summary: string }> {
       personalityPrompt,
       complete: (messages) => chatCompletion(conn, { model: runtime.model, messages }),
       send: (chatId, text, opts) => sendChatMessage(chatId, text, opts),
+      onProgress: ctx?.reportProgress,
       recordReply: (input) =>
         recordAssistantMessage({
           chatId: input.chatId,
@@ -169,7 +179,7 @@ function scheduler(): IntervalScheduler {
       name: "scheduled-tasks",
       tickMs: TICK_MS,
       onStatusChange: () => publishEvent(FEATURE.realtimeTopic),
-      run: runTick,
+      run: (ctx) => runTick(ctx),
     });
   }
   return g[STORE_KEY];

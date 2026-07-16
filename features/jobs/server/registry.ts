@@ -1,0 +1,218 @@
+import "server-only";
+
+import type { AnalyticsJobInfo } from "@/features/analytics/types";
+import { getAnalyticsJobInfo } from "@/features/analytics/server/scheduler";
+import { getSummaryJobInfo, type SummaryJobInfo } from "@/features/history/server/summary-scheduler";
+import { getMemoryJobInfo, type MemoryJobInfo } from "@/features/memory/server/scheduler";
+import {
+  getTaskSchedulerInfo,
+  type TaskSchedulerJobInfo,
+} from "@/features/scheduled-tasks/server/scheduler";
+import {
+  getSelfImprovementJobInfo,
+  type SelfImprovementJobInfo,
+} from "@/features/self-improvement/server/scheduler";
+import { getVisionBackfillStatus } from "@/features/vision/server/backfill-scheduler";
+import { getPendingMediaCount } from "@/features/vision/server/service";
+import type { JobActivity } from "@/components/jobs/JobStatusCard";
+import type { IdleJobStatus } from "@/server/jobs/idle-scheduler";
+import type { IntervalJobStatus } from "@/server/jobs/interval-scheduler";
+
+import type { JobView } from "../types";
+
+/**
+ * The one place that knows all six background jobs — the reader half of the
+ * consolidated `/jobs` dashboard. It calls each feature's existing `getXJobInfo`
+ * getter and normalizes the two different scheduler status shapes (idle vs
+ * interval, plus each job's own backlog/pause state) into a single {@link JobView}
+ * the board renders uniformly. This coupling mirrors `register-node.ts`, which is
+ * likewise the single place that starts all six.
+ *
+ * The per-job mappers are pure and exported so the normalization (activity
+ * derivation, last-run passthrough, backlog, progress) is unit-testable without
+ * mocking every scheduler module. `getAllJobs` just fetches and composes them.
+ *
+ * `intervalActivity` is intentionally re-implemented here rather than imported
+ * from the `JobStatusCard` Client Component: this module is server-only and must
+ * not pull a client module's runtime into the RSC graph.
+ */
+
+/** A ticking job is running; an armed-but-quiet one is idle; an unarmed one is stopped. */
+export function intervalActivity(status: IntervalJobStatus): JobActivity {
+  if (status.ticking) return "running";
+  return status.running ? "idle" : "stopped";
+}
+
+/** A job whose status getter failed — shown as stopped rather than dropped from the board. */
+function errored(id: string, title: string, href: string): JobView {
+  return {
+    id,
+    title,
+    description: "Status unavailable.",
+    activity: "stopped",
+    href,
+    runEndpoint: "",
+    runDisabled: true,
+    notice: "Could not read this job's status.",
+    backlog: null,
+    nextRunAt: null,
+    lastRunAt: null,
+    lastResult: null,
+    failed: true,
+    progress: null,
+  };
+}
+
+/** Vision backfill — the idle-debounced job; its phase is already an activity. */
+export function visionJobView(status: IdleJobStatus, pendingMedia: number): JobView {
+  return {
+    id: "vision-backfill",
+    title: "Vision backfill",
+    description: "Describes media left un-captioned when it arrived. Runs while the bot is quiet.",
+    activity: status.phase,
+    href: "/vision",
+    runEndpoint: "/api/vision/backfill",
+    runDisabled: pendingMedia === 0,
+    notice: null,
+    backlog: pendingMedia > 0 ? { label: "media pending", count: pendingMedia } : null,
+    nextRunAt: status.nextRunAt,
+    lastRunAt: status.lastRunAt,
+    lastResult: status.lastSummary,
+    failed: status.lastError != null,
+    progress: status.progress,
+  };
+}
+
+/** Scheduled-tasks poller — `paused` is a policy state the ticker can't know. */
+export function taskJobView(info: TaskSchedulerJobInfo | null): JobView {
+  if (info == null) return errored("scheduled-tasks", "Task poller", "/scheduled-tasks");
+  return {
+    id: "scheduled-tasks",
+    title: "Task poller",
+    description: "Fires scheduled tasks at their wall-clock time and delivers them to their chat.",
+    activity: info.paused ? "paused" : intervalActivity(info.status),
+    href: "/scheduled-tasks",
+    runEndpoint: "/api/scheduled-tasks/run",
+    runDisabled: info.paused || info.overdue === 0,
+    notice: info.paused
+      ? "Firing is paused: maintenance mode is on. Due tasks are skipped, not dropped."
+      : null,
+    backlog: info.overdue > 0 ? { label: "overdue", count: info.overdue } : null,
+    nextRunAt: info.nextRunAt,
+    lastRunAt: info.status.lastTickAt,
+    lastResult: info.status.lastSummary,
+    failed: info.status.lastError != null,
+    progress: info.status.progress,
+  };
+}
+
+/** History summary — daily; reports the actual run outcome, not the per-minute "waiting" tick. */
+export function summaryJobView(info: SummaryJobInfo | null): JobView {
+  if (info == null) return errored("history-summaries", "History summary", "/history");
+  return {
+    id: "history-summaries",
+    title: "History summary",
+    description: `Compresses each finished chat-day into searchable topic summaries, daily at ${info.runTime} (${info.timezone}).`,
+    activity: intervalActivity(info.status),
+    href: "/history",
+    runEndpoint: "/api/history/summaries/run",
+    runDisabled: info.pendingDays === 0,
+    notice: null,
+    backlog: info.pendingDays > 0 ? { label: "days pending", count: info.pendingDays } : null,
+    nextRunAt: info.nextRunAt,
+    lastRunAt: info.lastResult?.at ?? null,
+    lastResult: info.lastResult?.summary ?? null,
+    failed: info.status.lastError != null,
+    progress: info.status.progress,
+  };
+}
+
+/** Memory consolidation — daily. */
+export function memoryJobView(info: MemoryJobInfo | null): JobView {
+  if (info == null) return errored("memory", "Memory consolidation", "/memory");
+  return {
+    id: "memory",
+    title: "Memory consolidation",
+    description: `Folds the day's saved notes into durable memory, daily at ${info.runTime} (${info.timezone}).`,
+    activity: intervalActivity(info.status),
+    href: "/memory",
+    runEndpoint: "/api/memory/run",
+    runDisabled: info.pendingNotes === 0,
+    notice: null,
+    backlog: info.pendingNotes > 0 ? { label: "notes pending", count: info.pendingNotes } : null,
+    nextRunAt: info.nextRunAt,
+    lastRunAt: info.lastResult?.at ?? null,
+    lastResult: info.lastResult?.summary ?? null,
+    failed: info.status.lastError != null,
+    progress: info.status.progress,
+  };
+}
+
+/** Analytics insights — daily; settles as a no-op with no LLM configured. */
+export function analyticsJobView(info: AnalyticsJobInfo | null): JobView {
+  if (info == null) return errored("analytics-insights", "Analytics insights", "/analytics");
+  return {
+    id: "analytics-insights",
+    title: "Analytics insights",
+    description: `Scores each day's mood + top topic and rolls up period insights, daily at ${info.runTime} (${info.timezone}).`,
+    activity: intervalActivity(info.status),
+    href: "/analytics",
+    runEndpoint: "/api/analytics/insights/run",
+    runDisabled: !info.llmConfigured,
+    notice: info.llmConfigured
+      ? null
+      : "No LLM configured — set one in Settings for insights to compute.",
+    backlog: info.pendingDays > 0 ? { label: "days pending", count: info.pendingDays } : null,
+    nextRunAt: info.nextRunAt,
+    lastRunAt: info.lastResult?.at ?? null,
+    lastResult: info.lastResult?.summary ?? null,
+    failed: info.status.lastError != null,
+    progress: info.status.progress,
+  };
+}
+
+/** Self-improvement — daily; exposes no backlog count. */
+export function selfImprovementJobView(info: SelfImprovementJobInfo | null): JobView {
+  if (info == null) return errored("self-improvement", "Self-improvement", "/self-improvement");
+  return {
+    id: "self-improvement",
+    title: "Self-improvement",
+    description: `Distills feedback into per-user preferences and global self-corrections, daily at ${info.runTime} (${info.timezone}).`,
+    activity: intervalActivity(info.status),
+    href: "/self-improvement",
+    runEndpoint: "/api/self-improvement/run",
+    runDisabled: false,
+    notice: null,
+    backlog: null,
+    nextRunAt: info.nextRunAt,
+    lastRunAt: info.lastResult?.at ?? null,
+    lastResult: info.lastResult?.summary ?? null,
+    failed: info.status.lastError != null,
+    progress: info.status.progress,
+  };
+}
+
+/**
+ * Every background job's current state, in a stable order. Each getter is guarded
+ * so one failing job cannot blank the whole board.
+ */
+export async function getAllJobs(): Promise<JobView[]> {
+  const [pendingMedia, tasks, selfImprovement, summary, memory, analytics] = await Promise.all([
+    getPendingMediaCount().catch(() => 0),
+    getTaskSchedulerInfo().catch(() => null),
+    getSelfImprovementJobInfo().catch(() => null),
+    getSummaryJobInfo().catch(() => null),
+    getMemoryJobInfo().catch(() => null),
+    getAnalyticsJobInfo().catch(() => null),
+  ]);
+  const vision = getVisionBackfillStatus();
+
+  return [
+    visionJobView(vision, pendingMedia),
+    taskJobView(tasks),
+    summaryJobView(summary),
+    memoryJobView(memory),
+    analyticsJobView(analytics),
+    selfImprovementJobView(selfImprovement),
+  ];
+}

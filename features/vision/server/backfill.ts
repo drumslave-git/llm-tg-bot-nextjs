@@ -5,10 +5,11 @@ import { getDb } from "@/db/drizzle";
 import { FEATURES } from "@/lib/features";
 import type { TraceTrigger } from "@/lib/trace";
 import { withAdvisoryLock } from "@/server/jobs/lock";
+import type { JobProgress } from "@/server/jobs/progress";
 import { startTrace } from "@/server/trace";
 
 import { describeAndStore, type DescribeDeps } from "./service";
-import { listPendingMedia } from "./repository";
+import { countPendingMedia, listPendingMedia } from "./repository";
 
 /**
  * Vision backfill job — describe the media rows still `status='pending'` (bytes
@@ -40,6 +41,8 @@ export interface VisionBackfillOptions {
   isAborted?: () => boolean;
   /** What triggered the run (idle scheduler → system; a dashboard run → dashboard). */
   trigger?: TraceTrigger;
+  /** Publish live per-row progress to the scheduler (drives the Jobs dashboard). */
+  onProgress?: (progress: JobProgress | null) => void;
 }
 
 export interface VisionBackfillResult {
@@ -72,6 +75,7 @@ export async function runVisionBackfill(
   db: DrizzleDb = getDb(),
 ): Promise<VisionBackfillResult> {
   const isAborted = options.isAborted ?? (() => false);
+  const onProgress = options.onProgress ?? (() => {});
   const trigger: TraceTrigger = options.trigger ?? { kind: "system", actor: JOB_NAME };
 
   const trace = await startTrace(
@@ -87,6 +91,9 @@ export async function runVisionBackfill(
         let described = 0;
         let unresolved = 0;
         let interrupted = false;
+        // The pending count when the run starts is this run's denominator; rows
+        // leave `pending` as they are described, so it only shrinks from here.
+        const total = await countPendingMedia(db);
 
         while (attempted.size < MAX_ROWS_PER_RUN) {
           if (isAborted()) {
@@ -103,6 +110,7 @@ export async function runVisionBackfill(
               break;
             }
             attempted.add(row.id);
+            onProgress({ step: "Describing media", current: attempted.size, total });
             const result = await describeAndStore(
               { chatId: row.chatId, telegramMessageId: row.telegramMessageId },
               deps,

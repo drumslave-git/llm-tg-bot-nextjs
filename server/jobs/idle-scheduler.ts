@@ -1,5 +1,7 @@
 import "server-only";
 
+import type { JobProgress } from "./progress";
+
 /**
  * Shared in-process idle-debounced job scheduler — the background-job operating
  * model for this app (recorded decision). A single self-hosted container already
@@ -31,12 +33,16 @@ export interface IdleJobStatus {
   lastError: string | null;
   /** ISO time the currently-scheduled run will fire, or null. */
   nextRunAt: string | null;
+  /** What the job is doing right now, or null when it is not running. */
+  progress: JobProgress | null;
 }
 
 /** Passed to the job body so it can stop cooperatively when live work resumes. */
 export interface JobRunContext {
   /** True once {@link IdleScheduler.onActivity} arrived mid-run — stop soon. */
   isAborted: () => boolean;
+  /** Publish live "what it does now" progress; pass null to clear it. */
+  reportProgress: (progress: JobProgress | null) => void;
 }
 
 export interface IdleJobResult {
@@ -76,9 +82,15 @@ export function createIdleScheduler(options: IdleSchedulerOptions): IdleSchedule
   let lastRunAt: string | null = null;
   let lastSummary: string | null = null;
   let lastError: string | null = null;
+  let progress: JobProgress | null = null;
 
   function snapshot(): IdleJobStatus {
-    return { phase, lastRunAt, lastSummary, lastError, nextRunAt };
+    return { phase, lastRunAt, lastSummary, lastError, nextRunAt, progress };
+  }
+
+  function reportProgress(next: JobProgress | null): void {
+    progress = next;
+    options.onStatusChange?.(snapshot());
   }
 
   function setPhase(next: JobPhase): void {
@@ -99,7 +111,10 @@ export function createIdleScheduler(options: IdleSchedulerOptions): IdleSchedule
     aborted = false;
     setPhase("running");
     try {
-      const result = await options.run({ isAborted: () => aborted || stopped });
+      const result = await options.run({
+        isAborted: () => aborted || stopped,
+        reportProgress,
+      });
       lastSummary = result.summary;
       lastError = null;
     } catch (err) {
@@ -108,6 +123,8 @@ export function createIdleScheduler(options: IdleSchedulerOptions): IdleSchedule
       console.error(`Job "${options.name}" failed:`, lastError);
     } finally {
       lastRunAt = new Date().toISOString();
+      // The run is over — drop any live progress before we notify the settle.
+      progress = null;
       // If activity arrived during the run, re-arm; otherwise settle to idle.
       if (!stopped && aborted) {
         schedule();

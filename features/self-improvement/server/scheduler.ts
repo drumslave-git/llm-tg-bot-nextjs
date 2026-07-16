@@ -14,6 +14,7 @@ import { isDailyRunDue } from "@/server/jobs/daily-due";
 import {
   createIntervalScheduler,
   type IntervalJobStatus,
+  type IntervalRunContext,
   type IntervalScheduler,
 } from "@/server/jobs/interval-scheduler";
 import { withAdvisoryLock } from "@/server/jobs/lock";
@@ -55,7 +56,7 @@ interface SchedulerStore {
 }
 
 /** One incorporation run with the real collaborators, under the advisory lock. */
-async function runIncorporation(): Promise<string> {
+async function runIncorporation(ctx?: IntervalRunContext): Promise<string> {
   const runtime = await getLlmRuntime().catch(() => null);
   if (!runtime) return "LLM not configured";
   const conn = { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey };
@@ -66,6 +67,7 @@ async function runIncorporation(): Promise<string> {
       complete: (messages) => chatCompletion(conn, { model: runtime.model, messages }),
       personalityPrompt,
       model: runtime.model,
+      onProgress: ctx?.reportProgress,
     });
   });
   if (!outcome.ran) return "skipped (locked elsewhere)";
@@ -73,7 +75,7 @@ async function runIncorporation(): Promise<string> {
 }
 
 /** One poll tick: run when forced or when the daily wall-clock time is due. */
-async function runTick(store: SchedulerStore): Promise<{ summary: string }> {
+async function runTick(store: SchedulerStore, ctx?: IntervalRunContext): Promise<{ summary: string }> {
   const forced = store.forceNext;
   store.forceNext = false;
 
@@ -90,7 +92,7 @@ async function runTick(store: SchedulerStore): Promise<{ summary: string }> {
     store.lastDailyRunAt = now;
   }
 
-  const summary = await runIncorporation();
+  const summary = await runIncorporation(ctx);
   store.lastResult = { at: new Date().toISOString(), summary };
   return { summary };
 }
@@ -106,7 +108,7 @@ function store(): SchedulerStore {
         name: "self-improvement",
         tickMs: TICK_MS,
         onStatusChange: () => publishEvent(FEATURE.realtimeTopic),
-        run: () => runTick(s as SchedulerStore),
+        run: (ctx) => runTick(s as SchedulerStore, ctx),
       }),
     };
     g[STORE_KEY] = s;

@@ -1,6 +1,7 @@
 "use client";
 
 import { RefreshCw } from "lucide-react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState, type ReactNode } from "react";
 
@@ -82,6 +83,13 @@ export interface JobStatusCardProps {
   badges?: ReactNode;
   /** Block "Run now" when there is nothing for it to do. */
   runDisabled?: boolean;
+  /** When set, a "Details" link to the owning feature page (used by the Jobs board). */
+  detailsHref?: string;
+  /**
+   * Live "what it does now" content, rendered prominently above the grid while the
+   * job is running (e.g. a progress bar). Omit when the job is not running.
+   */
+  progress?: ReactNode;
   /** When the job next runs, or null when nothing is scheduled. */
   nextRunAt: string | null;
   /** When the job last ran, or null when it never has. */
@@ -100,6 +108,8 @@ export function JobStatusCard({
   notice,
   badges,
   runDisabled = false,
+  detailsHref,
+  progress,
   nextRunAt,
   lastRunAt,
   lastResult,
@@ -143,6 +153,11 @@ export function JobStatusCard({
           <CardDescription>{description}</CardDescription>
         </div>
         <CardAction>
+          {detailsHref ? (
+            <Button asChild variant="ghost" size="sm">
+              <Link href={detailsHref}>Details</Link>
+            </Button>
+          ) : null}
           <Button
             type="button"
             variant="outline"
@@ -156,6 +171,7 @@ export function JobStatusCard({
         </CardAction>
       </CardHeader>
       <CardContent className="text-sm text-muted">
+        {progress ? <div className="mb-3">{progress}</div> : null}
         {notice ? (
           <p className="mb-3 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-warning">
             {notice}

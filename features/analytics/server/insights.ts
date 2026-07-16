@@ -6,6 +6,7 @@ import { normalizeModelName } from "@/features/self-improvement/model-name";
 import { zonedDate } from "@/features/scheduled-tasks/schedule";
 import { FEATURES } from "@/lib/features";
 import type { ChatCompletionResult, ChatMessage } from "@/server/llm/client";
+import type { JobProgress } from "@/server/jobs/progress";
 import { publishEvent } from "@/server/realtime/hub";
 import { startTrace } from "@/server/trace";
 
@@ -59,6 +60,8 @@ export interface AnalyticsInsightsDeps {
   complete: (messages: ChatMessage[]) => Promise<ChatCompletionResult>;
   timeZone: string;
   now?: Date;
+  /** Publish live per-day / per-period progress (drives the Jobs dashboard). */
+  onProgress?: (progress: JobProgress | null) => void;
   db?: DrizzleDb;
 }
 
@@ -196,7 +199,13 @@ export async function runAnalyticsInsights(
     const touched = new Map<string, PeriodTarget>(missing);
 
     /* Pass 1 — score each pending (chat, day). */
+    let dayIdx = 0;
     for (const day of pending) {
+      deps.onProgress?.({
+        step: `Scoring day ${day.insightDate}`,
+        current: ++dayIdx,
+        total: pending.length,
+      });
       const [messages, topics] = await Promise.all([
         getDayMessages(db, { chatId: day.chatId, date: day.insightDate, timeZone: deps.timeZone }),
         getDaySummaryTopics(db, { chatId: day.chatId, date: day.insightDate }),
@@ -260,7 +269,13 @@ export async function runAnalyticsInsights(
 
     /* Pass 2 — roll up every touched period. */
     const targets = [...touched.values()].slice(0, MAX_PERIODS_PER_RUN);
+    let periodIdx = 0;
     for (const target of targets) {
+      deps.onProgress?.({
+        step: `Rolling up ${target.granularity} ${target.bucket}`,
+        current: ++periodIdx,
+        total: targets.length,
+      });
       const days = await listDayInsightsForPeriod(db, {
         granularity: target.granularity,
         bucket: target.bucket,

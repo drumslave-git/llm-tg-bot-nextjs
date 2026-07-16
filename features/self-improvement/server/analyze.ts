@@ -8,6 +8,7 @@ import { getChatMessageByTelegramId } from "@/features/history/server/repository
 import { FEATURES } from "@/lib/features";
 import { extractJsonObject } from "@/lib/json";
 import type { ChatCompletionResult, ChatMessage } from "@/server/llm/client";
+import type { JobProgress } from "@/server/jobs/progress";
 import { publishEvent } from "@/server/realtime/hub";
 import { startTrace } from "@/server/trace";
 import { normalizeModelName } from "../model-name";
@@ -45,6 +46,8 @@ export interface SelfImprovementDeps {
   personalityPrompt?: string | null;
   /** Configured model id — fallback for stamping when the provider reports none. */
   model?: string | null;
+  /** Publish live per-fold progress to the scheduler (drives the Jobs dashboard). */
+  onProgress?: (progress: JobProgress | null) => void;
   db?: DrizzleDb;
 }
 
@@ -163,6 +166,9 @@ export async function runSelfImprovement(deps: SelfImprovementDeps): Promise<Sel
   const fallbackModel = normalizeModelName(deps.model);
   const incorporatedIds = new Set<string>();
   let failed = 0;
+  // Every feedback across both passes is one fold call — the live bar's denominator.
+  const total = prefsBacklog.length + correctionsBacklog.length;
+  let processed = 0;
 
   /** One fold call, fully traced (request + response with usage). */
   async function fold(system: string, userContent: string): Promise<ChatCompletionResult | null> {
@@ -215,6 +221,11 @@ export async function runSelfImprovement(deps: SelfImprovementDeps): Promise<Sel
       });
 
       for (const feedback of feedbacks) {
+        deps.onProgress?.({
+          step: `Learning preferences for user ${userId}`,
+          current: ++processed,
+          total,
+        });
         const exchange = await renderExchange(db, feedback);
         const result = await fold(
           PREFS_FOLD_PROMPT,
@@ -273,6 +284,7 @@ export async function runSelfImprovement(deps: SelfImprovementDeps): Promise<Sel
       });
 
       for (const feedback of correctionsBacklog) {
+        deps.onProgress?.({ step: "Folding self-corrections", current: ++processed, total });
         const exchange = await renderExchange(db, feedback);
         const result = await fold(
           CORRECTIONS_FOLD_PROMPT,

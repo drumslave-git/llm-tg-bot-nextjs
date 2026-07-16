@@ -11,7 +11,7 @@ import { useLiveRefresh } from "./useLiveRefresh";
  * stream for `topic` and refreshes the page on matching events; click to pause
  * (e.g. while reading). Shared across every live dashboard surface.
  */
-export function LiveIndicator({ topic }: { topic: RealtimeTopic }) {
+export function LiveIndicator({ topic }: { topic: RealtimeTopic | RealtimeTopic[] }) {
   const [enabled, setEnabled] = useState(true);
   const { connected } = useLiveRefresh(topic, { enabled });
   const live = enabled && connected;

@@ -98,6 +98,26 @@ describe("createIdleScheduler", () => {
     expect(s.getStatus().lastSummary).toBe("boom");
   });
 
+  it("publishes progress during a run and clears it when the run settles", async () => {
+    const gate = deferred<void>();
+    const run = vi.fn(async (ctx: JobRunContext) => {
+      ctx.reportProgress({ step: "working", current: 1, total: 2 });
+      await gate.promise;
+      return { summary: "done" };
+    });
+    const s = createIdleScheduler({ name: "t", debounceMs: 1000, run });
+
+    s.runNow();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(s.getStatus().phase).toBe("running");
+    expect(s.getStatus().progress).toEqual({ step: "working", current: 1, total: 2 });
+
+    gate.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(s.getStatus().phase).toBe("idle");
+    expect(s.getStatus().progress).toBeNull();
+  });
+
   it("stop cancels a pending run and ignores further activity", async () => {
     const run = vi.fn(async () => ({ summary: "done" }));
     const s = createIdleScheduler({ name: "t", debounceMs: 1000, run });

@@ -6,6 +6,7 @@ import { formatKnownUserLabel } from "@/features/known-users/format";
 import { getKnownUsersByIds } from "@/features/known-users/server/repository";
 import { FEATURES } from "@/lib/features";
 import type { ChatCompletionResult, ChatMessage } from "@/server/llm/client";
+import type { JobProgress } from "@/server/jobs/progress";
 import { publishEvent } from "@/server/realtime/hub";
 import { startTrace } from "@/server/trace";
 
@@ -70,6 +71,8 @@ export interface ConsolidateDeps {
   complete: (messages: ChatMessage[]) => Promise<ChatCompletionResult>;
   /** Embed texts, or null when no embedding model is configured. */
   embed: ((texts: string[]) => Promise<number[][]>) | null;
+  /** Publish live per-note progress to the scheduler (drives the Jobs dashboard). */
+  onProgress?: (progress: JobProgress | null) => void;
   db?: DrizzleDb;
 }
 
@@ -181,6 +184,9 @@ export async function runMemoryConsolidation(deps: ConsolidateDeps): Promise<Con
 
   try {
     let budget = MAX_NOTES_PER_RUN;
+    // Combined denominator across both passes; a running index for the live bar.
+    const total = userIds.length + generalEntries.length;
+    let processed = 0;
 
     /* Pass 1 — one document merge per person. */
     for (const userId of userIds) {
@@ -190,6 +196,7 @@ export async function runMemoryConsolidation(deps: ConsolidateDeps): Promise<Con
 
       const [user] = await getKnownUsersByIds(db, [userId]);
       const label = user ? formatKnownUserLabel(user) : `User ${userId}`;
+      deps.onProgress?.({ step: `Consolidating memory of ${label}`, current: ++processed, total });
       const existing = await getUserMemory(db, userId);
       const existingFacts = existing ? splitMemoryFacts(existing.content) : [];
 
@@ -262,6 +269,7 @@ export async function runMemoryConsolidation(deps: ConsolidateDeps): Promise<Con
     /* Pass 2 — one reconcile per general note. */
     for (const entry of generalEntries) {
       if (budget <= 0) break;
+      deps.onProgress?.({ step: "Reconciling general fact", current: ++processed, total });
 
       const embedding = await embedOne(entry.content);
       const candidates = await findSimilarGeneralMemories(db, {

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { createIntervalScheduler } from "./interval-scheduler";
+import { createIntervalScheduler, type IntervalRunContext } from "./interval-scheduler";
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -63,6 +63,23 @@ describe("createIntervalScheduler", () => {
     expect(s.getStatus()).toMatchObject({ lastError: "boom", lastSummary: "boom" });
     await s.runNow();
     expect(s.getStatus()).toMatchObject({ lastError: null, lastSummary: "recovered" });
+  });
+
+  it("publishes progress during a tick and clears it when the tick settles", async () => {
+    let resolve!: () => void;
+    const run = vi.fn((ctx: IntervalRunContext) => {
+      ctx.reportProgress({ step: "step", current: 2, total: 5 });
+      return new Promise<{ summary: string }>((r) => {
+        resolve = () => r({ summary: "ok" });
+      });
+    });
+    const s = createIntervalScheduler({ name: "t", tickMs: 1000, run });
+    s.start();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(s.getStatus().progress).toEqual({ step: "step", current: 2, total: 5 });
+    resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(s.getStatus().progress).toBeNull();
   });
 
   it("start is idempotent", async () => {

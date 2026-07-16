@@ -39,7 +39,7 @@ function scheduler(): IdleScheduler {
         const conn = { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey };
         const result = await runVisionBackfill(
           { complete: (messages) => chatCompletion(conn, { model: runtime.model, messages }) },
-          { isAborted: ctx.isAborted },
+          { isAborted: ctx.isAborted, onProgress: ctx.reportProgress },
         );
         return { summary: result.summary };
       },
