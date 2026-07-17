@@ -69,6 +69,15 @@ const DEFAULT_CANNED: Record<string, McpToolCallResult> = {
   update_user_aliases: {
     text: 'Noted "Sasha" as an alias for Alex.',
   },
+  // Mirrors the real success text: the image is already delivered and the model
+  // never saw it, so it must not describe the contents.
+  image_generate: {
+    text:
+      "Generated 1 image (1024x1024) and delivered it to the chat. You have NOT seen it — " +
+      "do not describe or claim anything about the contents. Just briefly acknowledge the image " +
+      "in your reply.",
+    structuredContent: { ok: true, count: 1, size: [1024, 1024] },
+  },
   // A single existing task, so a "change/cancel my reminder" flow has an id to act on.
   tasks_list: {
     text: "task_demo_1: daily at 09:00 — remind me to drink water",

@@ -71,6 +71,8 @@ export interface AssistantHistoryMessage {
   content: string;
   replyToMessageId?: number | null;
   sentAt?: Date;
+  /** When true, empty content is allowed (a delivered image with no caption). */
+  hasMedia?: boolean;
 }
 
 /**
@@ -109,7 +111,10 @@ export async function recordAssistantMessage(
   input: AssistantHistoryMessage,
   db: DrizzleDb = getDb(),
 ): Promise<ChatMessageRecord | null> {
-  const parsed = recordMessageSchema.safeParse({
+  // Mirrors the incoming rule: a media message may carry no text. The bot sends
+  // one when it delivers a generated image — the picture is the message.
+  const schema = input.hasMedia ? recordMediaMessageSchema : recordMessageSchema;
+  const parsed = schema.safeParse({
     chatId: input.chatId,
     telegramMessageId: input.telegramMessageId,
     role: "assistant",

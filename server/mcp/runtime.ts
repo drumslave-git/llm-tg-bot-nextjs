@@ -5,6 +5,10 @@ import {
   registerHistoryMcpTools,
 } from "@/features/history/server/mcp-tools";
 import {
+  IMAGE_GEN_TOOL_NAMES,
+  registerImageGenMcpTools,
+} from "@/features/image-gen/server/mcp-tools";
+import {
   KNOWN_USERS_TOOL_NAMES,
   registerKnownUsersMcpTools,
 } from "@/features/known-users/server/mcp-tools";
@@ -62,6 +66,7 @@ async function build(): Promise<BotMcpRegistry> {
     SCHEDULED_TASKS_TOOL_NAMES,
   );
   registry.registerTools("memory", registerMemoryMcpTools, MEMORY_TOOL_NAMES);
+  registry.registerTools("image-gen", registerImageGenMcpTools, IMAGE_GEN_TOOL_NAMES);
   await registry.finishRegistration();
   return registry;
 }

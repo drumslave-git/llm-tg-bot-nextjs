@@ -16,6 +16,23 @@ export interface McpToolContext {
   userId?: string | null;
   /** The forum-topic thread the turn is in, when any (so a task delivers there). */
   threadId?: number | null;
+  /**
+   * Sink for binary artifacts a tool produced (currently: generated images, as
+   * base64), collected here and delivered to the chat by the pipeline *after* the
+   * reply — deliberately out-of-band rather than through the tool's result.
+   *
+   * A tool result travels two places that bytes must not go: into the model's
+   * context (a megabyte of base64 is not something to reason over — the model gets
+   * only the text acknowledgement) and into trace storage verbatim
+   * (`tool-trace.ts` records `structuredContent` as-is). Routing artifacts around
+   * both keeps the recorded structured content complete *and* small, with no
+   * redaction step to forget.
+   *
+   * Absent when the bound turn has no way to deliver an image (e.g. a scheduled
+   * task fire, which is text-only). A tool that produces images must treat that as
+   * "cannot send images here" and say so, rather than generating bytes into a void.
+   */
+  collectImage?: (base64: string) => void;
 }
 
 const storage = new AsyncLocalStorage<McpToolContext>();

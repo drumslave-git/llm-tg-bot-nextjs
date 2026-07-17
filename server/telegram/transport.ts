@@ -37,6 +37,19 @@ export interface ReplyTransport {
     opts: { replyToMessageId: number; threadId?: number },
   ): Promise<{ messageId: number }>;
   /**
+   * Deliver a generated image as a photo, resolving with its delivered message id
+   * and the Telegram `file_id` of the stored photo.
+   *
+   * The `file_id` is why this returns more than a message id: a generated image is
+   * stored as ordinary media (`message_media`) so the vision describer recognizes
+   * it like any user-sent picture, and that row is keyed by the file the *bot* just
+   * created. Telegram only mints that id on send, so it can only come from here.
+   */
+  sendPhoto(
+    image: { base64: string; filename: string },
+    opts: { replyToMessageId?: number; threadId?: number },
+  ): Promise<{ messageId: number; fileId: string; fileUniqueId: string | null }>;
+  /**
    * Show the "typing…" chat action once. The pipeline owns the refresh loop
    * (Telegram expires the action after a few seconds), so this is a single tick.
    */

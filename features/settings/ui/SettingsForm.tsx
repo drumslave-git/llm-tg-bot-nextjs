@@ -34,6 +34,13 @@ type Embed =
   | { kind: "ok"; model: string; dimensions: number }
   | { kind: "error"; message: string };
 
+/** Outcome of the image probe — checks the model is served, without drawing one. */
+type ImageTest =
+  | { kind: "idle" }
+  | { kind: "testing" }
+  | { kind: "ok"; model: string; modelCount: number }
+  | { kind: "error"; message: string };
+
 type Save =
   | { kind: "idle" }
   | { kind: "saving" }
@@ -53,6 +60,7 @@ export function SettingsForm({
   initial,
   initialModels = [],
   initialEmbeddingModels = [],
+  initialImageModels = [],
   knownUsers = [],
 }: {
   initial: Settings;
@@ -61,6 +69,8 @@ export function SettingsForm({
   initialModels?: string[];
   /** Models preloaded from the embedding endpoint (or the LLM one, when it serves both). */
   initialEmbeddingModels?: string[];
+  /** Models preloaded from the image endpoint (or the LLM one, when it serves both). */
+  initialImageModels?: string[];
   /** Users who have messaged the bot — the owner is chosen from this list. */
   knownUsers?: KnownUser[];
 }) {
@@ -86,6 +96,13 @@ export function SettingsForm({
   const [embeddingKeyDirty, setEmbeddingKeyDirty] = useState(false);
   const [embeddingModel, setEmbeddingModel] = useState(initial.embeddingModel ?? "");
   const [embed, setEmbed] = useState<Embed>({ kind: "idle" });
+  const [imageBaseUrl, setImageBaseUrl] = useState(initial.imageBaseUrl ?? "");
+  // Same derivation as the embedding backend flag: a stored URL *is* the flag.
+  const [separateImageBackend, setSeparateImageBackend] = useState(Boolean(initial.imageBaseUrl));
+  const [imageKey, setImageKey] = useState("");
+  const [imageKeyDirty, setImageKeyDirty] = useState(false);
+  const [imageModel, setImageModel] = useState(initial.imageModel ?? "");
+  const [imageProbe, setImageProbe] = useState<ImageTest>({ kind: "idle" });
   const [model, setModel] = useState(initial.model ?? "");
   // Seed with the server-preloaded list (falling back to just the saved model);
   // a successful "Test connection" replaces this with a fresh list.
@@ -159,6 +176,42 @@ export function SettingsForm({
     }
   }
 
+  // The image endpoint as configured right now — same "resolve exactly as the
+  // runtime will" rule as the embedding pair above, so a passing test is a test of
+  // what gets stored.
+  const resolvedImageUrl =
+    separateImageBackend && imageBaseUrl.trim() !== "" ? imageBaseUrl.trim() : null;
+  const imageUrlMissing = separateImageBackend && imageBaseUrl.trim() === "";
+
+  // Probe the image endpoint. Unlike embeddings this does not make a real
+  // generation — nothing about an image can only be learned by drawing it, and a
+  // diffusion model would keep the operator waiting minutes for the answer.
+  async function onTestImages() {
+    if (imageModel.trim() === "" || imageUrlMissing) return;
+    setImageProbe({ kind: "testing" });
+    try {
+      const res = await fetch("/api/settings/test-images", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          imageBaseUrl: resolvedImageUrl,
+          imageModel: imageModel,
+          // Only send the key when the operator typed one; otherwise the server
+          // tests with the stored key and the secret never round-trips.
+          ...(imageKeyDirty ? { imageApiKey: imageKey.trim() } : {}),
+        }),
+      });
+      if (!res.ok) {
+        setImageProbe({ kind: "error", message: await readError(res) });
+        return;
+      }
+      const { data } = (await res.json()) as { data: { model: string; modelCount: number } };
+      setImageProbe({ kind: "ok", model: data.model, modelCount: data.modelCount });
+    } catch {
+      setImageProbe({ kind: "error", message: "Network error — could not reach the server" });
+    }
+  }
+
   async function onSave() {
     setSave({ kind: "saving" });
     const patch: Record<string, unknown> = {
@@ -193,6 +246,19 @@ export function SettingsForm({
     } else if (embeddingKeyDirty) {
       patch.embeddingApiKey = embeddingKey.trim() === "" ? null : embeddingKey.trim();
     }
+    if (resolvedImageUrl !== (initial.imageBaseUrl ?? null)) {
+      patch.imageBaseUrl = resolvedImageUrl;
+    }
+    if (imageModel !== (initial.imageModel ?? "")) {
+      patch.imageModel = imageModel === "" ? null : imageModel;
+    }
+    // Same rule as the embedding key above: dropping the separate backend drops
+    // the key that authenticated it.
+    if (!separateImageBackend && initial.imageApiKeyConfigured) {
+      patch.imageApiKey = null;
+    } else if (imageKeyDirty) {
+      patch.imageApiKey = imageKey.trim() === "" ? null : imageKey.trim();
+    }
 
     try {
       const res = await fetch("/api/settings", {
@@ -220,6 +286,11 @@ export function SettingsForm({
       setEmbeddingBaseUrl(data.embeddingBaseUrl ?? "");
       setSeparateEmbeddingBackend(Boolean(data.embeddingBaseUrl));
       setEmbeddingModel(data.embeddingModel ?? "");
+      setImageKeyDirty(false);
+      setImageKey("");
+      setImageBaseUrl(data.imageBaseUrl ?? "");
+      setSeparateImageBackend(Boolean(data.imageBaseUrl));
+      setImageModel(data.imageModel ?? "");
       setSave({ kind: "saved" });
       // Re-read server state so masked "configured" placeholders reflect the save.
       router.refresh();
@@ -243,6 +314,14 @@ export function SettingsForm({
     embeddingModel && !listedEmbeddingModels.includes(embeddingModel)
       ? [embeddingModel, ...listedEmbeddingModels]
       : listedEmbeddingModels;
+
+  // Image model options, resolved exactly like the embedding ones above.
+  const listedImageModels =
+    !separateImageBackend && models.length > 0 ? models : initialImageModels;
+  const imageModels =
+    imageModel && !listedImageModels.includes(imageModel)
+      ? [imageModel, ...listedImageModels]
+      : listedImageModels;
 
   const coreTab = (
     <div className="space-y-5">
@@ -571,6 +650,140 @@ export function SettingsForm({
     </div>
   );
 
+  const imagesTab = (
+    <div className="space-y-5">
+      <p className="text-sm text-muted">
+        Image generation lets the bot draw a picture when someone asks it to, and send it to the
+        chat. Each image it sends is then recognized like any received photo, so later replies know
+        what it drew. Without an image model the tool is simply not offered — the bot says it cannot
+        make images rather than pretending to.
+      </p>
+
+      <Field
+        id="separateImageBackend"
+        label="Separate image backend"
+        hint="Off: images are requested from the same backend as the LLM. On: they are served by a different host, which you give below."
+      >
+        {({ id, describedBy }) => (
+          <div className="flex items-center gap-3">
+            <Switch
+              id={id}
+              aria-describedby={describedBy}
+              checked={separateImageBackend}
+              onChange={(e) => {
+                setSeparateImageBackend(e.target.checked);
+                setImageProbe({ kind: "idle" });
+              }}
+            />
+            <span className="text-sm text-muted">
+              {separateImageBackend ? "Own backend" : "Same backend as the LLM"}
+            </span>
+          </div>
+        )}
+      </Field>
+
+      {separateImageBackend ? (
+        <>
+          <Field
+            id="imageBaseUrl"
+            label="Image API URL"
+            hint="Required — the host serving /v1/images/generations."
+            error={imageUrlMissing ? "An image API URL is required." : undefined}
+          >
+            {({ id, describedBy }) => (
+              <Input
+                id={id}
+                aria-describedby={describedBy}
+                type="url"
+                inputMode="url"
+                required
+                value={imageBaseUrl}
+                onChange={(e) => {
+                  setImageBaseUrl(e.target.value);
+                  setImageProbe({ kind: "idle" });
+                }}
+                placeholder="https://images.example.com/v1"
+              />
+            )}
+          </Field>
+
+          <Field
+            id="imageApiKey"
+            label="Image API key"
+            hint="Optional — required only if that host needs one. Stored securely; never shown again."
+          >
+            {({ id, describedBy }) => (
+              <Input
+                id={id}
+                aria-describedby={describedBy}
+                type="password"
+                autoComplete="off"
+                value={imageKey}
+                onChange={(e) => {
+                  setImageKey(e.target.value);
+                  setImageKeyDirty(true);
+                }}
+                placeholder={
+                  initial.imageApiKeyConfigured && !imageKeyDirty
+                    ? "•••••••• (configured)"
+                    : "optional"
+                }
+              />
+            )}
+          </Field>
+        </>
+      ) : null}
+
+      <Field
+        id="imageModel"
+        label="Image model"
+        hint="The model asked to draw. Test below to confirm the endpoint actually serves it."
+      >
+        {({ id, describedBy }) => (
+          <Select
+            id={id}
+            aria-describedby={describedBy}
+            value={imageModel}
+            disabled={imageModels.length === 0}
+            onChange={(e) => {
+              setImageModel(e.target.value);
+              setImageProbe({ kind: "idle" });
+            }}
+          >
+            <option value="">No image model (image generation off)</option>
+            {imageModels.map((m) => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))}
+          </Select>
+        )}
+      </Field>
+
+      <div className="flex flex-wrap items-center gap-3">
+        <Button
+          type="button"
+          variant="outline"
+          onClick={onTestImages}
+          disabled={
+            imageProbe.kind === "testing" || imageModel.trim() === "" || imageUrlMissing
+          }
+          leftIcon={<Plug className="h-4 w-4" />}
+        >
+          {imageProbe.kind === "testing" ? "Testing…" : "Test image endpoint"}
+        </Button>
+        {imageProbe.kind === "ok" ? (
+          <Badge tone="success" dot>
+            {imageProbe.model} — served ({imageProbe.modelCount} models)
+          </Badge>
+        ) : null}
+        {imageProbe.kind === "error" ? (
+          <span className="text-sm text-danger">{imageProbe.message}</span>
+        ) : null}
+      </div>
+    </div>
+  );
+
   const integrationsTab = (
     <div className="space-y-5">
       <p className="text-sm text-muted">
@@ -607,6 +820,7 @@ export function SettingsForm({
   const tabs: TabItem[] = [
     { id: "core", label: "Core", content: coreTab },
     { id: "embeddings", label: "Embeddings", content: embeddingsTab },
+    { id: "images", label: "Images", content: imagesTab },
     { id: "integrations", label: "Integrations", content: integrationsTab },
   ];
 

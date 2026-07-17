@@ -44,6 +44,7 @@ import {
   ingestMessageMedia,
   loadReplyTargetImages,
 } from "@/features/vision/server/service";
+import { deliverGeneratedImages } from "@/features/image-gen/server/deliver";
 import {
   captureFeedbackReply,
   getLatestSelfCorrectionPrompt,
@@ -118,6 +119,8 @@ function buildDeps(
   selfCorrection: string | null,
   timeContext: string | null,
   requiredLanguage: string | null,
+  /** Sink the `image_generate` tool fills; delivered after the reply. */
+  collectImage: (base64: string) => void,
   visionAttachment: {
     imageParts: ChatContentPart[];
     note?: string;
@@ -285,7 +288,9 @@ function buildDeps(
         // Run the tool-call loop with the current chat bound, so tools only ever
         // read this conversation's data. The sender + thread are bound too, so a
         // task tool records who created a task and delivers into the right thread.
-        return runWithToolContext({ chatId, userId: senderId, threadId }, () =>
+        // `collectImage` gives the image tool somewhere to put its bytes: they are
+        // delivered after the reply, never through the model or the trace.
+        return runWithToolContext({ chatId, userId: senderId, threadId, collectImage }, () =>
           chatCompletionWithTools(conn, {
             model: runtime.model,
             messages,
@@ -483,7 +488,11 @@ export async function processUpdate(
   // described, stored in history, and its bytes dropped. A media-only message is
   // answered in one pass and its media, like unaddressed media, is described later
   // by the backfill job.
-  return handleIncomingMessage(
+  // Images the model draws mid-reply land here (out-of-band — see the tool
+  // context's `collectImage`) and are delivered once the reply is out, so the
+  // acknowledgement arrives before the picture it acknowledges.
+  const generatedImages: string[] = [];
+  const outcome = await handleIncomingMessage(
     incoming,
     buildDeps(
       update,
@@ -493,10 +502,22 @@ export async function processUpdate(
       selfCorrection,
       timeContext,
       requiredLanguage,
+      (base64) => generatedImages.push(base64),
       visionAttachment,
       overrides,
     ),
   );
+
+  if (generatedImages.length > 0) {
+    await deliverGeneratedImages({
+      transport,
+      chatId,
+      images: generatedImages,
+      threadId: message.message_thread_id,
+    });
+  }
+
+  return outcome;
 }
 
 /**

@@ -166,6 +166,11 @@ export const FEATURES = {
     label: "Memory tools",
     path: "/tools",
   },
+  "mcp-tools-image-gen": {
+    id: "mcp-tools-image-gen",
+    label: "Image generation tool",
+    path: "/tools",
+  },
 } as const satisfies Record<string, FeatureDescriptor>;
 
 /** A registered feature id (the trace `feature` string). */

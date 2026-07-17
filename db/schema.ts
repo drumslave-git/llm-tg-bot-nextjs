@@ -120,6 +120,25 @@ export const settings = pgTable(
      * summary search) rather than failing a reply.
      */
     embeddingModel: text("embedding_model"),
+    /**
+     * Base URL of the OpenAI-compatible endpoint serving `/v1/images/generations`.
+     * Blank means "reuse the LLM connection" — image generation is often served by
+     * a different host than chat (a diffusion model rarely lives beside the LLM),
+     * but need not be.
+     */
+    imageBaseUrl: text("image_base_url"),
+    /**
+     * API key for the image endpoint. Secret — never returned in plaintext. Only
+     * consulted when {@link imageBaseUrl} is set; otherwise the LLM key is used
+     * along with the LLM base URL.
+     */
+    imageApiKey: text("image_api_key"),
+    /**
+     * Image generation model id. Null disables the `image_generate` tool rather
+     * than failing a reply — the same "degrade, don't guess a model id" rule
+     * {@link embeddingModel} follows.
+     */
+    imageModel: text("image_model"),
     /** Bot owner's Telegram @username (normalized: lowercase, no leading `@`). */
     ownerUsername: text("owner_username"),
     /**

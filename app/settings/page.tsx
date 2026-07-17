@@ -15,6 +15,7 @@ import { featureDebugHref } from "@/lib/features";
 import {
   getSettings,
   listAvailableEmbeddingModels,
+  listAvailableImageModels,
   listAvailableModels,
 } from "@/features/settings/server/service";
 import type { Settings } from "@/features/settings/server/schema";
@@ -35,14 +36,16 @@ export default async function SettingsPage() {
   let settings: Settings | null = null;
   let initialModels: string[] = [];
   let initialEmbeddingModels: string[] = [];
+  let initialImageModels: string[] = [];
   let knownUsers: KnownUser[] = [];
   let dbError: string | null = null;
   try {
     settings = await getSettings();
-    // Preload both endpoints' models so the dropdowns are populated on open.
-    [initialModels, initialEmbeddingModels] = await Promise.all([
+    // Preload every endpoint's models so the dropdowns are populated on open.
+    [initialModels, initialEmbeddingModels, initialImageModels] = await Promise.all([
       listAvailableModels(),
       listAvailableEmbeddingModels(),
+      listAvailableImageModels(),
     ]);
     // Known users populate the owner dropdown.
     knownUsers = await listUsers();
@@ -79,6 +82,7 @@ export default async function SettingsPage() {
               initial={settings}
               initialModels={initialModels}
               initialEmbeddingModels={initialEmbeddingModels}
+              initialImageModels={initialImageModels}
               knownUsers={knownUsers}
             />
           ) : (

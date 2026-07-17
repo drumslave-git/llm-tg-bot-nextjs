@@ -6,6 +6,7 @@ import {
   HISTORY_RECALL_TOOL,
   HISTORY_SEARCH_TOOL,
 } from "@/features/history/server/mcp-tools";
+import { IMAGE_GENERATE_TOOL } from "@/features/image-gen/server/mcp-tools";
 import { UPDATE_USER_ALIASES_TOOL } from "@/features/known-users/server/mcp-tools";
 import { READ_PAGE_TOOL } from "@/features/link-fetch/server/mcp-tools";
 import { MEMORY_TOOL_NAMES } from "@/features/memory/server/mcp-tools";
@@ -29,6 +30,7 @@ const ALL_TOOLS = [
   READ_PAGE_TOOL,
   ...SCHEDULED_TASKS_TOOL_NAMES,
   ...MEMORY_TOOL_NAMES,
+  IMAGE_GENERATE_TOOL,
 ].sort();
 
 describe("getToolsView", () => {
@@ -42,6 +44,8 @@ describe("getToolsView", () => {
     expect(featureOf(READ_PAGE_TOOL)).toBe("link-fetch");
     expect(featureOf(SCHEDULED_TASKS_TOOL_NAMES[0])).toBe("scheduled-tasks");
     expect(featureOf(MEMORY_TOOL_NAMES[0])).toBe("memory");
+    // The owning feature is what gives the tool its `mcp-tools-image-gen` Debug scope.
+    expect(featureOf(IMAGE_GENERATE_TOOL)).toBe("image-gen");
     expect(view.tools.every((t) => t.description.length > 0)).toBe(true);
   });
 });

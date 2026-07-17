@@ -30,6 +30,12 @@ export interface SettingsRecord {
   embeddingApiKey: string | null;
   /** Embedding model id; null disables embedding-backed capabilities. */
   embeddingModel: string | null;
+  /** Image endpoint base URL; null means "reuse the LLM connection". */
+  imageBaseUrl: string | null;
+  /** Image endpoint API key (only used with `imageBaseUrl`). */
+  imageApiKey: string | null;
+  /** Image model id; null disables image generation. */
+  imageModel: string | null;
   ownerUsername: string | null;
   ownerUserId: string | null;
   maintenanceModeEnabled: boolean;
@@ -51,6 +57,9 @@ export interface SettingsPatch {
   embeddingBaseUrl?: string | null;
   embeddingApiKey?: string | null;
   embeddingModel?: string | null;
+  imageBaseUrl?: string | null;
+  imageApiKey?: string | null;
+  imageModel?: string | null;
   ownerUsername?: string | null;
   ownerUserId?: string | null;
   maintenanceModeEnabled?: boolean;
@@ -69,6 +78,9 @@ function mapRow(row: SettingsRow): SettingsRecord {
     embeddingBaseUrl: row.embeddingBaseUrl,
     embeddingApiKey: row.embeddingApiKey,
     embeddingModel: row.embeddingModel,
+    imageBaseUrl: row.imageBaseUrl,
+    imageApiKey: row.imageApiKey,
+    imageModel: row.imageModel,
     ownerUsername: row.ownerUsername,
     ownerUserId: row.ownerUserId,
     maintenanceModeEnabled: row.maintenanceModeEnabled,

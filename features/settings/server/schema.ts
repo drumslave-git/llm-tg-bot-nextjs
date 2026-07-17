@@ -41,6 +41,12 @@ export const settingsSchema = z.object({
   embeddingModel: model.nullable(),
   /** Whether an embedding API key is stored (the value itself is never exposed). */
   embeddingApiKeyConfigured: z.boolean(),
+  /** Image endpoint base URL, or null to reuse the LLM connection. */
+  imageBaseUrl: baseUrl.nullable(),
+  /** Selected image model id, or null when none picked (image generation off). */
+  imageModel: model.nullable(),
+  /** Whether an image API key is stored (the value itself is never exposed). */
+  imageApiKeyConfigured: z.boolean(),
   /** Owner's numeric user id (chosen from known users), or null when unset. */
   ownerUserId: z.string().nullable(),
   /** Owner's @username, denormalized from the chosen known user (display only). */
@@ -72,6 +78,9 @@ export const updateSettingsSchema = z
     embeddingBaseUrl: baseUrl.nullable(),
     embeddingApiKey: apiKey.nullable(),
     embeddingModel: model.nullable(),
+    imageBaseUrl: baseUrl.nullable(),
+    imageApiKey: apiKey.nullable(),
+    imageModel: model.nullable(),
     ownerUserId: ownerUserId.nullable(),
     maintenanceModeEnabled: z.boolean(),
     timezone: z.string().trim().min(1).max(64),
@@ -108,3 +117,17 @@ export const testEmbeddingsSchema = z.object({
 });
 
 export type TestEmbeddings = z.infer<typeof testEmbeddingsSchema>;
+
+/**
+ * Input for the image probe. Optional-everywhere for the same reason as
+ * {@link testEmbeddingsSchema}: omitted fields fall back to what is stored, so the
+ * saved configuration can be tested without re-entering the secret. A blank base
+ * URL means "use the LLM connection", exactly as at runtime.
+ */
+export const testImagesSchema = z.object({
+  imageBaseUrl: baseUrl.nullable().optional(),
+  imageApiKey: apiKey.nullable().optional(),
+  imageModel: model.nullable().optional(),
+});
+
+export type TestImages = z.infer<typeof testImagesSchema>;

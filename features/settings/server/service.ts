@@ -12,6 +12,7 @@ import {
   type EmbeddingProbe,
   type EmbeddingRuntime,
 } from "@/server/llm/embeddings";
+import { probeImages, type ImageProbe, type ImageRuntime } from "@/server/llm/images";
 
 /** Short timeout so opening the Settings page stays responsive against a dead endpoint. */
 const MODELS_PRELOAD_TIMEOUT_MS = 5_000;
@@ -23,7 +24,13 @@ import {
   type SettingsPatch,
   type SettingsRecord,
 } from "./repository";
-import type { Settings, TestConnection, TestEmbeddings, UpdateSettings } from "./schema";
+import type {
+  Settings,
+  TestConnection,
+  TestEmbeddings,
+  TestImages,
+  UpdateSettings,
+} from "./schema";
 
 /**
  * Settings domain service — the boundary the Route Handlers and Server
@@ -45,6 +52,9 @@ function toClientSettings(record: SettingsRecord | null): Settings {
     embeddingBaseUrl: record?.embeddingBaseUrl ?? null,
     embeddingModel: record?.embeddingModel ?? null,
     embeddingApiKeyConfigured: Boolean(record?.embeddingApiKey),
+    imageBaseUrl: record?.imageBaseUrl ?? null,
+    imageModel: record?.imageModel ?? null,
+    imageApiKeyConfigured: Boolean(record?.imageApiKey),
     ownerUsername: record?.ownerUsername ?? null,
     ownerUserId: record?.ownerUserId ?? null,
     maintenanceModeEnabled: record?.maintenanceModeEnabled ?? false,
@@ -140,6 +150,51 @@ export async function getEmbeddingRuntime(
 }
 
 /**
+ * Resolve the image-generation connection from a settings record. Same shape as
+ * {@link toEmbeddingRuntime}: the endpoint (and its key) fall back to the LLM
+ * connection when no image base URL is set, and a model is mandatory — without
+ * one the `image_generate` tool stays unavailable rather than guessing a model id.
+ */
+function toImageRuntime(record: SettingsRecord | null): ImageRuntime | null {
+  if (!record?.imageModel) return null;
+  const ownEndpoint = Boolean(record.imageBaseUrl);
+  const baseUrl = ownEndpoint ? record.imageBaseUrl : record.llmBaseUrl;
+  if (!baseUrl) return null;
+  return {
+    baseUrl,
+    apiKey: ownEndpoint ? record.imageApiKey : record.llmApiKey,
+    model: record.imageModel,
+  };
+}
+
+/**
+ * Server-only: the saved image connection + model, or null when image generation
+ * is not configured. Read at call time (like the embedding runtime) so a change
+ * takes effect without a restart. Callers must treat null as "image generation is
+ * unavailable" and degrade honestly — the tool is simply not offered.
+ */
+export async function getImageRuntime(db: DrizzleDb = getDb()): Promise<ImageRuntime | null> {
+  return toImageRuntime(await getSettingsRecord(db));
+}
+
+/**
+ * Best-effort model list for the image endpoint, so the Settings page can populate
+ * its model dropdown. Uses the image base URL when set, else the LLM one. Never
+ * throws — an unreachable endpoint yields an empty list.
+ */
+export async function listAvailableImageModels(db: DrizzleDb = getDb()): Promise<string[]> {
+  const record = await getSettingsRecord(db);
+  const baseUrl = record?.imageBaseUrl || record?.llmBaseUrl;
+  if (!baseUrl) return [];
+  const apiKey = record?.imageBaseUrl ? record.imageApiKey : record?.llmApiKey;
+  try {
+    return await listModels({ baseUrl, apiKey }, MODELS_PRELOAD_TIMEOUT_MS);
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Best-effort model list for the embedding endpoint, so the Settings page can
  * populate its model dropdown. Uses the embedding base URL when set, else the LLM
  * one. Never throws — an unreachable endpoint yields an empty list.
@@ -224,6 +279,11 @@ function toPatch(input: UpdateSettings): SettingsPatch {
   if (input.embeddingApiKey !== undefined) {
     patch.embeddingApiKey = input.embeddingApiKey === "" ? null : input.embeddingApiKey;
   }
+  if (input.imageBaseUrl !== undefined) patch.imageBaseUrl = input.imageBaseUrl;
+  if (input.imageModel !== undefined) patch.imageModel = input.imageModel;
+  if (input.imageApiKey !== undefined) {
+    patch.imageApiKey = input.imageApiKey === "" ? null : input.imageApiKey;
+  }
   if (input.maintenanceModeEnabled !== undefined) {
     patch.maintenanceModeEnabled = input.maintenanceModeEnabled;
   }
@@ -266,12 +326,13 @@ async function ownerPatch(
 
 /** Redact secrets before they reach trace storage. */
 function redact(input: UpdateSettings): Record<string, unknown> {
-  const { apiKey, telegramBotToken, tavilyApiKey, embeddingApiKey, ...rest } = input;
+  const { apiKey, telegramBotToken, tavilyApiKey, embeddingApiKey, imageApiKey, ...rest } = input;
   const out: Record<string, unknown> = { ...rest };
   if (apiKey !== undefined) out.apiKey = "«redacted»";
   if (telegramBotToken !== undefined) out.telegramBotToken = "«redacted»";
   if (tavilyApiKey !== undefined) out.tavilyApiKey = "«redacted»";
   if (embeddingApiKey !== undefined) out.embeddingApiKey = "«redacted»";
+  if (imageApiKey !== undefined) out.imageApiKey = "«redacted»";
   return out;
 }
 
@@ -403,6 +464,63 @@ export async function testEmbeddings(
   }
 }
 
+/**
+ * Probe the image configuration, recording the attempt as a trace. Same contract
+ * as {@link testEmbeddings}: submitted values are merged over the stored record and
+ * resolved through the *runtime* resolver, so a passing test means the connection
+ * the `image_generate` tool will actually use works.
+ */
+export async function testImages(
+  input: TestImages,
+  trigger: TraceTrigger,
+  db: DrizzleDb = getDb(),
+): Promise<ImageProbe> {
+  const record = await getSettingsRecord(db);
+  const runtime = toImageRuntime({
+    ...(record ?? EMPTY_RECORD),
+    imageBaseUrl:
+      input.imageBaseUrl !== undefined ? input.imageBaseUrl : (record?.imageBaseUrl ?? null),
+    imageApiKey:
+      input.imageApiKey !== undefined
+        ? input.imageApiKey || null
+        : (record?.imageApiKey ?? null),
+    imageModel: input.imageModel !== undefined ? input.imageModel : (record?.imageModel ?? null),
+  });
+
+  const trace = await startTrace(
+    {
+      feature: FEATURE.id,
+      action: "test-images",
+      trigger,
+      inputSummary: input.imageModel ?? record?.imageModel ?? "(no model)",
+    },
+    db,
+  );
+  try {
+    if (!runtime) {
+      throw ApiError.badRequest(
+        "Choose an image model (and a base URL, unless the LLM connection serves images).",
+      );
+    }
+    await trace.event({
+      type: "external_call",
+      message: `GET ${runtime.baseUrl} /models`,
+      data: { model: runtime.model },
+    });
+    const probe = await probeImages(runtime);
+    await trace.event({
+      type: "output",
+      message: `image model "${probe.model}" is served by the endpoint`,
+      data: probe,
+    });
+    await trace.succeed({ outputSummary: `${probe.model} served (${probe.modelCount} models)` });
+    return probe;
+  } catch (err) {
+    await trace.fail(err);
+    throw err;
+  }
+}
+
 /** Field defaults for merging a partial probe input onto a never-written settings row. */
 const EMPTY_RECORD: SettingsRecord = {
   llmBaseUrl: null,
@@ -414,6 +532,9 @@ const EMPTY_RECORD: SettingsRecord = {
   embeddingBaseUrl: null,
   embeddingApiKey: null,
   embeddingModel: null,
+  imageBaseUrl: null,
+  imageApiKey: null,
+  imageModel: null,
   ownerUsername: null,
   ownerUserId: null,
   maintenanceModeEnabled: false,

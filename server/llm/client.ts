@@ -127,17 +127,78 @@ export function toOpenAiBaseUrl(base: string): string {
   return host.endsWith("/v1") ? host : `${host}/v1`;
 }
 
+/**
+ * Rewrite a non-OpenAI-shaped error body into the shape the SDK understands, so
+ * the server's own explanation survives.
+ *
+ * The SDK parses an error body and keeps only its `error` key
+ * (`APIError.generate`: `errorResponse?.['error']`). Every OpenAI-*compatible*
+ * backend that reports errors differently — FastAPI's `{"detail": "…"}`, or a bare
+ * `{"message": "…"}` — therefore arrives as the infamous **"500 status code (no
+ * body)"** with the real reason discarded, because the SDK also drops the raw text
+ * whenever the body parsed as JSON (`errMessage = errJSON ? undefined : errText`).
+ * A *plain-text* error survives; a well-formed JSON one does not.
+ *
+ * This cost us a real diagnosis once: a broken image backend answered
+ * `{"detail":"Image generation failed: Input type (c10::Half) and bias type
+ * (float) should be the same"}` — a precise, actionable dtype error — and the
+ * operator was shown "500 status code (no body)".
+ *
+ * A body that already carries `error` is passed through untouched, so nothing
+ * changes for a real OpenAI endpoint.
+ */
+async function fetchWithErrorDetail(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+): Promise<Response> {
+  const response = await fetch(input, init);
+  if (response.ok) return response;
+
+  const text = await response.text().catch(() => "");
+  let body = text;
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (parsed && typeof parsed === "object" && !("error" in parsed)) {
+      // `detail` (FastAPI) and `message` are the common shapes; fall back to the
+      // whole object rather than inventing a summary of something we don't know.
+      const record = parsed as Record<string, unknown>;
+      const message =
+        typeof record.detail === "string"
+          ? record.detail
+          : typeof record.message === "string"
+            ? record.message
+            : JSON.stringify(parsed);
+      body = JSON.stringify({ error: { message } });
+    }
+  } catch {
+    // Not JSON — the SDK already surfaces a plain-text body as the message.
+  }
+
+  // The body was consumed above, so hand the SDK a fresh, readable Response.
+  return new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+}
+
 /** Construct an OpenAI SDK client for an OpenAI-compatible endpoint. */
 export function createOpenAiClient(conn: LlmConnection): OpenAI {
   return new OpenAI({
     apiKey: conn.apiKey?.trim() || "not-needed",
     baseURL: toOpenAiBaseUrl(conn.baseUrl),
     maxRetries: 0,
+    fetch: fetchWithErrorDetail,
   });
 }
 
 function apiErrorDetail(err: APIError): string {
   if (typeof err.error === "string") return err.error;
+  // The human-readable half, when the provider gave one: both OpenAI's own shape
+  // and anything normalized by `fetchWithErrorDetail` carry it here. Preferred over
+  // stringifying the object, which buries the sentence that matters in braces.
+  const message = (err.error as { message?: unknown } | undefined)?.message;
+  if (typeof message === "string" && message.trim()) return message;
   if (err.error && Object.keys(err.error).length > 0) return JSON.stringify(err.error);
   return err.message;
 }

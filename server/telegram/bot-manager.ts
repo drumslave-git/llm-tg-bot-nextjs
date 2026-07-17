@@ -1,6 +1,6 @@
 import "server-only";
 
-import { Bot, type Context } from "grammy";
+import { Bot, InputFile, type Context } from "grammy";
 
 import { getTelegramBotToken } from "@/features/settings/server/service";
 
@@ -90,6 +90,27 @@ function grammyTransport(ctx: Context): ReplyTransport {
         reply_parameters: { message_id: opts.replyToMessageId },
       });
       return { messageId: sent.message_id };
+    },
+    async sendPhoto(image, opts) {
+      const sent = await ctx.api.sendPhoto(
+        String(ctx.chat!.id),
+        new InputFile(Buffer.from(image.base64, "base64"), image.filename),
+        {
+          ...(opts.replyToMessageId != null
+            ? { reply_parameters: { message_id: opts.replyToMessageId } }
+            : {}),
+          ...(opts.threadId != null ? { message_thread_id: opts.threadId } : {}),
+        },
+      );
+      // Telegram returns the photo in several rendered sizes, largest last. The
+      // largest is the one worth describing and re-reading later, matching how
+      // incoming photos are picked up (`detectMessageMedia`).
+      const largest = sent.photo?.[sent.photo.length - 1];
+      return {
+        messageId: sent.message_id,
+        fileId: largest?.file_id ?? "",
+        fileUniqueId: largest?.file_unique_id ?? null,
+      };
     },
     sendTyping(opts) {
       const other =

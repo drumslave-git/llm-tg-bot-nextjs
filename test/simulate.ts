@@ -56,11 +56,20 @@ export interface SimulateInput {
   token?: string | null;
 }
 
+/** A photo the pipeline delivered, as captured by the sink. */
+export interface SimulatedPhoto {
+  base64: string;
+  filename: string;
+  messageId: number;
+}
+
 /** What the pipeline produced, captured from the sink. */
 export interface SimulateResult {
   outcome: HandleOutcome;
   /** Every reply the pipeline delivered, in order (maintenance notice, reply…). */
   replies: string[];
+  /** Every photo the pipeline delivered, in order (generated images). */
+  photos: SimulatedPhoto[];
   /** How many times the "typing…" action was requested (initial tick + refreshes). */
   typingCalls: number;
 }
@@ -118,6 +127,7 @@ export async function simulateUpdate(
   overrides?: ProcessOverrides,
 ): Promise<SimulateResult> {
   const replies: string[] = [];
+  const photos: SimulatedPhoto[] = [];
   let typingCalls = 0;
   let nextMessageId = (input.messageId ?? 1) + 1_000;
 
@@ -125,6 +135,13 @@ export async function simulateUpdate(
     async sendReply(text) {
       replies.push(text);
       return { messageId: nextMessageId++ };
+    },
+    async sendPhoto(image) {
+      const messageId = nextMessageId++;
+      photos.push({ base64: image.base64, filename: image.filename, messageId });
+      // A real send mints a file id; synthesize a stable one so the media row the
+      // pipeline stores is keyed exactly as it would be against Telegram.
+      return { messageId, fileId: `sim-file-${messageId}`, fileUniqueId: `sim-uniq-${messageId}` };
     },
     sendTyping() {
       typingCalls++;
@@ -138,5 +155,5 @@ export async function simulateUpdate(
   };
 
   const outcome = await processUpdate(update, transport, overrides);
-  return { outcome, replies, typingCalls };
+  return { outcome, replies, photos, typingCalls };
 }

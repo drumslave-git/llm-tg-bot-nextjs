@@ -9,6 +9,7 @@ import {
   getBotPolicy,
   getDailyJobsRunTime,
   getEmbeddingRuntime,
+  getImageRuntime,
   getSettings,
   getTelegramBotToken,
   getWebSearchApiKey,
@@ -47,6 +48,9 @@ describe("getSettings", () => {
       embeddingBaseUrl: null,
       embeddingModel: null,
       embeddingApiKeyConfigured: false,
+      imageBaseUrl: null,
+      imageModel: null,
+      imageApiKeyConfigured: false,
       ownerUsername: null,
       ownerUserId: null,
       maintenanceModeEnabled: false,
@@ -287,4 +291,78 @@ describe("embedding configuration", () => {
     expect(await getEmbeddingRuntime(ctx.db)).toBeNull();
   });
 
+});
+
+describe("image runtime", () => {
+  it("falls back to the LLM connection when no image endpoint is set", async () => {
+    await updateSettings(
+      {
+        llmBaseUrl: "https://llm.example.com/v1",
+        apiKey: "llm-key",
+        model: "gemma3",
+        imageModel: "sdxl",
+      },
+      trigger,
+      ctx.db,
+    );
+
+    // Same rule as embeddings: the key belongs to the host it authenticates.
+    expect(await getImageRuntime(ctx.db)).toEqual({
+      baseUrl: "https://llm.example.com/v1",
+      apiKey: "llm-key",
+      model: "sdxl",
+    });
+  });
+
+  it("uses the image endpoint's own key when it has its own URL", async () => {
+    await updateSettings(
+      {
+        llmBaseUrl: "https://llm.example.com/v1",
+        apiKey: "llm-key",
+        model: "gemma3",
+        imageBaseUrl: "https://images.example.com/v1",
+        imageApiKey: "image-key",
+        imageModel: "sdxl",
+      },
+      trigger,
+      ctx.db,
+    );
+
+    expect(await getImageRuntime(ctx.db)).toEqual({
+      baseUrl: "https://images.example.com/v1",
+      apiKey: "image-key",
+      model: "sdxl",
+    });
+  });
+
+  it("is unconfigured (not half-configured) without a model", async () => {
+    await updateSettings(
+      { llmBaseUrl: "https://llm.example.com/v1", model: "gemma3" },
+      trigger,
+      ctx.db,
+    );
+
+    // No image model → the tool reports images are unavailable, rather than the
+    // provider being called with a guessed model id.
+    expect(await getImageRuntime(ctx.db)).toBeNull();
+  });
+
+  it("never exposes the image key, but stores it", async () => {
+    const settings = await updateSettings(
+      { imageApiKey: "secret-image-key" },
+      trigger,
+      ctx.db,
+    );
+
+    expect(settings.imageApiKeyConfigured).toBe(true);
+    expect(JSON.stringify(settings)).not.toContain("secret-image-key");
+    expect((await getSettingsRecord(ctx.db))?.imageApiKey).toBe("secret-image-key");
+  });
+
+  it("redacts the image key from the trace", async () => {
+    await updateSettings({ imageApiKey: "secret-image-key" }, trigger, ctx.db);
+
+    const { traces } = await listTraces(ctx.db, { feature: "settings" });
+    expect(JSON.stringify(traces)).not.toContain("secret-image-key");
+  });
 });
