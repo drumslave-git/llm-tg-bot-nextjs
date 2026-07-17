@@ -59,10 +59,10 @@ const GROUP_ID = "-100777";
 const ADA = "100";
 const GRACE = "200";
 
-async function seedUser(userId: string, firstName: string): Promise<void> {
+async function seedUser(userId: string, firstName: string, aliases: string[] = []): Promise<void> {
   await ctx.db
     .insert(knownUsers)
-    .values({ userId, username: firstName.toLowerCase(), firstName })
+    .values({ userId, username: firstName.toLowerCase(), firstName, aliases })
     .onConflictDoNothing();
 }
 
@@ -735,6 +735,30 @@ describe("passive extraction (the un-addressed half of memory)", () => {
     ]);
     // Queued against the chat they were said in, like any other note.
     expect(entries.every((e) => e.chatId === GROUP_ID)).toBe(true);
+  });
+
+  /**
+   * The defect behind the operator's wrong memory: `known_users.aliases` was
+   * curated, and already injected into DM replies, but extraction built its roster
+   * from the display label alone. A group calls people by nickname, so the model
+   * saw statements by "Гоша"-equivalents it could not tie to any offered id — and
+   * with nowhere to file them, such facts are now dropped outright. The aliases are
+   * what keep them attributable instead of lost.
+   */
+  it("puts each person's aliases on the roster, so a nickname in chat still reaches their id", async () => {
+    await seedUser(ADA, "Ada", ["Ace", "A."]);
+    await seedUser(GRACE, "Grace");
+    await seedGroup();
+    await seedMessage({ telegramMessageId: 1, userId: ADA, content: "Ace here, I'm a vet" });
+    await seedMessage({ telegramMessageId: 2, userId: GRACE, content: "hi Ace" });
+
+    const { deps, calls } = scriptedExtractor([JSON.stringify({ facts: [] })]);
+    await runMemoryExtraction(deps, ctx.db);
+
+    const roster = calls[0][1].content as string;
+    expect(roster).toContain(`[id:${ADA}] Ada (@ada) — also called: Ace, A.`);
+    // Someone with no aliases is offered plainly, with no dangling clause.
+    expect(roster).toContain(`[id:${GRACE}] Grace (@grace)\n`);
   });
 
   it("hands the extracted facts to consolidation, reaching durable memory the same night", async () => {

@@ -160,11 +160,15 @@ export async function extractChatDay(
     // never registered — imported history routinely does — and offering their ids
     // to the model just yields good facts the store then refuses. So the roster is
     // the storable subset, and the rest stay in the transcript as context only.
-    const knownIds = new Set(
-      (await getKnownUsersByIds(db, speakers.map((s) => s.userId))).map((u) => u.userId),
-    );
-    const participants = speakers.filter((s) => knownIds.has(s.userId));
-    const unstorable = speakers.filter((s) => !knownIds.has(s.userId));
+    const known = await getKnownUsersByIds(db, speakers.map((s) => s.userId));
+    // Aliases come from `known_users`, never from the transcript: the roster has to
+    // be matchable against the nicknames the group actually uses, or a person's own
+    // statement about themselves goes unattributed and is dropped.
+    const aliasesById = new Map(known.map((u) => [u.userId, u.aliases]));
+    const participants = speakers
+      .filter((s) => aliasesById.has(s.userId))
+      .map((s) => ({ ...s, aliases: aliasesById.get(s.userId) ?? [] }));
+    const unstorable = speakers.filter((s) => !aliasesById.has(s.userId));
 
     await trace.event({
       type: "step",

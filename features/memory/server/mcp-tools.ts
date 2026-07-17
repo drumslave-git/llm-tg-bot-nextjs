@@ -8,10 +8,12 @@ import { getToolContext } from "@/server/mcp/context";
 
 import {
   DURABLE_FACT_KINDS,
+  FIRST_PERSON_EVIDENCE_RULE,
   MAX_FACT_LENGTH,
   MIN_FACT_LENGTH,
   NON_DURABLE_FACT_KINDS,
   SELF_CONTAINED_FACT_RULE,
+  UNIDENTIFIED_PERSON_RULE,
 } from "../prompt";
 import type { MemoryMatch } from "../types";
 import { readMemory, saveMemoryNote, searchMemory } from "./service";
@@ -51,12 +53,14 @@ async function resolveSubjectId(
   if (resolved.status === "not_found") {
     return {
       ok: false,
-      // Naming the way forward, not just the refusal: a fact about someone the bot
-      // cannot key on is still worth keeping, and general knowledge is where it goes.
+      // A refusal with no way forward, deliberately (operator decision, 2026-07-17).
+      // This used to point the model at scope 'general' with the name written into
+      // the fact, which is exactly how general knowledge filled up with biography
+      // about people the bot could not identify. Dropping the fact is the fix.
       error:
         `No one in this chat is known as "${reference}", so a fact cannot be filed under them. ` +
-        `If you were saving a fact, save it with scope 'general' instead and write "${reference}" ` +
-        "into the fact itself so it is not lost.",
+        "Do not save it as 'general' with their name in it — general knowledge is not about " +
+        "people. Drop the fact.",
     };
   }
   if (resolved.status === "ambiguous") {
@@ -127,19 +131,18 @@ export function registerMemoryMcpTools(server: McpServer): void {
         "MUST call, before you reply, whenever the message asks you to remember, note, save, keep " +
         "in mind, or not forget something.\n" +
         "ALSO call, without being asked, the moment someone reveals something lastingly true about " +
-        `themselves or another person — ${DURABLE_FACT_KINDS}. Saving proactively is expected of ` +
+        `themselves — ${DURABLE_FACT_KINDS}. Saving proactively is expected of ` +
         "you, not optional: prefer saving a fact that turns out to be minor over losing one that " +
         "mattered.\n" +
         "Use scope 'user' for a fact about a specific person (this is how you remember someone " +
         "across chats). By default the fact is saved about the person you are talking to right " +
         "now; to save it about someone else in this chat, name them in 'person' by a name you " +
         "already see for them (their first name, @username, or a known nickname) — never a numeric " +
-        "id. Use scope 'general' for knowledge that is not about any one person — a definition, a " +
-        "rule, a convention, how something works.\n" +
-        "If a 'user' save is rejected because you cannot identify the person, do NOT give up on " +
-        "the fact: save it again with scope 'general', writing their name into the fact itself " +
-        "('Bob lives in Porto'). A fact about someone you cannot file under a person is still " +
-        "worth knowing.\n" +
+        "id. Use scope 'general' ONLY for knowledge that is about nobody — a definition, a rule, " +
+        "a convention, how something works. A fact about a person never belongs in 'general', not " +
+        "even with their name written into it.\n" +
+        `Evidence: ${FIRST_PERSON_EVIDENCE_RULE}.\n` +
+        `Identity: ${UNIDENTIFIED_PERSON_RULE}.\n` +
         `Do NOT save: ${NON_DURABLE_FACT_KINDS}. Do not re-save something you have already saved.\n` +
         `Save ONE fact per call — make several calls for several facts — and ${SELF_CONTAINED_FACT_RULE}.`,
       inputSchema: {

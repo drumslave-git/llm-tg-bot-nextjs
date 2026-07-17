@@ -3,10 +3,12 @@ import { extractJsonObject } from "@/lib/json";
 
 import {
   DURABLE_FACT_KINDS,
+  FIRST_PERSON_EVIDENCE_RULE,
   MAX_FACT_LENGTH,
   MIN_FACT_LENGTH,
   NON_DURABLE_FACT_KINDS,
   SELF_CONTAINED_FACT_RULE,
+  UNIDENTIFIED_PERSON_RULE,
 } from "./prompt";
 
 /**
@@ -40,23 +42,38 @@ export type ExtractedNote =
 export interface ExtractionParticipant {
   userId: string;
   label: string;
+  /**
+   * The other names this person is called in chat (operator-curated
+   * `known_users.aliases`). Load-bearing, not decoration: a group calls people by
+   * nickname, never by the `First Last (@username)` label the roster is built
+   * from, so without these the model cannot tell that the person saying something
+   * about themselves is a person it is allowed to store a fact about — and under
+   * {@link UNIDENTIFIED_PERSON_RULE} it must then drop the fact.
+   */
+  aliases: string[];
 }
 
 export const EXTRACTION_SYSTEM = `You read one finished day of a Telegram group's chat history and extract the durable facts worth remembering long-term. You are not replying to anyone — nobody is talking to you. You are harvesting what this day revealed about the people in it.
 
-Extract a fact when someone reveals something lastingly true about themselves or another person — ${DURABLE_FACT_KINDS}. Extract it whether they were speaking to you, to each other, or to nobody in particular: a fact said in passing is worth exactly as much as one said to your face.
+Extract a fact when someone reveals something lastingly true about themselves — ${DURABLE_FACT_KINDS}. Extract it whether they were speaking to you, to each other, or to nobody in particular: a fact said in passing is worth exactly as much as one said to your face.
 
 Scopes:
-- "user": a fact about one specific person, when that person is in the participants list. Set user_id to their id from that list. This is how someone is remembered across chats.
-- "general": everything else worth keeping — a definition, a rule, a convention, how something works. ALSO use "general" for a fact about a person who is NOT in the participants list: write their name into the fact itself ("Bob lives in Porto"), and do not set user_id. Never drop such a fact — a person who cannot be filed under an id is still worth knowing about.
+- "user": a fact about one specific person in the participants list, stated by that person about themselves. Set user_id to their id from that list. This is how someone is remembered across chats.
+- "general": shared knowledge that is NOT about any person — a definition, a rule, a convention, how something works. Never use "general" to record something about a person.
+
+Identity:
+- The participants list is the only set of people you may store a fact about. Each entry may also list other names that person goes by ("also called"); those name the same person, so a fact they state about themselves while being called a nickname belongs to their id.
+- ${UNIDENTIFIED_PERSON_RULE}.
 
 Rules:
+- ${FIRST_PERSON_EVIDENCE_RULE}.
 - Only extract what was actually said. Never infer, guess, or fill in what someone probably meant. A fact you are not sure was stated is a fact you must not extract.
-- Attribute a "user" fact to the person it is ABOUT, not the person who said it. When one person states a fact about another, it belongs to the person described.
+- An example is not a fact: "big companies like X" does not say anyone worked at X, and "something like Y" does not say Y. Store a claim only in the plain, unhedged form it was actually made in.
+- Chat is full of memes, copypasta, and bits. Lines shaped like a script ("Name: ... Other: ...") acting out a scene, or a punchline with someone's name in it, are performance and not testimony. Never extract from them.
 - Only ever use a user_id that appears in the participants list. Never invent one, and never guess an id for someone listed without one.
 - Every "general" fact must name its own subject and stand alone, since it is read with no conversation around it.
 - Do NOT extract: ${NON_DURABLE_FACT_KINDS}.
-- Lines labelled "Bot" are your own past messages. Read them for context, but never extract a fact from something you yourself asserted — only from what the humans said.
+- Lines labelled "Bot" are your own past messages. Read them for context, but never extract a fact from something you yourself asserted — only from what the humans said. You are not a person: never store a fact about yourself, how you are configured, or how you are built, no matter who is discussing it.
 - ${SELF_CONTAINED_FACT_RULE}. The reader will not have this transcript.
 - Resolve relative time against the date given: write "in March 2026", never "next month".
 - Write each fact in the dominant language of the conversation.
@@ -87,14 +104,34 @@ export function toExtractionLine(
   return `[#${message.telegramMessageId}] [${message.sentAt}] ${speaker}: ${message.content}`;
 }
 
+/**
+ * A speaker as the transcript alone reveals them. Distinct from
+ * {@link ExtractionParticipant}: a transcript carries a label but no aliases, so
+ * this is what a day's messages can tell you before `known_users` is consulted.
+ */
+export interface TranscriptSpeaker {
+  userId: string;
+  label: string;
+}
+
 /** The distinct people who actually spoke in a day, in first-seen order. */
-export function participantsOf(messages: readonly SummarizableMessage[]): ExtractionParticipant[] {
-  const seen = new Map<string, ExtractionParticipant>();
+export function participantsOf(messages: readonly SummarizableMessage[]): TranscriptSpeaker[] {
+  const seen = new Map<string, TranscriptSpeaker>();
   for (const message of messages) {
     if (!message.userId || seen.has(message.userId)) continue;
     seen.set(message.userId, { userId: message.userId, label: message.label });
   }
   return [...seen.values()];
+}
+
+/**
+ * One roster entry: the id a fact is filed under, the label the transcript uses,
+ * and every other name the group calls them by.
+ */
+function rosterLine(participant: ExtractionParticipant): string {
+  const also =
+    participant.aliases.length > 0 ? ` — also called: ${participant.aliases.join(", ")}` : "";
+  return `[id:${participant.userId}] ${participant.label}${also}`;
 }
 
 /**
@@ -106,9 +143,13 @@ export function participantsOf(messages: readonly SummarizableMessage[]): Extrac
  * were mirrored into history but never registered (imported history does exactly
  * this), and offering their ids only produces facts the store then refuses.
  *
- * They are not written off, though. A fact about an unrostered person is extracted
- * as **general** knowledge naming them ("Bob lives in Porto") — the bot cannot key
- * it to a person, but it can still know it.
+ * A fact about anyone else is dropped (operator decision, 2026-07-17) — see
+ * {@link UNIDENTIFIED_PERSON_RULE} for why keeping it as named `general` knowledge
+ * was worse than losing it.
+ *
+ * Each entry carries the person's aliases, because the roster's job is to be
+ * *recognizable*: a group says "Гоша", not "First Last (@username)", and an entry
+ * the model cannot match to a speaker is an entry that stores nothing.
  */
 export function buildExtractionRequest(
   date: string,
@@ -118,8 +159,8 @@ export function buildExtractionRequest(
   const storableIds = new Set(storable.map((p) => p.userId));
   const roster =
     storable.length > 0
-      ? storable.map((p) => `[id:${p.userId}] ${p.label}`).join("\n")
-      : "(nobody here can be filed under an id — use scope 'general' for every fact, naming the person in the fact itself)";
+      ? storable.map(rosterLine).join("\n")
+      : "(nobody here can be filed under an id — do not store a fact about any person today; only general knowledge that is about nobody)";
   const transcript = messages.map((m) => toExtractionLine(m, storableIds)).join("\n");
   return [
     `Date of this conversation: ${date}.`,

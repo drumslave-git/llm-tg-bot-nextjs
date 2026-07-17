@@ -61,8 +61,8 @@ describe("participantsOf", () => {
 });
 
 describe("buildExtractionRequest", () => {
-  const alice = { userId: "1001", label: "Alice" };
-  const bob = { userId: "1002", label: "Bob" };
+  const alice = { userId: "1001", label: "Alice", aliases: [] };
+  const bob = { userId: "1002", label: "Bob", aliases: [] };
 
   it("offers the roster the model must pick user ids from", () => {
     const request = buildExtractionRequest(
@@ -79,9 +79,25 @@ describe("buildExtractionRequest", () => {
     expect(request).toContain("[#1] [2026-07-13T10:00:00.000Z] Alice [id:1001]: I'm a vet");
   });
 
-  it("tells the model to keep a fact about an unrostered person as general, naming them", () => {
-    expect(EXTRACTION_SYSTEM).toContain("Never drop such a fact");
-    expect(EXTRACTION_SYSTEM).toContain("do not set user_id");
+  /**
+   * The roster is only useful if it is matchable against what the group actually
+   * says. A chat calls people by nickname, never by "First Last (@username)", so
+   * without aliases a person's own statement about themselves is unattributable —
+   * and unattributable now means dropped.
+   */
+  it("shows each person's aliases, so a nickname in the transcript reaches their id", () => {
+    const request = buildExtractionRequest(
+      "2026-07-13",
+      [message({ userId: "1001", label: "Alice", content: "I'm a vet" })],
+      [{ userId: "1001", label: "Alice", aliases: ["Al", "Ally"] }],
+    );
+    expect(request).toContain("[id:1001] Alice — also called: Al, Ally");
+  });
+
+  it("omits the alias clause for someone with no aliases", () => {
+    const request = buildExtractionRequest("2026-07-13", [message()], [alice]);
+    expect(request).toContain("[id:1001] Alice\n");
+    expect(request).not.toContain("also called");
   });
 
   /**
@@ -107,13 +123,39 @@ describe("buildExtractionRequest", () => {
     expect(request).toContain("User 9999: I live in Porto");
   });
 
-  it("points a day with nobody storable at general scope, rather than showing an empty roster", () => {
+  it("tells a day with nobody storable to store nothing about anyone, not to reach for general", () => {
     const request = buildExtractionRequest(
       "2026-07-13",
       [message({ userId: null, label: "Bot", role: "assistant" })],
       [],
     );
-    expect(request).toContain("use scope 'general' for every fact");
+    expect(request).toContain("do not store a fact about any person today");
+    expect(request).not.toContain("naming the person in the fact itself");
+  });
+});
+
+/**
+ * The prompt is the whole enforcement surface for these rules — `parseExtractedNotes`
+ * cannot tell a first-person fact from hearsay, or biography from a definition, by
+ * looking at a string. So the rules are asserted here to stop a later edit quietly
+ * deleting one; the behaviour they buy is covered end-to-end by the integration test.
+ */
+describe("EXTRACTION_SYSTEM", () => {
+  it("bans general scope as a home for facts about people", () => {
+    expect(EXTRACTION_SYSTEM).toContain('Never use "general" to record something about a person.');
+  });
+
+  it("requires a fact about a person to come from that person", () => {
+    expect(EXTRACTION_SYSTEM).toContain("THAT PERSON stated it about themselves");
+    expect(EXTRACTION_SYSTEM).toContain("hearsay");
+  });
+
+  it("drops a person it cannot identify rather than re-filing them", () => {
+    expect(EXTRACTION_SYSTEM).toContain("drop the fact");
+  });
+
+  it("refuses to treat the bot itself as a person with a biography", () => {
+    expect(EXTRACTION_SYSTEM).toContain("You are not a person");
   });
 });
 

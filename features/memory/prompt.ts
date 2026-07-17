@@ -38,8 +38,40 @@ export const DURABLE_FACT_KINDS =
 
 /** The other half of the policy: what must never reach the queue. */
 export const NON_DURABLE_FACT_KINDS =
-  "guesses or inferences from vibes, passing moods, jokes, insults, one-off plans, or ordinary " +
-  "chit-chat";
+  "guesses or inferences from vibes, passing moods, jokes, insults, one-off plans, ordinary " +
+  "chit-chat, or a value that is merely true right now (the version, model, port, or setting " +
+  "someone is running today)";
+
+/**
+ * Who a fact about a person may come from. Shared by both producers because a
+ * claim's *source* decides whether it is knowledge or gossip, and that cannot
+ * depend on which producer happened to hear it.
+ *
+ * Hearsay is what put "worked at big companies like LastPass" into general
+ * knowledge: one person speculating about a third party, in a chat where the
+ * subject never said any such thing. A confident sentence about someone else is
+ * still the speaker's belief, and storing it as fact laundres a guess into memory.
+ */
+export const FIRST_PERSON_EVIDENCE_RULE =
+  "only store a fact about a person when THAT PERSON stated it about themselves, or explicitly " +
+  "confirmed it about themselves — what someone says about somebody else is hearsay (they may be " +
+  "guessing, exaggerating, or joking) and must not be stored, however confident it sounds";
+
+/**
+ * What to do with a fact about someone who cannot be resolved to a known-user id
+ * (operator decision, 2026-07-17): drop it.
+ *
+ * Both producers previously did the opposite — they re-filed such a fact as
+ * `general` knowledge with the person's name written into the sentence. That was
+ * the single biggest source of wrong memory: general knowledge has no identity
+ * model, so name-keyed lines about different people were merged into one subject,
+ * and a nickname the bot could not resolve became a person of its own.
+ */
+export const UNIDENTIFIED_PERSON_RULE =
+  "a person you cannot match to a known id is a person you cannot store a fact about: drop the " +
+  "fact rather than inventing an id, guessing which known person was meant, or saving it as " +
+  "general knowledge with their name written in — an unidentified person's fact is worse than no " +
+  "fact, because it will later be read as if it were about someone you do know";
 
 /** How a stored fact must be written, so it survives losing its conversation. */
 export const SELF_CONTAINED_FACT_RULE =
@@ -113,12 +145,17 @@ export function parseMergedDocument(content: string): string[] {
 /** System prompt for the general-knowledge document merge. */
 export const GENERAL_MERGE_PROMPT =
   "You maintain the long-term memory document a Telegram chat bot keeps of GENERAL knowledge — " +
-  "shared facts, definitions, rules and conventions, plus facts about people the bot cannot file " +
-  "under a person of their own. You are given the current document and newly saved facts. Rewrite " +
-  "the document to incorporate the new facts.\n" +
+  "shared facts, definitions, rules and conventions, and how things work. You are given the " +
+  "current document and newly saved facts. Rewrite the document to incorporate the new facts.\n" +
   "Rules:\n" +
+  "- This document is NOT about people. Biography does not belong here: a person's name, job, " +
+  "history, nicknames, tastes, or habits belong to that person's own document, and a line of it " +
+  "here is a line to drop — including any already in the current document. Keep a person's name " +
+  "only where it is incidental to a fact that is really about something else.\n" +
+  "- Never merge two lines about people into one subject, and never conclude that two names are " +
+  "the same person. You have no way to tell, and guessing wrong invents a person.\n" +
   "- Preserve every unique durable detail. This is lossless except where a fact is a duplicate, " +
-  "is contradicted, or was never durable.\n" +
+  "is contradicted, was never durable, or is biography per the rules above.\n" +
   "- Drop duplicates and near-duplicates: if a new fact restates something already there in " +
   "different words, keep one concise version.\n" +
   "- When a new fact contradicts an old one, keep the new one and drop the outdated line — " +
