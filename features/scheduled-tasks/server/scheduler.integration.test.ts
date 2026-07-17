@@ -3,7 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { getChatMessagesInRange } from "@/features/history/server/repository";
 import { recordAssistantMessage } from "@/features/history/server/service";
 import type { ChatCompletionResult, ChatMessage } from "@/server/llm/client";
-import { listTraces } from "@/server/trace/repository";
+import { listTraces } from "@/server/trace";
 import { startTestDb, type TestDb } from "@/test/db";
 
 import { getScheduledTasks } from "./service";
@@ -104,7 +104,7 @@ describe("runDueScheduledTasks (simulated fire — no bot, no live LLM)", () => 
     expect(after.recentDeliveries).toEqual(["Alright everyone, on your feet!"]);
 
     // A fire trace was recorded.
-    const traces = await listTraces(ctx.db, { feature: "scheduled-tasks" });
+    const traces = await listTraces({ feature: "scheduled-tasks" });
     expect(traces.traces.some((t) => t.action === "fire" && t.status === "success")).toBe(true);
   });
 
@@ -167,7 +167,7 @@ describe("runDueScheduledTasks (simulated fire — no bot, no live LLM)", () => 
     // Spent: the row is gone, not left behind disabled.
     expect(await getScheduledTasks("555", ctx.db)).toEqual([]);
     // The delivery is still on the record, in the fire trace.
-    const traces = await listTraces(ctx.db, { feature: "scheduled-tasks" });
+    const traces = await listTraces({ feature: "scheduled-tasks" });
     expect(traces.traces.some((t) => t.action === "fire" && t.status === "success")).toBe(true);
   });
 
@@ -195,7 +195,7 @@ describe("runDueScheduledTasks (simulated fire — no bot, no live LLM)", () => 
     // Removed rather than left as a permanently-stuck due row (it would otherwise
     // be retried on every tick forever). The failure is recorded in its trace.
     expect(await getScheduledTasks("555", ctx.db)).toEqual([]);
-    const traces = await listTraces(ctx.db, { feature: "scheduled-tasks" });
+    const traces = await listTraces({ feature: "scheduled-tasks" });
     expect(traces.traces.some((t) => t.action === "fire" && t.status !== "success")).toBe(true);
   });
 

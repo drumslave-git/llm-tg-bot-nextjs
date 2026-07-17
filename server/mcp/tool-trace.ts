@@ -1,6 +1,5 @@
 import "server-only";
 
-import type { DrizzleDb } from "@/db/drizzle";
 import { startTrace } from "@/server/trace";
 import { tryGetToolContext } from "./context";
 import type { McpToolCallResult } from "./tool-result";
@@ -32,7 +31,6 @@ export async function tracedToolCall(
   name: string,
   args: Record<string, unknown>,
   run: () => Promise<McpToolCallResult>,
-  db?: DrizzleDb,
 ): Promise<McpToolCallResult> {
   const ctx = tryGetToolContext();
   let trace: Awaited<ReturnType<typeof startTrace>>;
@@ -43,8 +41,7 @@ export async function tracedToolCall(
         action: name,
         trigger: { kind: "telegram", actor: ctx?.chatId, correlationId: ctx?.chatId },
         inputSummary: name,
-      },
-      db,
+      }
     );
   } catch {
     // Trace backend unavailable — never block the tool call on it (the reply trace

@@ -12,7 +12,13 @@ services:
       # Built from the bundled db service; override DATABASE_URL to use an
       # external database.
       DATABASE_URL: ${DATABASE_URL:-postgres://${POSTGRES_USER:-bot}:${POSTGRES_PASSWORD:-bot}@db:5432/${POSTGRES_DB:-bot}}
+      # Directory the file-backed trace/debug store writes monthly logs into,
+      # bind-mounted below (configurable host path via TRACES_DATA_DIR).
+      TRACES_DIR: /app/data/traces
       TZ: ${TZ:-UTC}
+    volumes:
+      # Bind-mounted host directory so trace/debug logs persist across restarts.
+      - "${TRACES_DATA_DIR:-./data/traces}:/app/data/traces"
     healthcheck:
       # 127.0.0.1 (not localhost): the standalone server binds IPv4 0.0.0.0, and
       # localhost can resolve to IPv6 ::1, which would refuse the connection.

@@ -143,8 +143,7 @@ export async function extractChatDay(
       action: "extract",
       trigger,
       inputSummary: `chat ${params.chatId} · ${params.extractionDate}`,
-    },
-    db,
+    }
   );
 
   try {

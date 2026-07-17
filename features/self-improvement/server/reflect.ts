@@ -97,8 +97,7 @@ export async function reflectOnFeedback(
         correlationId: `${feedback.chatId}:${feedback.telegramMessageId}`,
       },
       inputSummary: `${feedback.reaction === "up" ? "👍" : "👎"} ${feedback.feedback}`,
-    },
-    db,
+    }
   );
   try {
     // How the reply was produced is the evidence. Without it (an old or purged

@@ -9,7 +9,7 @@ import {
   knownUsers,
 } from "@/db/schema";
 import type { ChatCompletionResult, ChatMessage } from "@/server/llm/client";
-import { listTraces } from "@/server/trace/repository";
+import { listTraces } from "@/server/trace";
 import { startTestDb, type TestDb } from "@/test/db";
 
 import { runMemoryConsolidation, type ConsolidateDeps } from "./consolidate";
@@ -619,7 +619,7 @@ describe("operator edits", () => {
     expect(updated.content).toBe("Lives in Lisbon.");
     expect(updated.embedded).toBe(false);
 
-    const traces = await listTraces(ctx.db, { feature: "memory", limit: 10, offset: 0 });
+    const traces = await listTraces({ feature: "memory", limit: 10, offset: 0 });
     const edit = traces.traces.find((t) => t.action === "edit-user-memory");
     expect(edit?.status).toBe("success");
   });
@@ -647,7 +647,7 @@ describe("tracing", () => {
     );
     await runMemoryConsolidation(scriptedLlm(['{"memory": "Lives in Lisbon."}']).deps);
 
-    const traces = await listTraces(ctx.db, { feature: "memory", limit: 10, offset: 0 });
+    const traces = await listTraces({ feature: "memory", limit: 10, offset: 0 });
     const run = traces.traces.find((t) => t.action === "consolidate");
     expect(run?.status).toBe("success");
     expect(run?.outputSummary).toContain("1 user memory updated");
@@ -656,7 +656,7 @@ describe("tracing", () => {
   it("records no trace at all when there is nothing to consolidate", async () => {
     const result = await runMemoryConsolidation(scriptedLlm([]).deps);
     expect(result.summary).toBe("nothing to consolidate");
-    const traces = await listTraces(ctx.db, { feature: "memory", limit: 10, offset: 0 });
+    const traces = await listTraces({ feature: "memory", limit: 10, offset: 0 });
     expect(traces.traces).toHaveLength(0);
   });
 });
@@ -887,7 +887,7 @@ describe("passive extraction (the un-addressed half of memory)", () => {
       ctx.db,
     );
 
-    const traces = await listTraces(ctx.db, {
+    const traces = await listTraces({
       feature: "memory-extraction",
       limit: 10,
       offset: 0,

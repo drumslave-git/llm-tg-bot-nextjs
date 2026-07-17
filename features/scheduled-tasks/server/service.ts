@@ -113,8 +113,7 @@ export async function createScheduledTaskService(
   db: DrizzleDb = getDb(),
 ): Promise<ScheduledTask> {
   const trace = await startTrace(
-    { feature: FEATURE.id, action: "create", trigger, inputSummary: input.instruction },
-    db,
+    { feature: FEATURE.id, action: "create", trigger, inputSummary: input.instruction }
   );
   try {
     const instruction = validateInstruction(input.instruction);
@@ -163,8 +162,7 @@ export async function editScheduledTaskService(
   db: DrizzleDb = getDb(),
 ): Promise<ScheduledTask> {
   const trace = await startTrace(
-    { feature: FEATURE.id, action: "update", trigger, inputSummary: `task ${id}` },
-    db,
+    { feature: FEATURE.id, action: "update", trigger, inputSummary: `task ${id}` }
   );
   try {
     await trace.event({ type: "input", message: "update scheduled task", data: { id, ...patch } });
@@ -218,8 +216,7 @@ export async function removeScheduledTaskService(
   db: DrizzleDb = getDb(),
 ): Promise<void> {
   const trace = await startTrace(
-    { feature: FEATURE.id, action: "delete", trigger, inputSummary: `task ${id}` },
-    db,
+    { feature: FEATURE.id, action: "delete", trigger, inputSummary: `task ${id}` }
   );
   try {
     const deleted = await deleteScheduledTask(db, id);

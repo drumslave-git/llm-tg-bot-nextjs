@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
-import { listTraces } from "@/server/trace/repository";
+import { listTraces } from "@/server/trace";
 import { startTestDb, type TestDb } from "@/test/db";
 import { getSettingsRecord } from "@/features/settings/server/repository";
 import {
@@ -116,7 +116,7 @@ describe("trace recording", () => {
     await setActivePersonality(p.id, trigger, ctx.db);
     await removePersonality(p.id, trigger, ctx.db);
 
-    const { traces } = await listTraces(ctx.db, { feature: "personalities" });
+    const { traces } = await listTraces({ feature: "personalities" });
     const actions = traces.map((t) => t.action).sort();
     expect(actions).toEqual(["create", "delete", "set-active", "update"]);
     expect(traces.every((t) => t.status === "success")).toBe(true);

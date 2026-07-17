@@ -3,6 +3,7 @@ import {
   bigint,
   boolean,
   check,
+  doublePrecision,
   index,
   integer,
   jsonb,
@@ -15,7 +16,6 @@ import {
 } from "drizzle-orm/pg-core";
 
 import { EMBEDDING_DIMENSIONS } from "@/lib/embeddings";
-import type { LlmUsage, Trace } from "@/lib/trace";
 
 /**
  * Drizzle schema — single source of truth for the database structure.
@@ -26,50 +26,61 @@ import type { LlmUsage, Trace } from "@/lib/trace";
  * alongside their feature.
  *
  * Ids are generated in application code (`crypto.randomUUID()`), so no
- * database extensions are required.
+ * database extensions are required. Full traces/debug logs are **not** stored
+ * here — they live in the file-backed store under `server/trace` (`TRACES_DIR`).
+ * Only compact, queryable *facts* distilled from each trace live in the DB
+ * (`trace_facts`, `llm_usage`), so the Analytics dashboard can aggregate them.
  */
 
-/** One traced action (e.g. handling a single Telegram message). */
-export const traces = pgTable(
-  "traces",
+/**
+ * Per-trace outcome facts, written once when a trace settles. The full trace body
+ * lives in the file store; this carries only what the dashboard aggregates
+ * (feature/action/status/time), powering bot-messaging reliability without a join.
+ */
+export const traceFacts = pgTable(
+  "trace_facts",
   {
     id: text("id").primaryKey(),
     feature: text("feature").notNull(),
     action: text("action").notNull(),
     status: text("status").notNull(),
-    triggerKind: text("trigger_kind").notNull(),
     triggerActor: text("trigger_actor"),
     correlationId: text("correlation_id"),
-    inputSummary: text("input_summary"),
-    outputSummary: text("output_summary"),
-    error: jsonb("error").$type<NonNullable<Trace["error"]>>(),
-    relatedIds: jsonb("related_ids").$type<Record<string, string[]>>(),
     startedAt: timestamp("started_at", { withTimezone: true }).notNull(),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
   },
-  (t) => [
-    index("traces_feature_started_idx").on(t.feature, t.startedAt.desc()),
-    index("traces_correlation_idx").on(t.correlationId),
-  ],
+  (t) => [index("trace_facts_feature_started_idx").on(t.feature, t.startedAt)],
 );
 
-/** Ordered steps within a trace. */
-export const traceEvents = pgTable(
-  "trace_events",
+/**
+ * Compact LLM-usage facts for analytics — one row per usage-bearing trace event
+ * (an `llm_response` carrying token/latency usage), written when the trace
+ * settles. The trace's `feature`/`action`/`trigger_actor`/`correlation_id`/start
+ * are denormalized on so the token, per-model speed, and per-user token queries
+ * need no join. The full event (with its raw bodies) still lives in the trace file.
+ */
+export const llmUsage = pgTable(
+  "llm_usage",
   {
     id: text("id").primaryKey(),
-    traceId: text("trace_id")
-      .notNull()
-      .references(() => traces.id, { onDelete: "cascade" }),
-    seq: integer("seq").notNull(),
-    ts: timestamp("ts", { withTimezone: true }).notNull(),
-    type: text("type").notNull(),
-    level: text("level").notNull(),
-    message: text("message").notNull(),
-    data: jsonb("data"),
-    usage: jsonb("usage").$type<LlmUsage>(),
+    /** The file-store trace this usage belongs to (reference only; not an FK). */
+    traceId: text("trace_id").notNull(),
+    feature: text("feature").notNull(),
+    action: text("action").notNull(),
+    triggerActor: text("trigger_actor"),
+    correlationId: text("correlation_id"),
+    /** The model requested (the configured id), or null if unreported. */
+    model: text("model"),
+    /** What the provider reported serving, when it differs from `model`. */
+    servedModel: text("served_model"),
+    promptTokens: integer("prompt_tokens"),
+    completionTokens: integer("completion_tokens"),
+    totalTokens: integer("total_tokens"),
+    latencyMs: doublePrecision("latency_ms"),
+    /** The trace's start instant — the window key every analytics query filters on. */
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull(),
   },
-  (t) => [index("trace_events_trace_seq_idx").on(t.traceId, t.seq)],
+  (t) => [index("llm_usage_feature_started_idx").on(t.feature, t.startedAt)],
 );
 
 /**
@@ -905,7 +916,7 @@ export const periodInsights = pgTable(
 export type PeriodInsightRow = typeof periodInsights.$inferSelect;
 export type PeriodInsightInsert = typeof periodInsights.$inferInsert;
 
-export type TraceRow = typeof traces.$inferSelect;
-export type TraceInsert = typeof traces.$inferInsert;
-export type TraceEventRow = typeof traceEvents.$inferSelect;
-export type TraceEventInsert = typeof traceEvents.$inferInsert;
+export type TraceFactRow = typeof traceFacts.$inferSelect;
+export type TraceFactInsert = typeof traceFacts.$inferInsert;
+export type LlmUsageRow = typeof llmUsage.$inferSelect;
+export type LlmUsageInsert = typeof llmUsage.$inferInsert;

@@ -7,7 +7,7 @@ import { getKnownUser } from "@/features/known-users/server/repository";
 import { upsertSettings } from "@/features/settings/server/repository";
 import { stopVisionBackfill } from "@/features/vision/server/backfill-scheduler";
 import type { ChatMessage } from "@/server/llm/client";
-import { listTraces } from "@/server/trace/repository";
+import { listTraces } from "@/server/trace";
 import { simulateUpdate } from "@/test/simulate";
 import { startTestDb, type TestDb } from "@/test/db";
 
@@ -95,7 +95,7 @@ describe("processUpdate (bot-less flow)", () => {
 
     // The reply was traced under bot-messaging (change-gated passive capture may
     // also write its own known-users capture trace — scope to the reply feature).
-    const botTraces = await listTraces(ctx.db, { feature: "bot-messaging" });
+    const botTraces = await listTraces({ feature: "bot-messaging" });
     expect(botTraces.total).toBe(1);
     expect(botTraces.traces[0]).toMatchObject({ status: "success" });
   });
@@ -131,7 +131,7 @@ describe("processUpdate (bot-less flow)", () => {
     // The bot asked the LLM about this message before staying silent, so the
     // operator gets one trace explaining the silence — settled as skipped, not
     // dropped. (Chatter the cheap checks reject outright leaves nothing behind.)
-    const botTraces = await listTraces(ctx.db, { feature: "bot-messaging" });
+    const botTraces = await listTraces({ feature: "bot-messaging" });
     expect(botTraces.total).toBe(1);
     expect(botTraces.traces[0]).toMatchObject({
       status: "skipped",

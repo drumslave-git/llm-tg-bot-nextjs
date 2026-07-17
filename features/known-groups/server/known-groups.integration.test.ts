@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { setKnownUserAliases, upsertKnownUser } from "@/features/known-users/server/repository";
-import { listTraces } from "@/server/trace/repository";
+import { listTraces } from "@/server/trace";
 import { startTestDb, type TestDb } from "@/test/db";
 import { getGroupMembers, getKnownGroup } from "./repository";
 import {
@@ -76,7 +76,7 @@ describe("rememberGroupActivity", () => {
     // The group title changes (member 2 already known).
     await rememberGroupActivity({ ...G, title: "Team 2", userId: "2" }, ctx.db);
 
-    const { traces } = await listTraces(ctx.db, { feature: "known-groups" });
+    const { traces } = await listTraces({ feature: "known-groups" });
     expect(traces.map((t) => t.action).sort()).toEqual([
       "capture-group",
       "member-joined",
@@ -138,7 +138,7 @@ describe("updateNotes", () => {
     const cleared = await updateNotes("-1", { notes: null }, trigger, ctx.db);
     expect(cleared.notes).toBeNull();
 
-    const { traces } = await listTraces(ctx.db, { feature: "known-groups" });
+    const { traces } = await listTraces({ feature: "known-groups" });
     const notesTraces = traces.filter((t) => t.action === "update-notes");
     expect(notesTraces).toHaveLength(2);
     expect(notesTraces.every((t) => t.status === "success")).toBe(true);
@@ -148,7 +148,7 @@ describe("updateNotes", () => {
     await expect(updateNotes("-404", { notes: "x" }, trigger, ctx.db)).rejects.toThrow(
       /unknown group/i,
     );
-    const { traces } = await listTraces(ctx.db, { feature: "known-groups" });
+    const { traces } = await listTraces({ feature: "known-groups" });
     expect(traces[0].status).toBe("error");
   });
 });
@@ -172,7 +172,7 @@ describe("updateLanguage / getGroupLanguage", () => {
     expect(cleared.language).toBeNull();
     expect(await getGroupLanguage("-1", ctx.db)).toBeNull();
 
-    const { traces } = await listTraces(ctx.db, { feature: "known-groups" });
+    const { traces } = await listTraces({ feature: "known-groups" });
     const langTraces = traces.filter((t) => t.action === "update-language");
     expect(langTraces).toHaveLength(2);
     expect(langTraces.every((t) => t.status === "success")).toBe(true);
@@ -182,7 +182,7 @@ describe("updateLanguage / getGroupLanguage", () => {
     await expect(
       updateLanguage("-404", { language: "Ukrainian" }, trigger, ctx.db),
     ).rejects.toThrow(/unknown group/i);
-    const { traces } = await listTraces(ctx.db, { feature: "known-groups" });
+    const { traces } = await listTraces({ feature: "known-groups" });
     expect(traces[0].status).toBe("error");
   });
 

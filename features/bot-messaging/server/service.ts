@@ -3,7 +3,6 @@ import "server-only";
 import type { Message } from "@grammyjs/types";
 
 import type { DrizzleDb } from "@/db/drizzle";
-import { getDb } from "@/db/drizzle";
 import { FEATURES } from "@/lib/features";
 import { buildLanguageInstruction } from "@/lib/language";
 import type { ChatContentPart, ChatMessage, ChatUsage } from "@/server/llm/client";
@@ -270,8 +269,6 @@ export async function handleIncomingMessage(
   incoming: IncomingMessage,
   deps: BotMessagingDeps,
 ): Promise<HandleOutcome> {
-  const db = deps.db ?? getDb();
-
   if (incoming.fromIsBot) return ignored("from_bot");
 
   const text = incoming.text.trim();
@@ -294,8 +291,7 @@ export async function handleIncomingMessage(
         },
         // The whole incoming message, never trimmed.
         inputSummary: text,
-      },
-      db,
+      }
     ));
 
   let decision = checkAddressed(incoming.message, incoming.chatType, deps.bot);

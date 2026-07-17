@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { upsertKnownUser } from "@/features/known-users/server/repository";
-import { listTraces } from "@/server/trace/repository";
+import { getTraceDetail, listTraces } from "@/server/trace";
 import { startTestDb, type TestDb } from "@/test/db";
 import { getSettingsRecord } from "./repository";
 import { updateSettingsSchema } from "./schema";
@@ -140,13 +140,13 @@ describe("updateSettings", () => {
       ctx.db,
     );
 
-    const { traces } = await listTraces(ctx.db, { feature: "settings" });
+    const { traces } = await listTraces({ feature: "settings" });
     expect(traces).toHaveLength(1);
     expect(traces[0].action).toBe("update");
     expect(traces[0].status).toBe("success");
 
-    const events = await ctx.db.execute("SELECT data FROM trace_events");
-    const json = JSON.stringify(events.rows);
+    const detail = await getTraceDetail(traces[0].id);
+    const json = JSON.stringify(detail.events);
     expect(json).not.toContain("sk-secret-456");
     expect(json).not.toContain("tvly-secret-456");
   });
@@ -234,7 +234,7 @@ describe("embedding configuration", () => {
   it("redacts the embedding key from the trace", async () => {
     await updateSettings({ embeddingApiKey: "secret-embed-key" }, trigger, ctx.db);
 
-    const { traces } = await listTraces(ctx.db, { feature: "settings" });
+    const { traces } = await listTraces({ feature: "settings" });
     expect(JSON.stringify(traces)).not.toContain("secret-embed-key");
   });
 
@@ -362,7 +362,7 @@ describe("image runtime", () => {
   it("redacts the image key from the trace", async () => {
     await updateSettings({ imageApiKey: "secret-image-key" }, trigger, ctx.db);
 
-    const { traces } = await listTraces(ctx.db, { feature: "settings" });
+    const { traces } = await listTraces({ feature: "settings" });
     expect(JSON.stringify(traces)).not.toContain("secret-image-key");
   });
 });

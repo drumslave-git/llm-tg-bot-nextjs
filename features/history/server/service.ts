@@ -8,8 +8,7 @@ import type { ChatMessage } from "@/server/llm/client";
 import { FEATURES } from "@/lib/features";
 import type { TraceTrigger } from "@/lib/trace";
 import { publishEvent } from "@/server/realtime/hub";
-import { startTrace } from "@/server/trace";
-import { getLatestTraceIdsByCorrelation } from "@/server/trace/repository";
+import { getLatestTraceIdsByCorrelation, startTrace } from "@/server/trace";
 import {
   collectUserIds,
   fallbackSpeakerLabel,
@@ -153,8 +152,7 @@ export async function applyMessageEdit(
       action: "edit",
       trigger,
       inputSummary: input.content,
-    },
-    db,
+    }
   );
   try {
     const parsed = applyEditSchema.parse(input);
@@ -393,7 +391,7 @@ export async function getChatHistory(
   const correlations = records
     .map(traceCorrelationFor)
     .filter((value): value is string => value != null);
-  const traceIds = await getLatestTraceIdsByCorrelation(db, correlations);
+  const traceIds = await getLatestTraceIdsByCorrelation(correlations);
   const mediaSuffixes = options.loadMediaSuffixes
     ? await options.loadMediaSuffixes(records.map((r) => r.telegramMessageId)).catch(() => undefined)
     : undefined;

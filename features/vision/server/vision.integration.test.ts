@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import type { ChatCompletionResult } from "@/server/llm/client";
-import { listTraces } from "@/server/trace/repository";
+import { listTraces } from "@/server/trace";
 import { startTestDb, type TestDb } from "@/test/db";
 
 import {
@@ -126,7 +126,7 @@ describe("describeAndStore", () => {
     const annotations = await getMediaAnnotationsForMessages("5", [30], ctx.db);
     expect(annotations.get(30)?.description).toBe("a red car on a street");
 
-    const traces = await listTraces(ctx.db, { feature: "vision" });
+    const traces = await listTraces({ feature: "vision" });
     expect(traces.traces[0]?.status).toBe("success");
   });
 
@@ -177,7 +177,7 @@ describe("describeAndStore", () => {
       ctx.db,
     );
     expect(result).toBeNull();
-    const traces = await listTraces(ctx.db, { feature: "vision" });
+    const traces = await listTraces({ feature: "vision" });
     expect(traces.traces[0]?.status).toBe("skipped");
   });
 
@@ -195,7 +195,7 @@ describe("describeAndStore", () => {
     expect(result).toBeNull();
     const annotations = await getMediaAnnotationsForMessages("5", [31], ctx.db);
     expect(annotations.get(31)?.status).toBe("pending");
-    const traces = await listTraces(ctx.db, { feature: "vision" });
+    const traces = await listTraces({ feature: "vision" });
     expect(traces.traces[0]?.status).toBe("error");
   });
 });

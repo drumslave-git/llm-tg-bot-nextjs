@@ -12,6 +12,9 @@ export default defineConfig({
     environment: "node",
     include: ["**/*.integration.test.ts"],
     exclude: ["node_modules", ".next", "dist"],
+    // Isolate the file-backed trace store (temp TRACES_DIR + per-test reset) so
+    // trace assertions stay isolated now that traces live off the database.
+    setupFiles: ["./test/setup-trace-store.ts"],
     testTimeout: 60_000,
     hookTimeout: 180_000,
     fileParallelism: false,

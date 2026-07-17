@@ -93,7 +93,6 @@ function userProfileChanged(before: KnownUserRecord, profile: TelegramUserProfil
 async function traceUserCapture(
   before: KnownUserRecord | null,
   profile: TelegramUserProfile,
-  db: DrizzleDb,
 ): Promise<void> {
   if (before && !userProfileChanged(before, profile)) return;
   const added = !before;
@@ -105,8 +104,7 @@ async function traceUserCapture(
       action: added ? "capture-user" : "update-profile",
       trigger: { kind: "telegram", actor: profile.userId },
       inputSummary: label,
-    },
-    db,
+    }
   );
   await trace.event({
     type: "db",
@@ -134,7 +132,7 @@ export async function rememberUser(
     const before = await getKnownUser(db, profile.userId);
     await upsertKnownUser(db, profile);
     publishEvent(FEATURE.realtimeTopic);
-    await traceUserCapture(before, profile, db);
+    await traceUserCapture(before, profile);
   } catch {
     // Best-effort capture; swallow so message handling continues.
   }
@@ -204,8 +202,7 @@ export async function addAliasByReference(
   db: DrizzleDb = getDb(),
 ): Promise<AddAliasByReferenceResult> {
   const trace = await startTrace(
-    { feature: FEATURE.id, action: "add-aliases", trigger, inputSummary: params.reference },
-    db,
+    { feature: FEATURE.id, action: "add-aliases", trigger, inputSummary: params.reference }
   );
   try {
     await trace.event({
@@ -271,8 +268,7 @@ export async function updateLanguage(
   db: DrizzleDb = getDb(),
 ): Promise<KnownUser> {
   const trace = await startTrace(
-    { feature: FEATURE.id, action: "update-language", trigger, inputSummary: `user ${userId}` },
-    db,
+    { feature: FEATURE.id, action: "update-language", trigger, inputSummary: `user ${userId}` }
   );
   try {
     await trace.event({
@@ -316,8 +312,7 @@ export async function updateAliases(
   db: DrizzleDb = getDb(),
 ): Promise<KnownUser> {
   const trace = await startTrace(
-    { feature: FEATURE.id, action: "update-aliases", trigger, inputSummary: `user ${userId}` },
-    db,
+    { feature: FEATURE.id, action: "update-aliases", trigger, inputSummary: `user ${userId}` }
   );
   try {
     await trace.event({ type: "input", message: "aliases update", data: { userId, aliases: input.aliases } });

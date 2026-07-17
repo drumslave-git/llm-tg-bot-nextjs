@@ -329,11 +329,9 @@ async function traced<T>(
   action: string,
   inputSummary: string,
   run: (trace: Awaited<ReturnType<typeof startTrace>>) => Promise<T>,
-  db: DrizzleDb,
 ): Promise<T> {
   const trace = await startTrace(
-    { feature: FEATURE.id, action, trigger: operatorTrigger, inputSummary },
-    db,
+    { feature: FEATURE.id, action, trigger: operatorTrigger, inputSummary }
   );
   try {
     const result = await run(trace);
@@ -374,7 +372,6 @@ export async function editUserMemory(
       });
       return stored;
     },
-    db,
   );
 }
 
@@ -393,7 +390,6 @@ export async function forgetUser(userId: string, db: DrizzleDb = getDb()): Promi
         data: { userId, deleted: before?.content ?? null },
       });
     },
-    db,
   );
 }
 
@@ -418,7 +414,6 @@ export async function editGeneralMemory(
       });
       return stored;
     },
-    db,
   );
 }
 
@@ -437,7 +432,6 @@ export async function forgetGeneralMemory(db: DrizzleDb = getDb()): Promise<void
         data: { deleted: before?.content ?? null },
       });
     },
-    db,
   );
 }
 
@@ -451,6 +445,5 @@ export async function discardMemoryEntry(id: string, db: DrizzleDb = getDb()): P
       if (deleted === 0) throw ApiError.notFound(`No pending memory note with id ${id}`);
       await trace.event({ type: "step", message: "pending note discarded", data: { entryId: id } });
     },
-    db,
   );
 }

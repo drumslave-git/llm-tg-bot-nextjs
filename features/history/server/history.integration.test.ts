@@ -1,8 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { upsertKnownUser } from "@/features/known-users/server/repository";
-import { startTrace } from "@/server/trace";
-import { listTraces } from "@/server/trace/repository";
+import { listTraces, startTrace } from "@/server/trace";
 import { startTestDb, type TestDb } from "@/test/db";
 import { TRANSCRIPT_PREAMBLE } from "./format";
 import {
@@ -112,15 +111,12 @@ describe("getChatHistory", () => {
 describe("getChatHistory trace links", () => {
   it("links a user message and its reply to the trace that handled the turn", async () => {
     // A reply trace correlates to the incoming message: `${chatId}:${messageId}`.
-    const trace = await startTrace(
-      {
-        feature: "bot-messaging",
-        action: "reply",
-        trigger: { kind: "telegram", correlationId: "5:1" },
-        inputSummary: "hi",
-      },
-      ctx.db,
-    );
+    const trace = await startTrace({
+      feature: "bot-messaging",
+      action: "reply",
+      trigger: { kind: "telegram", correlationId: "5:1" },
+      inputSummary: "hi",
+    });
     await trace.succeed({ outputSummary: "hello" });
 
     await recordIncomingMessage(
@@ -322,7 +318,7 @@ describe("applyMessageEdit", () => {
     const stored = await getChatHistory("5", {}, ctx.db);
     expect(stored[0].content).toBe("fixed");
 
-    const { traces } = await listTraces(ctx.db, { feature: "history" });
+    const { traces } = await listTraces({ feature: "history" });
     expect(traces).toHaveLength(1);
     expect(traces[0]).toMatchObject({ action: "edit", status: "success" });
   });
@@ -334,7 +330,7 @@ describe("applyMessageEdit", () => {
       ctx.db,
     );
     expect(out).toBeNull();
-    const { traces } = await listTraces(ctx.db, { feature: "history" });
+    const { traces } = await listTraces({ feature: "history" });
     expect(traces[0]).toMatchObject({ action: "edit", status: "skipped" });
   });
 });

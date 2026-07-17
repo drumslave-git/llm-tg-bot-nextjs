@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { recordIncomingMessage } from "@/features/history/server/service";
-import { listTraces } from "@/server/trace/repository";
+import { listTraces } from "@/server/trace";
 import { startTestDb, type TestDb } from "@/test/db";
 import { getKnownUser, upsertKnownUser } from "./repository";
 import {
@@ -63,7 +63,7 @@ describe("rememberUser", () => {
     // Changed profile → an update-profile trace.
     await rememberUser({ ...profile, lastName: "Vine" }, ctx.db);
 
-    const { traces } = await listTraces(ctx.db, { feature: "known-users" });
+    const { traces } = await listTraces({ feature: "known-users" });
     const captures = traces.filter((t) => t.action === "capture-user");
     const updates = traces.filter((t) => t.action === "update-profile");
     expect(captures).toHaveLength(1);
@@ -101,7 +101,7 @@ describe("updateLanguage / getUserLanguage", () => {
     const cleared = await updateLanguage("1", { language: null }, trigger, ctx.db);
     expect(cleared.language).toBeNull();
 
-    const { traces } = await listTraces(ctx.db, { feature: "known-users" });
+    const { traces } = await listTraces({ feature: "known-users" });
     const langTraces = traces.filter((t) => t.action === "update-language");
     expect(langTraces).toHaveLength(2);
     expect(langTraces.every((t) => t.status === "success")).toBe(true);
@@ -125,7 +125,7 @@ describe("updateAliases", () => {
     const updated = await updateAliases("1", { aliases: ["Boss", "Chief"] }, trigger, ctx.db);
     expect(updated.aliases).toEqual(["Boss", "Chief"]);
 
-    const { traces } = await listTraces(ctx.db, { feature: "known-users" });
+    const { traces } = await listTraces({ feature: "known-users" });
     expect(traces).toHaveLength(1);
     expect(traces[0].action).toBe("update-aliases");
     expect(traces[0].status).toBe("success");
@@ -135,7 +135,7 @@ describe("updateAliases", () => {
     await expect(updateAliases("404", { aliases: [] }, trigger, ctx.db)).rejects.toThrow(
       /unknown user/i,
     );
-    const { traces } = await listTraces(ctx.db, { feature: "known-users" });
+    const { traces } = await listTraces({ feature: "known-users" });
     expect(traces[0].status).toBe("error");
   });
 });
@@ -173,7 +173,7 @@ describe("addAliasByReference", () => {
     expect(result).toMatchObject({ status: "updated", added: ["Ali"] });
     expect((await getKnownUser(ctx.db, "1"))?.aliases).toEqual(["Ali"]);
 
-    const { traces } = await listTraces(ctx.db, { feature: "known-users" });
+    const { traces } = await listTraces({ feature: "known-users" });
     expect(traces[0]).toMatchObject({ action: "add-aliases", status: "success" });
   });
 
@@ -185,7 +185,7 @@ describe("addAliasByReference", () => {
       ctx.db,
     );
     expect(result).toEqual({ status: "not_found" });
-    const { traces } = await listTraces(ctx.db, { feature: "known-users" });
+    const { traces } = await listTraces({ feature: "known-users" });
     expect(traces[0].status).toBe("skipped");
   });
 

@@ -2,8 +2,6 @@ import "server-only";
 
 import { randomUUID } from "node:crypto";
 
-import type { DrizzleDb } from "@/db/drizzle";
-import { getDb } from "@/db/drizzle";
 import { isApiError } from "@/lib/api-error";
 import type {
   LlmUsage,
@@ -14,13 +12,14 @@ import type {
   TraceTrigger,
 } from "@/lib/trace";
 import { publishEvent } from "@/server/realtime/hub";
-import { finishTrace, insertEvent, insertTrace } from "./repository";
+import { recordTraceFacts } from "./facts";
+import { appendTraceEvent, createTrace, settleTrace } from "./store";
 
 /**
  * Trace recorder — the single entry point features use to record a meaningful
- * action. Persists a `running` trace up front, appends ordered events, and
- * settles once as `success`/`error`/`skipped`. Ids are generated in app code so
- * the schema stays extension-free and portable.
+ * action. Opens a `running` trace in the in-memory store up front, appends
+ * ordered events, and settles once as `success`/`error`/`skipped`. Settled
+ * traces are written to their monthly log file by the store's flush loop.
  *
  * Traces are operator-facing debug data (never returned to end users), so full
  * error messages are recorded for debugging — including the `cause` chain, which
@@ -76,10 +75,9 @@ const MAX_CAUSE_DEPTH = 5;
 
 /**
  * An error's message followed by its `cause` chain. The top-level message is
- * often the least useful part of a wrapped failure — Drizzle reports
- * `Failed query: insert into …` and puts the reason (`column "x" does not
- * exist`) in `cause`, so recording only the message tells an operator what ran
- * but never why it failed.
+ * often the least useful part of a wrapped failure — a wrapper may report
+ * `Failed to …` and put the reason (`ECONNREFUSED`) in `cause`, so recording
+ * only the message tells an operator what ran but never why it failed.
  */
 function toErrorMessage(error: unknown): string {
   const parts: string[] = [];
@@ -100,22 +98,15 @@ function toTraceError(error: unknown): NonNullable<Trace["error"]> {
   return { message };
 }
 
-/**
- * Begin recording a trace. Defaults to the shared Drizzle db but accepts any
- * {@link DrizzleDb} for tests/transactions.
- */
-export async function startTrace(
-  input: StartTraceInput,
-  db: DrizzleDb = getDb(),
-): Promise<TraceRecorder> {
+/** Begin recording a trace in the in-memory store. */
+export async function startTrace(input: StartTraceInput): Promise<TraceRecorder> {
   const id = randomUUID();
   const startedAt = new Date().toISOString();
 
-  await insertTrace(db, {
+  createTrace({
     id,
     feature: input.feature,
     action: input.action,
-    status: "running",
     trigger: input.trigger,
     startedAt,
     inputSummary: input.inputSummary,
@@ -125,6 +116,8 @@ export async function startTrace(
 
   let seq = 0;
   let settled = false;
+  // Kept for the analytics facts written on settle; freed with the recorder.
+  const events: TraceEvent[] = [];
 
   /** Notify live dashboards that this trace changed (settled). */
   const notify = () => publishEvent("traces", { feature: input.feature });
@@ -141,7 +134,8 @@ export async function startTrace(
       data: input.data,
       usage: input.usage,
     };
-    await insertEvent(db, event);
+    appendTraceEvent(id, event);
+    events.push(event);
     // Notify live dashboards so an open trace's detail view streams entries in
     // as they are recorded, not only when the trace settles.
     notify();
@@ -154,6 +148,41 @@ export async function startTrace(
     }
   }
 
+  /**
+   * Settle the in-memory trace, notify dashboards, and write the compact analytics
+   * facts (best-effort). Shared by success/skip/fail so all three record facts.
+   */
+  async function finalize(
+    status: "success" | "error" | "skipped",
+    finish: FinishInput | undefined,
+    settleExtra: { outputSummary?: string; error?: Trace["error"] },
+  ): Promise<void> {
+    const finishedAt = new Date().toISOString();
+    settleTrace(id, {
+      status,
+      finishedAt,
+      outputSummary: settleExtra.outputSummary,
+      error: settleExtra.error,
+      relatedIds: finish?.relatedIds,
+      correlationId: finish?.correlationId,
+    });
+    notify();
+    await recordTraceFacts({
+      id,
+      feature: input.feature,
+      action: input.action,
+      status,
+      // The correlation the trace settled on (a proactive send learns it late).
+      trigger: {
+        ...input.trigger,
+        correlationId: finish?.correlationId ?? input.trigger.correlationId,
+      },
+      startedAt,
+      finishedAt,
+      events,
+    });
+  }
+
   return {
     id,
     async event(eventInput) {
@@ -163,42 +192,20 @@ export async function startTrace(
     async succeed(finish) {
       ensureOpen();
       settled = true;
-      await finishTrace(db, id, {
-        status: "success",
-        finishedAt: new Date().toISOString(),
-        outputSummary: finish?.outputSummary,
-        relatedIds: finish?.relatedIds,
-        correlationId: finish?.correlationId,
-      });
-      notify();
+      await finalize("success", finish, { outputSummary: finish?.outputSummary });
     },
     async skip(reason, finish) {
       ensureOpen();
       if (reason) await appendEvent({ type: "step", message: reason });
       settled = true;
-      await finishTrace(db, id, {
-        status: "skipped",
-        finishedAt: new Date().toISOString(),
-        outputSummary: finish?.outputSummary ?? reason,
-        relatedIds: finish?.relatedIds,
-        correlationId: finish?.correlationId,
-      });
-      notify();
+      await finalize("skipped", finish, { outputSummary: finish?.outputSummary ?? reason });
     },
     async fail(error, finish) {
       ensureOpen();
       const traceError = toTraceError(error);
       await appendEvent({ type: "error", level: "error", message: traceError.message });
       settled = true;
-      await finishTrace(db, id, {
-        status: "error",
-        finishedAt: new Date().toISOString(),
-        outputSummary: finish?.outputSummary,
-        error: traceError,
-        relatedIds: finish?.relatedIds,
-        correlationId: finish?.correlationId,
-      });
-      notify();
+      await finalize("error", finish, { outputSummary: finish?.outputSummary, error: traceError });
     },
   };
 }

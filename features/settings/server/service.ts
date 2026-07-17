@@ -344,8 +344,7 @@ export async function updateSettings(
 ): Promise<Settings> {
   const fields = Object.keys(input);
   const trace = await startTrace(
-    { feature: FEATURE.id, action: "update", trigger, inputSummary: fields.join(", ") },
-    db,
+    { feature: FEATURE.id, action: "update", trigger, inputSummary: fields.join(", ") }
   );
   try {
     await trace.event({ type: "input", message: "settings update", data: redact(input) });
@@ -377,8 +376,7 @@ export async function testConnection(
   db: DrizzleDb = getDb(),
 ): Promise<{ models: string[] }> {
   const trace = await startTrace(
-    { feature: FEATURE.id, action: "test-connection", trigger, inputSummary: input.llmBaseUrl },
-    db,
+    { feature: FEATURE.id, action: "test-connection", trigger, inputSummary: input.llmBaseUrl }
   );
   try {
     const apiKey =
@@ -436,8 +434,7 @@ export async function testEmbeddings(
       action: "test-embeddings",
       trigger,
       inputSummary: input.embeddingModel ?? record?.embeddingModel ?? "(no model)",
-    },
-    db,
+    }
   );
   try {
     if (!runtime) {
@@ -493,8 +490,7 @@ export async function testImages(
       action: "test-images",
       trigger,
       inputSummary: input.imageModel ?? record?.imageModel ?? "(no model)",
-    },
-    db,
+    }
   );
   try {
     if (!runtime) {

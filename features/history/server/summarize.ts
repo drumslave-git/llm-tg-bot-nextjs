@@ -104,8 +104,7 @@ export async function summarizeChatDay(
       action: "summarize",
       trigger,
       inputSummary: `chat ${params.chatId} · ${params.summaryDate}`,
-    },
-    db,
+    }
   );
 
   try {

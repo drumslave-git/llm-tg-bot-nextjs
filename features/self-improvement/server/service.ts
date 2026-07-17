@@ -110,8 +110,7 @@ export async function handleFeedbackReaction(
         correlationId: `${input.chatId}:${input.telegramMessageId}`,
       },
       inputSummary: `${input.reaction === "up" ? "👍" : "👎"} on message ${input.telegramMessageId}`,
-    },
-    db,
+    }
   );
   try {
     const model = await resolveReplyModel(input.chatId, input.telegramMessageId, db);
@@ -200,8 +199,7 @@ export async function handleMenuPress(
       },
       inputSummary:
         selection.option === OTHER_OPTION ? "Other — write your own" : `option ${selection.option}`,
-    },
-    db,
+    }
   );
   try {
     if (selection.option === OTHER_OPTION) {
@@ -297,8 +295,7 @@ export async function captureFeedbackReply(
         correlationId: `${awaiting.chatId}:${awaiting.telegramMessageId}`,
       },
       inputSummary: input.text,
-    },
-    db,
+    }
   );
   try {
     const updated = await completeFeedback(db, awaiting.id, input.text);

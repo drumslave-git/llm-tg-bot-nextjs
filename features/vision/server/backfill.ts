@@ -79,8 +79,7 @@ export async function runVisionBackfill(
   const trigger: TraceTrigger = options.trigger ?? { kind: "system", actor: JOB_NAME };
 
   const trace = await startTrace(
-    { feature: FEATURE_ID, action: "backfill", trigger, inputSummary: "describe pending media" },
-    db,
+    { feature: FEATURE_ID, action: "backfill", trigger, inputSummary: "describe pending media" }
   );
 
   try {

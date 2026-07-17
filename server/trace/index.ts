@@ -12,9 +12,13 @@ export {
   listTraces,
   listFeatures,
   getEventsForTraces,
+  getLatestTraceIdsByCorrelation,
+  startTraceStore,
+  stopTraceStore,
+  flushTracesNow,
   type ListTracesInput,
   type ListTracesResult,
-} from "./repository";
+} from "./store";
 export {
   getTraceList,
   getTraceDetail,

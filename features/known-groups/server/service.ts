@@ -99,7 +99,7 @@ export async function rememberGroupActivity(
       await recordGroupMembership(db, params.chatId, params.userId);
     }
     publishEvent(FEATURE.realtimeTopic);
-    await traceGroupCapture(before, memberExisted, params, db);
+    await traceGroupCapture(before, memberExisted, params);
   } catch {
     // Best-effort capture; swallow so message handling continues.
   }
@@ -121,7 +121,6 @@ async function traceGroupCapture(
   before: KnownGroupRecord | null,
   memberExisted: boolean,
   params: TelegramGroupProfile & { userId: string | null },
-  db: DrizzleDb,
 ): Promise<void> {
   const groupAdded = !before;
   const groupChanged = before ? groupProfileChanged(before, params) : false;
@@ -137,8 +136,7 @@ async function traceGroupCapture(
       action,
       trigger: { kind: "telegram", actor: params.userId ?? params.chatId },
       inputSummary: label,
-    },
-    db,
+    }
   );
   if (groupAdded) {
     await trace.event({
@@ -182,8 +180,7 @@ export async function updateNotes(
   db: DrizzleDb = getDb(),
 ): Promise<KnownGroup> {
   const trace = await startTrace(
-    { feature: FEATURE.id, action: "update-notes", trigger, inputSummary: `group ${chatId}` },
-    db,
+    { feature: FEATURE.id, action: "update-notes", trigger, inputSummary: `group ${chatId}` }
   );
   try {
     await trace.event({ type: "input", message: "notes update", data: { chatId, notes: input.notes } });
@@ -210,8 +207,7 @@ export async function updateLanguage(
   db: DrizzleDb = getDb(),
 ): Promise<KnownGroup> {
   const trace = await startTrace(
-    { feature: FEATURE.id, action: "update-language", trigger, inputSummary: `group ${chatId}` },
-    db,
+    { feature: FEATURE.id, action: "update-language", trigger, inputSummary: `group ${chatId}` }
   );
   try {
     await trace.event({

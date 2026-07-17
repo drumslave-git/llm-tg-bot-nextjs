@@ -6,8 +6,7 @@ import { closePool } from "@/db/pool";
 import { chatMessages, knownUsers, selfCorrections, usersCommunicationPreferences, usersFeedbacks } from "@/db/schema";
 import { stopVisionBackfill } from "@/features/vision/server/backfill-scheduler";
 import type { ChatCompletionResult, ChatMessage } from "@/server/llm/client";
-import { startTrace } from "@/server/trace";
-import { getTrace, listTraces } from "@/server/trace/repository";
+import { getTrace, listTraces, startTrace } from "@/server/trace";
 import { processCallbackUpdate } from "@/server/telegram/process-callback";
 import { processReactionUpdate } from "@/server/telegram/process-reaction";
 import type { FeedbackTransport } from "@/server/telegram/transport";
@@ -132,14 +131,11 @@ describe("feedback collection (reaction → menu → answer)", () => {
   it("opens a feedback row and sends the menu, resolving the clean model from the reply trace", async () => {
     await seedExchange();
     // The reply trace (keyed by the incoming message) carries the raw model id.
-    const trace = await startTrace(
-      {
-        feature: "bot-messaging",
-        action: "reply",
-        trigger: { kind: "telegram", actor: USER_ID, correlationId: `${CHAT_ID}:${USER_MSG_ID}` },
-      },
-      ctx.db,
-    );
+    const trace = await startTrace({
+      feature: "bot-messaging",
+      action: "reply",
+      trigger: { kind: "telegram", actor: USER_ID, correlationId: `${CHAT_ID}:${USER_MSG_ID}` },
+    });
     await trace.event({
       type: "llm_response",
       message: "response",
@@ -168,7 +164,7 @@ describe("feedback collection (reaction → menu → answer)", () => {
     expect(menu.replyToMessageId).toBe(BOT_MSG_ID);
     expect(menu.keyboard).toHaveLength(6);
     // Traced under user-feedback.
-    const traces = await listTraces(ctx.db, { feature: "user-feedback" });
+    const traces = await listTraces({ feature: "user-feedback" });
     expect(traces.total).toBe(1);
     expect(traces.traces[0]).toMatchObject({ status: "success", action: "menu" });
   });
@@ -374,14 +370,11 @@ async function seedCompletedFeedback(userId: string, feedback: string) {
 describe("self-reflection (reflectOnFeedback)", () => {
   /** The reply trace the reflection reads: how the bot produced the reacted reply. */
   async function seedReplyTrace() {
-    const trace = await startTrace(
-      {
-        feature: "bot-messaging",
-        action: "reply",
-        trigger: { kind: "telegram", actor: USER_ID, correlationId: `${CHAT_ID}:${USER_MSG_ID}` },
-      },
-      ctx.db,
-    );
+    const trace = await startTrace({
+      feature: "bot-messaging",
+      action: "reply",
+      trigger: { kind: "telegram", actor: USER_ID, correlationId: `${CHAT_ID}:${USER_MSG_ID}` },
+    });
     await trace.event({
       type: "llm_request",
       message: "request",
@@ -434,7 +427,7 @@ describe("self-reflection (reflectOnFeedback)", () => {
     expect(asked).toContain("Sunny, 25°C.");
     expect(asked).toContain("User feedback: too long");
     // Traced under user-feedback, linked back to the feedback row.
-    const traces = await listTraces(ctx.db, { feature: "user-feedback" });
+    const traces = await listTraces({ feature: "user-feedback" });
     expect(traces.traces[0]).toMatchObject({
       status: "success",
       action: "reflect",
@@ -454,14 +447,11 @@ describe("self-reflection (reflectOnFeedback)", () => {
       replyToMessageId: null,
       sentAt: new Date("2026-07-14T12:00:00Z"),
     });
-    const fire = await startTrace(
-      {
-        feature: "scheduled-tasks",
-        action: "fire",
-        trigger: { kind: "cron", actor: CHAT_ID, correlationId: "task-uuid" },
-      },
-      ctx.db,
-    );
+    const fire = await startTrace({
+      feature: "scheduled-tasks",
+      action: "fire",
+      trigger: { kind: "cron", actor: CHAT_ID, correlationId: "task-uuid" },
+    });
     await fire.event({
       type: "llm_request",
       message: "request",
@@ -516,8 +506,8 @@ describe("self-reflection (reflectOnFeedback)", () => {
     const asked = String(complete.mock.calls[1][0].at(-1).content);
     expect(asked).toContain("Always give the full background");
     expect(asked).not.toContain("reviewing one of your own replies");
-    const header = (await listTraces(ctx.db, { feature: "user-feedback" })).traces[0];
-    const events = (await getTrace(ctx.db, header.id))!.events;
+    const header = (await listTraces({ feature: "user-feedback" })).traces[0];
+    const events = (await getTrace(header.id))!.events;
     expect(events.some((e) => e.message.includes("no reply trace"))).toBe(false);
   });
 
@@ -537,8 +527,8 @@ describe("self-reflection (reflectOnFeedback)", () => {
       "Answered a real question flippantly.",
     );
     // The operator can see the reflection was the thinner kind.
-    const header = (await listTraces(ctx.db, { feature: "user-feedback" })).traces[0];
-    const events = (await getTrace(ctx.db, header.id))!.events;
+    const header = (await listTraces({ feature: "user-feedback" })).traces[0];
+    const events = (await getTrace(header.id))!.events;
     expect(events.some((e) => e.level === "warn" && e.message.includes("no reply trace"))).toBe(
       true,
     );
@@ -555,7 +545,7 @@ describe("self-reflection (reflectOnFeedback)", () => {
       reflection: null,
       reflectionModel: null,
     });
-    const traces = await listTraces(ctx.db, { feature: "user-feedback" });
+    const traces = await listTraces({ feature: "user-feedback" });
     expect(traces.traces[0]).toMatchObject({ status: "skipped", action: "reflect" });
   });
 
@@ -574,7 +564,7 @@ describe("self-reflection (reflectOnFeedback)", () => {
     expect(await reflectOnFeedback(pending, { complete, db: ctx.db })).toBeNull();
     expect(complete).not.toHaveBeenCalled();
     // Nothing happened, so nothing is recorded — Debug stays free of noise.
-    expect((await listTraces(ctx.db, { feature: "user-feedback" })).total).toBe(0);
+    expect((await listTraces({ feature: "user-feedback" })).total).toBe(0);
   });
 });
 
@@ -638,14 +628,14 @@ describe("daily incorporation (runSelfImprovement)", () => {
       expect(row.correctionsVersion).toBe(1);
     }
     // Traced under self-improvement with the full fold bodies.
-    const traces = await listTraces(ctx.db, { feature: "self-improvement" });
+    const traces = await listTraces({ feature: "self-improvement" });
     expect(traces.total).toBe(1);
     expect(traces.traces[0]).toMatchObject({ status: "success", action: "incorporate" });
 
     // A second run with nothing new is a silent no-op (no extra trace).
     const again = await runSelfImprovement({ complete: llm.complete, db: ctx.db });
     expect(again.summary).toBe("nothing to incorporate");
-    expect((await listTraces(ctx.db, { feature: "self-improvement" })).total).toBe(1);
+    expect((await listTraces({ feature: "self-improvement" })).total).toBe(1);
   });
 
   it("skips the reflection backfill for a feedback that already has one, and folds from it", async () => {
@@ -712,7 +702,7 @@ describe("daily incorporation (runSelfImprovement)", () => {
     expect(await ctx.db.select().from(usersCommunicationPreferences)).toHaveLength(0);
     expect(await ctx.db.select().from(selfCorrections)).toHaveLength(0);
     // The run trace still settles (success with failure counts in the summary).
-    const traces = await listTraces(ctx.db, { feature: "self-improvement" });
+    const traces = await listTraces({ feature: "self-improvement" });
     expect(traces.total).toBe(1);
   });
 });

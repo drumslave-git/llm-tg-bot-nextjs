@@ -146,8 +146,7 @@ export async function runSelfImprovement(deps: SelfImprovementDeps): Promise<Sel
       action: "incorporate",
       trigger: { kind: "system", actor: "self-improvement" },
       inputSummary: `${prefsBacklog.length} feedback(s) for preferences, ${correctionsBacklog.length} for corrections`,
-    },
-    db,
+    }
   );
 
   const persona = personaContext(deps.personalityPrompt);

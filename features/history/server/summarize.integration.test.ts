@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 
 import { EMBEDDING_DIMENSIONS } from "@/lib/embeddings";
 import type { ChatCompletionResult, ChatMessage } from "@/server/llm/client";
-import { listTraces } from "@/server/trace/repository";
+import { listTraces } from "@/server/trace";
 import { startTestDb, type TestDb } from "@/test/db";
 
 import { recordAssistantMessage, recordIncomingMessage } from "./service";
@@ -243,7 +243,7 @@ describe("summarizeChatDay", () => {
 
     await summarizeChatDay({ chatId: CHAT, summaryDate: YESTERDAY }, deps(), { kind: "test" }, ctx.db);
 
-    const { traces } = await listTraces(ctx.db, { feature: "history-summaries" });
+    const { traces } = await listTraces({ feature: "history-summaries" });
     expect(traces).toHaveLength(1);
     expect(traces[0]).toMatchObject({ action: "summarize", status: "success" });
     expect(traces[0].outputSummary).toContain("1 topic(s) from 2 message(s)");

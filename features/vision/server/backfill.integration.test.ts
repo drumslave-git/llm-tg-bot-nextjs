@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 
 import type { ChatCompletionResult } from "@/server/llm/client";
 import { withAdvisoryLock } from "@/server/jobs/lock";
-import { listTraces } from "@/server/trace/repository";
+import { listTraces } from "@/server/trace";
 import { startTestDb, type TestDb } from "@/test/db";
 
 import { runVisionBackfill } from "./backfill";
@@ -65,10 +65,10 @@ describe("runVisionBackfill", () => {
     expect(await countPendingMedia(ctx.db)).toBe(0);
 
     // The batch run is traced under vision-backfill; each row under vision.
-    const runTraces = await listTraces(ctx.db, { feature: "vision-backfill" });
+    const runTraces = await listTraces({ feature: "vision-backfill" });
     expect(runTraces.traces).toHaveLength(1);
     expect(runTraces.traces[0].status).toBe("success");
-    const describeTraces = await listTraces(ctx.db, { feature: "vision" });
+    const describeTraces = await listTraces({ feature: "vision" });
     expect(describeTraces.traces).toHaveLength(3);
   });
 

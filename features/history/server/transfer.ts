@@ -74,8 +74,7 @@ export async function importHistoryCsv(
   db: DrizzleDb = getDb(),
 ): Promise<ImportResult> {
   const trace = await startTrace(
-    { feature: FEATURE.id, action: "import", trigger, inputSummary: "CSV import" },
-    db,
+    { feature: FEATURE.id, action: "import", trigger, inputSummary: "CSV import" }
   );
   try {
     const table = parseCsv(input.csv, input.delimiter);

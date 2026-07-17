@@ -4,6 +4,9 @@ import { sql, type SQL } from "drizzle-orm";
 
 import type { DrizzleDb } from "@/db/drizzle";
 import { chatDayInsights, periodInsights } from "@/db/schema";
+// Token/model-speed/health metrics read the compact analytics facts distilled
+// from each settled trace (`llm_usage`, `trace_facts`) — the full traces live in
+// the file-backed store, so these are the queryable source now.
 
 import { addDaysToDateStr, bucketFormat, truncUnit } from "../period";
 import type { Granularity } from "../types";
@@ -37,20 +40,18 @@ function messageWhere(scope: MetricScope): SQL {
 }
 
 /**
- * WHERE clause for the token (LLM usage) queries. Tokens are the conversation's —
- * `feature = 'bot-messaging'` reply traces — so they read as "processed vs
- * generated" and can be scoped to a chat (the trace `correlation_id` is
- * `<chatId>:<messageId>`) or a user (the trace `trigger_actor` is the sender id).
+ * WHERE clause for the token (LLM usage) queries over `llm_usage`. Tokens are the
+ * conversation's — `feature = 'bot-messaging'` reply usage — so they read as
+ * "processed vs generated" and can be scoped to a chat (the `correlation_id` is
+ * `<chatId>:<messageId>`) or a user (the `trigger_actor` is the sender id).
  */
 function tokenWhere(scope: MetricScope): SQL {
   const parts: SQL[] = [
-    sql`e.type = 'llm_response'`,
-    sql`e.usage is not null`,
-    sql`t.feature = 'bot-messaging'`,
-    sql`t.started_at >= ${scope.startUtc}`,
+    sql`feature = 'bot-messaging'`,
+    sql`started_at >= ${scope.startUtc}`,
   ];
-  if (scope.chatId) parts.push(sql`t.correlation_id like ${`${scope.chatId}:%`}`);
-  if (scope.userId) parts.push(sql`t.trigger_actor = ${scope.userId}`);
+  if (scope.chatId) parts.push(sql`correlation_id like ${`${scope.chatId}:%`}`);
+  if (scope.userId) parts.push(sql`trigger_actor = ${scope.userId}`);
   return sql.join(parts, sql` and `);
 }
 
@@ -96,14 +97,13 @@ export async function getTokenSeries(
   db: DrizzleDb,
   params: MetricScope & { granularity: Granularity; timeZone: string },
 ): Promise<TokenSeriesRow[]> {
-  const bucket = bucketExpr(sql`t.started_at`, params.granularity, params.timeZone);
+  const bucket = bucketExpr(sql`started_at`, params.granularity, params.timeZone);
   const rows = await db.execute<{ bucket: string; processed: string; generated: string }>(sql`
     select
       ${bucket} as bucket,
-      coalesce(sum((e.usage->>'promptTokens')::numeric), 0)::bigint as processed,
-      coalesce(sum((e.usage->>'completionTokens')::numeric), 0)::bigint as generated
-    from trace_events e
-    join traces t on t.id = e.trace_id
+      coalesce(sum(prompt_tokens), 0)::bigint as processed,
+      coalesce(sum(completion_tokens), 0)::bigint as generated
+    from llm_usage
     where ${tokenWhere(params)}
     group by 1
   `);
@@ -141,10 +141,9 @@ export async function getTokenTotals(
 ): Promise<{ processed: number; generated: number }> {
   const rows = await db.execute<{ processed: string; generated: string }>(sql`
     select
-      coalesce(sum((e.usage->>'promptTokens')::numeric), 0)::bigint as processed,
-      coalesce(sum((e.usage->>'completionTokens')::numeric), 0)::bigint as generated
-    from trace_events e
-    join traces t on t.id = e.trace_id
+      coalesce(sum(prompt_tokens), 0)::bigint as processed,
+      coalesce(sum(completion_tokens), 0)::bigint as generated
+    from llm_usage
     where ${tokenWhere(scope)}
   `);
   const r = rows.rows[0];
@@ -270,22 +269,19 @@ export async function getModelStatsRaw(
     total_tokens: string;
   }>(sql`
     select
-      ${attributedModelExpr(sql`e.usage->>'model'`)} as model,
-      t.feature as feature,
-      t.action as action,
+      ${attributedModelExpr(sql`model`)} as model,
+      feature,
+      action,
       count(*)::int as calls,
-      coalesce(sum((e.usage->>'latencyMs')::numeric), 0) as latency_sum,
-      percentile_cont(0.5) within group (order by (e.usage->>'latencyMs')::numeric) as latency_p50,
-      percentile_cont(0.95) within group (order by (e.usage->>'latencyMs')::numeric) as latency_p95,
-      coalesce(sum((e.usage->>'promptTokens')::numeric), 0) as prompt_tokens,
-      coalesce(sum((e.usage->>'completionTokens')::numeric), 0) as completion_tokens,
-      coalesce(sum((e.usage->>'totalTokens')::numeric), 0) as total_tokens
-    from trace_events e
-    join traces t on t.id = e.trace_id
-    where e.type = 'llm_response'
-      and e.usage is not null
-      and (e.usage->>'model') is not null
-      and t.started_at >= ${params.startUtc}
+      coalesce(sum(latency_ms), 0) as latency_sum,
+      percentile_cont(0.5) within group (order by latency_ms) as latency_p50,
+      percentile_cont(0.95) within group (order by latency_ms) as latency_p95,
+      coalesce(sum(prompt_tokens), 0) as prompt_tokens,
+      coalesce(sum(completion_tokens), 0) as completion_tokens,
+      coalesce(sum(total_tokens), 0) as total_tokens
+    from llm_usage
+    where model is not null
+      and started_at >= ${params.startUtc}
     group by 1, 2, 3
   `);
   return rows.rows.map((r) => ({
@@ -328,7 +324,7 @@ export async function getBotTraceHealth(
     select
       count(*)::int as total,
       count(*) filter (where status = 'error')::int as errors
-    from traces
+    from trace_facts
     where feature = 'bot-messaging' and started_at >= ${params.startUtc}
   `);
   return { total: Number(rows.rows[0]?.total ?? 0), errors: Number(rows.rows[0]?.errors ?? 0) };
@@ -369,22 +365,19 @@ export async function getUserTokens(
 ): Promise<Map<string, number>> {
   if (params.userIds.length === 0) return new Map();
   const parts: SQL[] = [
-    sql`e.type = 'llm_response'`,
-    sql`e.usage is not null`,
-    sql`t.feature = 'bot-messaging'`,
-    sql`t.started_at >= ${params.startUtc}`,
-    sql`t.trigger_actor in (${sql.join(
+    sql`feature = 'bot-messaging'`,
+    sql`started_at >= ${params.startUtc}`,
+    sql`trigger_actor in (${sql.join(
       params.userIds.map((id) => sql`${id}`),
       sql`, `,
     )})`,
   ];
-  if (params.chatId) parts.push(sql`t.correlation_id like ${`${params.chatId}:%`}`);
+  if (params.chatId) parts.push(sql`correlation_id like ${`${params.chatId}:%`}`);
   const rows = await db.execute<{ user_id: string; tokens: string }>(sql`
-    select t.trigger_actor as user_id, coalesce(sum((e.usage->>'promptTokens')::numeric), 0)::bigint as tokens
-    from trace_events e
-    join traces t on t.id = e.trace_id
+    select trigger_actor as user_id, coalesce(sum(prompt_tokens), 0)::bigint as tokens
+    from llm_usage
     where ${sql.join(parts, sql` and `)}
-    group by t.trigger_actor
+    group by trigger_actor
   `);
   return new Map(rows.rows.map((r) => [r.user_id, Number(r.tokens)]));
 }

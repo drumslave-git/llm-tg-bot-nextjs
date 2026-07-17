@@ -71,8 +71,7 @@ export async function createPersonality(
   db: DrizzleDb = getDb(),
 ): Promise<Personality> {
   const trace = await startTrace(
-    { feature: FEATURE.id, action: "create", trigger, inputSummary: input.name },
-    db,
+    { feature: FEATURE.id, action: "create", trigger, inputSummary: input.name }
   );
   try {
     await trace.event({
@@ -107,8 +106,7 @@ export async function editPersonality(
   db: DrizzleDb = getDb(),
 ): Promise<Personality> {
   const trace = await startTrace(
-    { feature: FEATURE.id, action: "update", trigger, inputSummary: `personality ${id}` },
-    db,
+    { feature: FEATURE.id, action: "update", trigger, inputSummary: `personality ${id}` }
   );
   try {
     await trace.event({ type: "input", message: "update personality", data: { id, ...input } });
@@ -138,8 +136,7 @@ export async function removePersonality(
   db: DrizzleDb = getDb(),
 ): Promise<void> {
   const trace = await startTrace(
-    { feature: FEATURE.id, action: "delete", trigger, inputSummary: `personality ${id}` },
-    db,
+    { feature: FEATURE.id, action: "delete", trigger, inputSummary: `personality ${id}` }
   );
   try {
     const deleted = await deletePersonality(db, id);
@@ -167,8 +164,7 @@ export async function setActivePersonality(
       action: "set-active",
       trigger,
       inputSummary: personalityId ?? "(none)",
-    },
-    db,
+    }
   );
   try {
     await trace.event({ type: "input", message: "set active personality", data: { personalityId } });

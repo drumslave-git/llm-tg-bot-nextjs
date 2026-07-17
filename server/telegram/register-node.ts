@@ -15,6 +15,7 @@ import {
   stopSelfImprovementScheduler,
 } from "@/features/self-improvement/server/scheduler";
 import { startVisionBackfill, stopVisionBackfill } from "@/features/vision/server/backfill-scheduler";
+import { startTraceStore, stopTraceStore } from "@/server/trace";
 
 import { startBot, stopBot } from "./bot-manager";
 
@@ -37,6 +38,9 @@ export function registerNode(): void {
     stopSummaryScheduler();
     stopMemoryScheduler();
     stopAnalyticsScheduler();
+    // Flush any settled traces still buffered in memory before the process exits,
+    // so a graceful restart doesn't lose the last window of debug history.
+    await stopTraceStore().catch(() => undefined);
     await Promise.race([
       stopBot().catch(() => undefined),
       new Promise((resolve) => setTimeout(resolve, 3000)),
@@ -45,6 +49,11 @@ export function registerNode(): void {
   };
   process.once("SIGTERM", () => void shutdown());
   process.once("SIGINT", () => void shutdown());
+
+  // Arm the file-backed trace store: warm the current month from disk and start
+  // the periodic flush that appends settled traces to their monthly log file.
+  // Best-effort — a failure here must never gate server startup.
+  void startTraceStore().catch(() => undefined);
 
   // Start the in-process vision-backfill scheduler. It arms an initial run so any
   // media left `pending` from before boot is captioned during the first quiet

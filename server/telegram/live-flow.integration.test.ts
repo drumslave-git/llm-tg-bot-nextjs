@@ -1,12 +1,13 @@
 import { loadEnvConfig } from "@next/env";
-import { eq, inArray, like } from "drizzle-orm";
+import { eq, like } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { getDb } from "@/db/drizzle";
 import { closePool } from "@/db/pool";
-import { chatMessages, knownUsers, messageMedia, traceEvents, traces } from "@/db/schema";
+import { chatMessages, knownUsers, llmUsage, messageMedia, traceFacts } from "@/db/schema";
 import { getLlmRuntime } from "@/features/settings/server/service";
 import { stopVisionBackfill } from "@/features/vision/server/backfill-scheduler";
+import { listTraces } from "@/server/trace";
 import { simulateUpdate } from "@/test/simulate";
 
 /**
@@ -33,17 +34,10 @@ const USER_ID = "987654321";
 async function cleanup(): Promise<void> {
   const db = getDb();
   const chatId = String(CHAT_ID);
-  // Traces are keyed by correlationId = `${chatId}:${messageId}`; delete their
-  // events first (no cascade assumption), then the traces themselves.
-  const traceRows = await db
-    .select({ id: traces.id })
-    .from(traces)
-    .where(like(traces.correlationId, `${chatId}:%`));
-  const traceIds = traceRows.map((r) => r.id);
-  if (traceIds.length > 0) {
-    await db.delete(traceEvents).where(inArray(traceEvents.traceId, traceIds));
-    await db.delete(traces).where(inArray(traces.id, traceIds));
-  }
+  // Traces live in the file store (a temp dir, reset by the test setup), but their
+  // analytics facts land in the real DB — keyed by correlationId = `${chatId}:…`.
+  await db.delete(llmUsage).where(like(llmUsage.correlationId, `${chatId}:%`));
+  await db.delete(traceFacts).where(like(traceFacts.correlationId, `${chatId}:%`));
   await db.delete(messageMedia).where(eq(messageMedia.chatId, chatId));
   await db.delete(chatMessages).where(eq(chatMessages.chatId, chatId));
   await db.delete(knownUsers).where(eq(knownUsers.userId, USER_ID));
@@ -82,14 +76,13 @@ describe.skipIf(!LIVE)("processUpdate against the real configured LLM", () => {
       expect(res.replies).toHaveLength(1);
       expect(res.replies[0].trim().length).toBeGreaterThan(0);
 
-      // The reply was mirrored + traced against the real database.
-      const traceRows = await getDb()
-        .select({ status: traces.status, feature: traces.feature })
-        .from(traces)
-        .where(like(traces.correlationId, `${CHAT_ID}:%`));
-      expect(traceRows.some((t) => t.feature === "bot-messaging" && t.status === "success")).toBe(
-        true,
-      );
+      // The reply was mirrored + traced (traces live in the file-backed store).
+      const { traces: botTraces } = await listTraces({ feature: "bot-messaging" });
+      expect(
+        botTraces.some(
+          (t) => t.status === "success" && t.trigger.correlationId?.startsWith(`${CHAT_ID}:`),
+        ),
+      ).toBe(true);
     },
     180_000,
   );

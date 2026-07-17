@@ -1,14 +1,19 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { isApiError } from "@/lib/api-error";
+import { setupTempTraceStore } from "@/test/trace-store";
 import {
   buildTraceBundle,
   buildTraceListBundle,
   getTraceDetail,
   getTraceList,
-} from "@/server/trace/service";
-import { startTrace, type StartTraceInput } from "@/server/trace/recorder";
-import { startTestDb, type TestDb } from "@/test/db";
+} from "./service";
+import { startTrace, type StartTraceInput } from "./recorder";
+
+/**
+ * Shared Debug service over the file-backed store. Docker-free: the store writes
+ * to a throwaway `TRACES_DIR`, cleared before every test.
+ */
 
 const baseInput: StartTraceInput = {
   feature: "bot-messaging",
@@ -19,26 +24,14 @@ const baseInput: StartTraceInput = {
 
 /** Seed one settled trace and return its id. */
 async function seed(overrides: Partial<StartTraceInput> = {}, fail = false): Promise<string> {
-  const trace = await startTrace({ ...baseInput, ...overrides }, ctx.db);
+  const trace = await startTrace({ ...baseInput, ...overrides });
   await trace.event({ type: "input", message: "received" });
   if (fail) await trace.fail(new Error("boom"));
   else await trace.succeed({ outputSummary: "hi" });
   return trace.id;
 }
 
-let ctx: TestDb;
-
-beforeAll(async () => {
-  ctx = await startTestDb();
-});
-
-afterAll(async () => {
-  await ctx?.stop();
-});
-
-beforeEach(async () => {
-  await ctx.truncate();
-});
+setupTempTraceStore();
 
 describe("getTraceList", () => {
   it("returns paged headers, total, and the distinct feature list", async () => {
@@ -46,7 +39,7 @@ describe("getTraceList", () => {
     await seed({ feature: "bot-messaging" });
     await seed({ feature: "bot-messaging" }, true);
 
-    const all = await getTraceList({}, ctx.db);
+    const all = await getTraceList({});
     expect(all.total).toBe(3);
     expect(all.traces).toHaveLength(3);
     // Newest first; headers carry no events.
@@ -58,11 +51,11 @@ describe("getTraceList", () => {
     await seed({ feature: "settings" });
     await seed({ feature: "bot-messaging" }, true);
 
-    const errors = await getTraceList({ status: "error" }, ctx.db);
+    const errors = await getTraceList({ status: "error" });
     expect(errors.total).toBe(1);
     expect(errors.traces[0].feature).toBe("bot-messaging");
 
-    const settings = await getTraceList({ feature: "settings" }, ctx.db);
+    const settings = await getTraceList({ feature: "settings" });
     expect(settings.total).toBe(1);
     // The feature list reflects everything recorded, not just the filtered slice.
     expect(settings.features).toEqual(["bot-messaging", "settings"]);
@@ -70,10 +63,10 @@ describe("getTraceList", () => {
 
   it("returns every trace uncapped (no default 50 limit)", async () => {
     for (let i = 0; i < 55; i++) {
-      const trace = await startTrace({ ...baseInput, action: `reply-${i}` }, ctx.db);
+      const trace = await startTrace({ ...baseInput, action: `reply-${i}` });
       await trace.succeed();
     }
-    const all = await getTraceList({}, ctx.db);
+    const all = await getTraceList({});
     expect(all.total).toBe(55);
     expect(all.traces).toHaveLength(55);
   });
@@ -82,14 +75,14 @@ describe("getTraceList", () => {
 describe("getTraceDetail", () => {
   it("returns the full trace with ordered events", async () => {
     const id = await seed();
-    const trace = await getTraceDetail(id, ctx.db);
+    const trace = await getTraceDetail(id);
     expect(trace.id).toBe(id);
     expect(trace.events.length).toBeGreaterThan(0);
     expect(trace.events[0].type).toBe("input");
   });
 
   it("throws a not_found ApiError for an unknown id", async () => {
-    const err = await getTraceDetail("missing", ctx.db).catch((e: unknown) => e);
+    const err = await getTraceDetail("missing").catch((e: unknown) => e);
     expect(isApiError(err)).toBe(true);
     expect((err as { code: string }).code).toBe("not_found");
   });
@@ -98,7 +91,7 @@ describe("getTraceDetail", () => {
 describe("buildTraceBundle", () => {
   it("wraps a single trace (with events) in the shared bundle envelope", async () => {
     const id = await seed();
-    const bundle = await buildTraceBundle(id, ctx.db);
+    const bundle = await buildTraceBundle(id);
     expect(bundle.schema).toBe("llm-tg-bot/trace-bundle@1");
     expect(bundle.exportedAt).toBeDefined();
     expect(bundle.traces).toHaveLength(1);
@@ -112,7 +105,7 @@ describe("buildTraceListBundle", () => {
     await seed({ feature: "settings" });
     await seed({ feature: "bot-messaging" });
 
-    const bundle = await buildTraceListBundle({ feature: "bot-messaging" }, ctx.db);
+    const bundle = await buildTraceListBundle({ feature: "bot-messaging" });
     expect(bundle.traces).toHaveLength(1);
     expect(bundle.traces[0].feature).toBe("bot-messaging");
     expect(bundle.traces[0].events.length).toBeGreaterThan(0);

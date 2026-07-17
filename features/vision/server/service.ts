@@ -287,8 +287,7 @@ export async function describeAndStore(
         correlationId: `${params.chatId}:${params.telegramMessageId}`,
       },
       inputSummary: `media on message ${params.telegramMessageId}`,
-    },
-    db,
+    }
   );
   try {
     const media = await getMediaByMessage(db, params.chatId, params.telegramMessageId);

@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
-import { chatMessages, traceEvents, traces } from "@/db/schema";
+import { chatMessages, llmUsage, traceFacts } from "@/db/schema";
 import type { ChatCompletionResult, ChatMessage } from "@/server/llm/client";
-import { listTraces } from "@/server/trace/repository";
+import { listTraces } from "@/server/trace";
 import { startTestDb, type TestDb } from "@/test/db";
 
 import { getMetricTotals, getSeries, getSystemStats } from "./metrics";
@@ -48,31 +48,37 @@ async function seedLlmUsage(
   trigger?: { actor?: string; correlationId?: string; feature?: string; action?: string },
 ) {
   const traceId = crypto.randomUUID();
-  await ctx.db.insert(traces).values({
+  const feature = trigger?.feature ?? "bot-messaging";
+  const action = trigger?.action ?? "reply";
+  const startedAt = new Date();
+  const triggerActor = trigger?.actor ?? null;
+  const correlationId = trigger?.correlationId ?? null;
+  // The compact facts the recorder writes on settle: the per-trace outcome
+  // (health) and the per-usage row (tokens / model speed).
+  await ctx.db.insert(traceFacts).values({
     id: traceId,
-    feature: trigger?.feature ?? "bot-messaging",
-    action: trigger?.action ?? "reply",
+    feature,
+    action,
     status: "success",
-    triggerKind: "telegram",
-    triggerActor: trigger?.actor ?? null,
-    correlationId: trigger?.correlationId ?? null,
-    startedAt: new Date(),
+    triggerActor,
+    correlationId,
+    startedAt,
+    finishedAt: startedAt,
   });
-  await ctx.db.insert(traceEvents).values({
+  await ctx.db.insert(llmUsage).values({
     id: crypto.randomUUID(),
     traceId,
-    seq: 0,
-    ts: new Date(),
-    type: "llm_response",
-    level: "info",
-    message: "response",
-    usage: {
-      model,
-      promptTokens: tokens.p,
-      completionTokens: tokens.c,
-      totalTokens: tokens.p + tokens.c,
-      latencyMs,
-    },
+    feature,
+    action,
+    triggerActor,
+    correlationId,
+    model,
+    servedModel: null,
+    promptTokens: tokens.p,
+    completionTokens: tokens.c,
+    totalTokens: tokens.p + tokens.c,
+    latencyMs,
+    startedAt,
   });
 }
 
@@ -262,7 +268,7 @@ describe("runAnalyticsInsights", () => {
     });
     expect(globalDay?.wordOfPeriod).toBe("weekend");
 
-    const runTraces = await listTraces(ctx.db, { feature: "analytics-insights" });
+    const runTraces = await listTraces({ feature: "analytics-insights" });
     expect(runTraces.traces).toHaveLength(1);
     expect(runTraces.traces[0].status).toBe("success");
   });

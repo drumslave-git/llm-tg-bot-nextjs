@@ -204,8 +204,7 @@ async function runInsightPass(
       action: meta.action,
       trigger: { kind: "system", actor: "analytics" },
       inputSummary: meta.inputSummary,
-    },
-    db,
+    }
   );
 
   const result = { ...EMPTY };

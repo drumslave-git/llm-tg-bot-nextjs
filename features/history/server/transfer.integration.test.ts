@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
-import { listTraces } from "@/server/trace/repository";
+import { listTraces } from "@/server/trace";
 import { startTestDb, type TestDb } from "@/test/db";
 import {
   fromColumn,
@@ -245,7 +245,7 @@ describe("importHistoryCsv", () => {
     const csv = `${HISTORY_CSV_HEADERS.join(",")}\n5,1,user,traced,2026-07-14T10:00:00Z,100,,,\n`;
     await importHistoryCsv({ csv, mapping: CANONICAL }, trigger, ctx.db);
 
-    const { traces } = await listTraces(ctx.db, { feature: "history" });
+    const { traces } = await listTraces({ feature: "history" });
     expect(traces[0]).toMatchObject({ feature: "history", action: "import", status: "success" });
     expect(traces[0].outputSummary).toContain("imported 1");
   });
@@ -254,7 +254,7 @@ describe("importHistoryCsv", () => {
     await expect(
       importHistoryCsv({ csv: "a,b\n1,2\n", mapping: {} }, trigger, ctx.db),
     ).rejects.toThrow();
-    const { traces } = await listTraces(ctx.db, { feature: "history" });
+    const { traces } = await listTraces({ feature: "history" });
     expect(traces[0]).toMatchObject({ action: "import", status: "error" });
   });
 });

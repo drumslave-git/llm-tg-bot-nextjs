@@ -116,8 +116,7 @@ export async function runMemoryConsolidation(deps: ConsolidateDeps): Promise<Con
       action: "consolidate",
       trigger: { kind: "system", actor: "memory" },
       inputSummary: `${userIds.length} user(s), ${generalEntries.length} general note(s) pending`,
-    },
-    db,
+    }
   );
 
   const result = { ...EMPTY };

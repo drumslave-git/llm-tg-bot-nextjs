@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { upsertSettings } from "@/features/settings/server/repository";
-import { listTraces } from "@/server/trace/repository";
+import { listTraces } from "@/server/trace";
 import { startTestDb, type TestDb } from "@/test/db";
 
 import {
@@ -58,7 +58,7 @@ describe("createScheduledTaskService", () => {
     expect(new Date(task.nextRunAt!).getUTCMinutes()).toBe(0);
     expect(new Date(task.nextRunAt!).getUTCHours()).toBe(9);
 
-    const traces = await listTraces(ctx.db, { feature: "scheduled-tasks" });
+    const traces = await listTraces({ feature: "scheduled-tasks" });
     expect(traces.traces[0]).toMatchObject({ action: "create", status: "success" });
 
     const all = await getScheduledTasks("555", ctx.db);

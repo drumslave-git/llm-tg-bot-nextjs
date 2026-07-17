@@ -1,7 +1,6 @@
 import "server-only";
 
 import type { DrizzleDb } from "@/db/drizzle";
-import { getDb } from "@/db/drizzle";
 import { formatReply } from "@/features/bot-messaging/server/reply";
 import { buildSystemPrompt } from "@/features/bot-messaging/server/prompt";
 import { FEATURES } from "@/lib/features";
@@ -96,15 +95,13 @@ export function buildTaskDirectiveMessage(
  * scheduler can still advance the schedule and move on.
  */
 export async function fireScheduledTask(task: ScheduledTask, deps: FireDeps): Promise<FireResult> {
-  const db = deps.db ?? getDb();
   const trace = await startTrace(
     {
       feature: FEATURE.id,
       action: "fire",
       trigger: { kind: "cron", actor: task.chatId, correlationId: task.id },
       inputSummary: task.instruction,
-    },
-    db,
+    }
   );
   try {
     const languageInstruction = deps.requiredLanguage?.trim()

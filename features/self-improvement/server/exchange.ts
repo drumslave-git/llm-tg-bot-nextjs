@@ -4,7 +4,7 @@ import type { DrizzleDb } from "@/db/drizzle";
 import { getChatMessageByTelegramId } from "@/features/history/server/repository";
 import { FEATURES } from "@/lib/features";
 import type { Trace } from "@/lib/trace";
-import { getLatestTraceIdsByCorrelation, getTrace } from "@/server/trace/repository";
+import { getLatestTraceIdsByCorrelation, getTrace } from "@/server/trace";
 import type { UserFeedback } from "../types";
 
 /**
@@ -73,25 +73,25 @@ export async function getReplyTrace(
   telegramMessageId: number,
 ): Promise<Trace | null> {
   try {
-    const direct = await producerTrace(db, `${chatId}:${telegramMessageId}`);
+    const direct = await producerTrace(`${chatId}:${telegramMessageId}`);
     if (direct) return direct;
 
     const replyRow = await getChatMessageByTelegramId(db, chatId, telegramMessageId);
     const anchor = replyRow?.replyToMessageId;
     if (anchor == null) return null;
-    return await producerTrace(db, `${chatId}:${anchor}`);
+    return await producerTrace(`${chatId}:${anchor}`);
   } catch {
     return null;
   }
 }
 
 /** The newest message-producing trace on a correlation id, with its events. */
-async function producerTrace(db: DrizzleDb, correlation: string): Promise<Trace | null> {
-  const traceIds = await getLatestTraceIdsByCorrelation(db, [correlation], {
+async function producerTrace(correlation: string): Promise<Trace | null> {
+  const traceIds = await getLatestTraceIdsByCorrelation([correlation], {
     features: PRODUCER_FEATURES,
   });
   const traceId = traceIds.get(correlation);
-  return traceId ? await getTrace(db, traceId) : null;
+  return traceId ? await getTrace(traceId) : null;
 }
 
 /**
