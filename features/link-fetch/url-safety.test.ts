@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { isSafePublicUrl, normalizeUrl } from "./url-safety";
+import { isPrivateIp, isSafePublicUrl, normalizeUrl } from "./url-safety";
 
 describe("isSafePublicUrl", () => {
   it("allows public http(s) URLs", () => {
@@ -44,6 +44,29 @@ describe("isSafePublicUrl", () => {
   it("rejects malformed input", () => {
     expect(isSafePublicUrl("not a url")).toBe(false);
     expect(isSafePublicUrl("")).toBe(false);
+  });
+});
+
+describe("isPrivateIp", () => {
+  it("judges IPv4 ranges", () => {
+    expect(isPrivateIp("8.8.8.8")).toBe(false);
+    expect(isPrivateIp("10.1.2.3")).toBe(true);
+    expect(isPrivateIp("127.0.0.1")).toBe(true);
+    expect(isPrivateIp("169.254.169.254")).toBe(true);
+  });
+
+  it("judges IPv6, including the unspecified address", () => {
+    expect(isPrivateIp("2606:4700::1111")).toBe(false);
+    expect(isPrivateIp("::1")).toBe(true);
+    expect(isPrivateIp("::")).toBe(true);
+    expect(isPrivateIp("fd12::1")).toBe(true);
+    expect(isPrivateIp("fe80::1")).toBe(true);
+  });
+
+  it("judges the embedded v4 of an IPv6-mapped address", () => {
+    // The shape dns.lookup can return for a v4-only host.
+    expect(isPrivateIp("::ffff:192.168.1.1")).toBe(true);
+    expect(isPrivateIp("::ffff:8.8.8.8")).toBe(false);
   });
 });
 

@@ -4,9 +4,10 @@ import { isIP } from "node:net";
  * SSRF guard for the read-link tool. The model supplies the URL, so before we
  * point a real browser at it we reject anything that could reach the host's own
  * network: non-http(s) schemes, embedded credentials, localhost, the Docker host
- * gateway, and literal private/loopback/link-local IPs. Pure and unit-tested; a
- * DNS-rebinding defense (re-checking the resolved address) belongs at the fetch
- * layer, not here.
+ * gateway, and literal private/loopback/link-local IPs. Pure and unit-tested.
+ * The DNS half of the defense (re-checking what a hostname actually resolves
+ * to, including on redirects) lives at the fetch layer —
+ * `server/resolve-safety.ts` — and reuses {@link isPrivateIp}.
  */
 
 /** Whether an IPv4 octet tuple is in a private/loopback/link-local range. */
@@ -22,7 +23,7 @@ function isPrivateIpv4(octets: number[]): boolean {
 }
 
 /** Whether a literal IP host is private/loopback/link-local (IPv4 or IPv6). */
-function isPrivateIp(host: string): boolean {
+export function isPrivateIp(host: string): boolean {
   const kind = isIP(host);
   if (kind === 4) {
     const octets = host.split(".").map((n) => Number.parseInt(n, 10));
@@ -31,9 +32,13 @@ function isPrivateIp(host: string): boolean {
   }
   if (kind === 6) {
     const h = host.toLowerCase();
-    if (h === "::1") return true; // loopback
+    if (h === "::" || h === "::1") return true; // unspecified / loopback
     if (h.startsWith("fc") || h.startsWith("fd")) return true; // unique-local
     if (h.startsWith("fe80:")) return true; // link-local
+    // IPv6-mapped IPv4 (`::ffff:10.0.0.1`) — the shape `dns.lookup` can return
+    // for a v4-only host; the embedded v4 address is what must be judged.
+    const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(h);
+    if (mapped) return isPrivateIp(mapped[1]);
   }
   return false;
 }

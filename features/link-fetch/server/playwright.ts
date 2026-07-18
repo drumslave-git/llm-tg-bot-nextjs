@@ -3,6 +3,7 @@ import "server-only";
 import type { Browser, BrowserContext } from "playwright";
 
 import type { FetchedPage } from "../types";
+import { hostResolvesPublic } from "./resolve-safety";
 
 /**
  * Headless Chromium page reader for the read-link tool. The browser is expensive
@@ -101,9 +102,44 @@ function trimPageText(text: string): string {
  */
 export async function fetchPageWithPlaywright(url: string): Promise<FetchedPage> {
   let context: BrowserContext | null = null;
+  // One DNS verdict per hostname per page load — shared by the pre-navigation
+  // check and the request interception below.
+  const dnsVerdicts = new Map<string, boolean>();
+  let blockedPrivate = false;
   try {
+    // The URL-shape guard ran at the tool boundary; this is the DNS half — a
+    // public-looking hostname may still resolve into the private network.
+    if (!(await hostResolvesPublic(new URL(url).hostname, dnsVerdicts))) {
+      return {
+        url,
+        title: "",
+        text: "",
+        error: "URL blocked for safety (hostname resolves to a private network address)",
+      };
+    }
+
     const browser = await getSharedChromium();
     context = await browser.newContext({ userAgent: USER_AGENT });
+    // Every request — redirect hops and subresources included — is re-checked,
+    // so a public page cannot bounce or embed its way to an internal address.
+    await context.route("**/*", async (route) => {
+      let allowed = false;
+      try {
+        const target = new URL(route.request().url());
+        allowed =
+          target.protocol !== "http:" && target.protocol !== "https:"
+            ? true // non-network scheme (data:, blob:) — nothing to reach
+            : await hostResolvesPublic(target.hostname, dnsVerdicts);
+      } catch {
+        allowed = false; // unparseable URL — cannot verify, so do not fetch
+      }
+      if (allowed) return route.continue();
+      // Only a blocked *navigation* (the initial load or a redirect hop) fails
+      // the read; a blocked subresource just doesn't load.
+      if (route.request().isNavigationRequest()) blockedPrivate = true;
+      return route.abort("blockedbyclient");
+    });
+
     const page = await context.newPage();
     try {
       await page.goto(url, { waitUntil: "domcontentloaded", timeout: NAVIGATION_TIMEOUT_MS });
@@ -114,6 +150,16 @@ export async function fetchPageWithPlaywright(url: string): Promise<FetchedPage>
       await page.close().catch(() => {});
     }
   } catch (err) {
+    // A navigation the interception aborted surfaces as a cryptic
+    // net::ERR_BLOCKED_BY_CLIENT — name the real reason instead.
+    if (blockedPrivate) {
+      return {
+        url,
+        title: "",
+        text: "",
+        error: "URL blocked for safety (redirects to a private network address)",
+      };
+    }
     return { url, title: "", text: "", error: err instanceof Error ? err.message : String(err) };
   } finally {
     if (context) await context.close().catch(() => {});

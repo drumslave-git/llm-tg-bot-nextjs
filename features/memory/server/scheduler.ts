@@ -1,27 +1,21 @@
 import "server-only";
 
 import { getDb } from "@/db/drizzle";
-import { computeNextRun } from "@/features/scheduled-tasks/schedule";
 import {
-  DEFAULT_DAILY_JOBS_RUN_TIME,
-  getDailyJobsRunTime,
   getEmbeddingRuntime,
   getLlmRuntime,
   getTimezone,
 } from "@/features/settings/server/service";
 import { currentSummaryDate } from "@/features/history/summary";
 import { FEATURES } from "@/lib/features";
-import { isDailyRunDue } from "@/server/jobs/daily-due";
 import {
-  createIntervalScheduler,
-  type IntervalJobStatus,
-  type IntervalRunContext,
-  type IntervalScheduler,
-} from "@/server/jobs/interval-scheduler";
+  createDailyScheduler,
+  type DailyJobInfoBase,
+} from "@/server/jobs/daily-scheduler";
+import type { IntervalRunContext } from "@/server/jobs/interval-scheduler";
 import { withAdvisoryLock } from "@/server/jobs/lock";
 import { chatCompletion } from "@/server/llm/client";
 import { embed } from "@/server/llm/embeddings";
-import { publishEvent } from "@/server/realtime/hub";
 
 import { runMemoryConsolidation, type ConsolidateDeps } from "./consolidate";
 import { runMemoryExtraction, type ExtractDeps } from "./extract";
@@ -29,11 +23,8 @@ import { countDaysNeedingExtraction } from "./extraction-repository";
 import { countPendingNotes } from "./service";
 
 /**
- * In-process daily scheduler for memory — the same shape as the history-summary
- * and self-improvement jobs (the recorded background-job model): a fixed-interval
- * ticker that asks once a minute whether the configured local run time has passed
- * without a run, and if so does the night's memory work under a cross-process
- * advisory lock.
+ * Daily scheduler for memory — the shared daily-job model
+ * (`server/jobs/daily-scheduler.ts`).
  *
  * The run is **two passes, in order**:
  *  1. *extraction* — read each finished chat-day out of the history mirror and
@@ -54,22 +45,6 @@ import { countPendingNotes } from "./service";
  * Idempotent throughout: a consumed note is deleted and an unchanged day is
  * skipped, so a re-run costs nothing.
  */
-
-/** Poll period. A code constant, not a setting. */
-const TICK_MS = 60_000;
-
-const FEATURE = FEATURES.memory;
-const STORE_KEY = Symbol.for("llm-tg-bot.memory.scheduler");
-
-interface SchedulerStore {
-  scheduler: IntervalScheduler;
-  /** When the last due-triggered daily run happened (in-memory, like the sibling jobs). */
-  lastDailyRunAt: Date | null;
-  /** Set by "Run now" — the next tick runs regardless of the clock. */
-  forceNext: boolean;
-  /** Outcome of the last *actual* run, kept apart from the ticker's "waiting" summaries. */
-  lastResult: { at: string; summary: string } | null;
-}
 
 /**
  * Resolve the real collaborators for both passes. Embeddings are optional: with no
@@ -123,63 +98,20 @@ async function runJob(ctx?: IntervalRunContext): Promise<string> {
   return outcome.result.summary;
 }
 
-/** One poll tick: run when forced, or when the daily wall-clock time is due. */
-async function runTick(store: SchedulerStore, ctx?: IntervalRunContext): Promise<{ summary: string }> {
-  const forced = store.forceNext;
-  store.forceNext = false;
-
-  if (!forced) {
-    const [timezone, runTime] = await Promise.all([
-      getTimezone().catch(() => "UTC"),
-      getDailyJobsRunTime().catch(() => DEFAULT_DAILY_JOBS_RUN_TIME),
-    ]);
-    const now = new Date();
-    if (
-      !isDailyRunDue({
-        timeOfDay: runTime,
-        now,
-        timeZone: timezone,
-        lastRunAt: store.lastDailyRunAt,
-      })
-    ) {
-      const next = computeNextRun({ scheduleKind: "daily", timeOfDay: runTime }, now, timezone);
-      return { summary: `waiting${next ? ` (next run ${next.toISOString()})` : ""}` };
-    }
-    store.lastDailyRunAt = now;
-  }
-
-  const summary = await runJob(ctx);
-  store.lastResult = { at: new Date().toISOString(), summary };
-  return { summary };
-}
-
-function store(): SchedulerStore {
-  const g = globalThis as typeof globalThis & { [STORE_KEY]?: SchedulerStore };
-  if (!g[STORE_KEY]) {
-    const s: SchedulerStore = {
-      lastDailyRunAt: null,
-      forceNext: false,
-      lastResult: null,
-      scheduler: createIntervalScheduler({
-        name: "memory",
-        tickMs: TICK_MS,
-        onStatusChange: () => publishEvent(FEATURE.realtimeTopic, { feature: FEATURE.id }),
-        run: (ctx) => runTick(s as SchedulerStore, ctx),
-      }),
-    };
-    g[STORE_KEY] = s;
-  }
-  return g[STORE_KEY];
-}
+const scheduler = createDailyScheduler({
+  name: "memory",
+  feature: FEATURES.memory,
+  runJob,
+});
 
 /** Start the daily poller (boot). Idempotent. */
 export function startMemoryScheduler(): void {
-  store().scheduler.start();
+  scheduler.start();
 }
 
 /** Stop the poller (shutdown). */
 export function stopMemoryScheduler(): void {
-  store().scheduler.stop();
+  scheduler.stop();
 }
 
 /**
@@ -187,21 +119,11 @@ export function stopMemoryScheduler(): void {
  * (dashboard "Run now").
  */
 export function runMemoryConsolidationNow(): Promise<void> {
-  const s = store();
-  s.forceNext = true;
-  return s.scheduler.runNow();
+  return scheduler.runNow();
 }
 
 /** Job info for the dashboard card. */
-export interface MemoryJobInfo {
-  status: IntervalJobStatus;
-  /** ISO time of the next daily run, or null when the run time is invalid. */
-  nextRunAt: string | null;
-  /** Configured local run time (`HH:MM`) and the timezone it is read in. */
-  runTime: string;
-  timezone: string;
-  /** Outcome of the last actual run, or null when it has never run. */
-  lastResult: { at: string; summary: string } | null;
+export interface MemoryJobInfo extends DailyJobInfoBase {
   /** Notes still waiting to be folded in — the visible backlog. */
   pendingNotes: number;
   /** Chat-days passive extraction has not read yet — the other half of the backlog. */
@@ -212,39 +134,20 @@ export interface MemoryJobInfo {
 
 /** Current job info — reads settings and counts the outstanding backlog. */
 export async function getMemoryJobInfo(): Promise<MemoryJobInfo> {
-  const s = store();
-  const [timezone, runTime, embedding] = await Promise.all([
-    getTimezone().catch(() => "UTC"),
-    getDailyJobsRunTime().catch(() => DEFAULT_DAILY_JOBS_RUN_TIME),
+  const [base, embedding] = await Promise.all([
+    scheduler.getBaseInfo(),
     getEmbeddingRuntime().catch(() => null),
   ]);
-  const now = new Date();
   const [pendingNotes, pendingExtractionDays] = await Promise.all([
     countPendingNotes(getDb()).catch(() => 0),
     countDaysNeedingExtraction(getDb(), {
-      timeZone: timezone,
-      today: currentSummaryDate(now, timezone),
+      timeZone: base.timezone,
+      today: currentSummaryDate(new Date(), base.timezone),
     }).catch(() => 0),
   ]);
 
-  const due = isDailyRunDue({
-    timeOfDay: runTime,
-    now,
-    timeZone: timezone,
-    lastRunAt: s.lastDailyRunAt,
-  });
-  // When today's run is still owed, the next instant is "now" (the next tick);
-  // otherwise it is the next daily occurrence.
-  const next = due
-    ? now
-    : computeNextRun({ scheduleKind: "daily", timeOfDay: runTime }, now, timezone);
-
   return {
-    status: s.scheduler.getStatus(),
-    nextRunAt: next ? next.toISOString() : null,
-    runTime,
-    timezone,
-    lastResult: s.lastResult,
+    ...base,
     pendingNotes,
     pendingExtractionDays,
     embeddingsConfigured: embedding != null,

@@ -20,6 +20,14 @@ import type { Trace, TraceEvent, TraceStatus, TraceTrigger } from "@/lib/trace";
  *                  interval, and a graceful shutdown flushes first).
  *   3. months    — flushed to `traces-YYYY-MM.ndjson` and cached in `months`.
  *
+ * The month cache is two-tier so months of history do not pin their full event
+ * bodies (complete LLM request/response payloads) in the heap forever:
+ * **headers** (events dropped) stay cached for every loaded month — the Debug
+ * list and correlation lookups need only those — while **full** months (with
+ * events) are kept for at most {@link MAX_FULL_MONTHS} at a time, evicted back
+ * to headers least-recently-used. Range reads ({@link scanTraces}) load only
+ * the months their range intersects.
+ *
  * Held on a `globalThis` singleton (like `server/realtime/hub.ts`) so the writer
  * (feature/route/poller bundles) and the boot-owned flush timer
  * (`instrumentation` → `register-node`) share one instance across Next bundles
@@ -30,6 +38,9 @@ import type { Trace, TraceEvent, TraceStatus, TraceTrigger } from "@/lib/trace";
 
 /** Flush period. A code constant, not a setting. */
 const FLUSH_MS = 60_000;
+
+/** How many months may keep their events in RAM at once (headers always stay). */
+const MAX_FULL_MONTHS = 3;
 
 const STORE_KEY = Symbol.for("llm-tg-bot.trace.store");
 
@@ -45,10 +56,17 @@ interface TraceStore {
   open: Map<string, Trace>;
   /** Settled traces not yet written to disk. */
   pending: Map<string, Trace>;
-  /** Flushed traces cached per `YYYY-MM`, mirroring the on-disk file. */
+  /**
+   * Flushed traces cached per `YYYY-MM`, mirroring the on-disk file. Header-only
+   * (events dropped) unless the key is in {@link TraceStore.fullMonths}.
+   */
   months: Map<string, Trace[]>;
-  /** Months whose file has been read into `months` (empty/missing files count as loaded). */
+  /** Months cached at least as headers (empty/missing files count as loaded). */
   loaded: Set<string>;
+  /** Months cached WITH events, least-recently-used first. */
+  fullMonths: string[];
+  /** Newest-first view over every cached flushed trace; null when stale. */
+  sortedFlushed: Trace[] | null;
   /** Reverse index over all in-memory traces, for correlation lookups. */
   correlations: Map<string, CorrelationEntry[]>;
   /** Directory the month files live in, resolved once at creation. */
@@ -71,6 +89,8 @@ function store(): TraceStore {
       pending: new Map(),
       months: new Map(),
       loaded: new Set(),
+      fullMonths: [],
+      sortedFlushed: null,
       correlations: new Map(),
       dir: resolveDir(),
       flushTimer: null,
@@ -117,18 +137,57 @@ function reindexCorrelation(s: TraceStore, trace: Trace, nextCorr: string): void
   indexCorrelation(s, trace);
 }
 
-/** Parse one NDJSON month file into the cache, tolerating a torn final line from a crash. */
-async function ensureMonthLoaded(s: TraceStore, monthKey: string): Promise<void> {
-  if (s.loaded.has(monthKey)) return;
+/** Header copy (events dropped) for list views and the header cache tier. */
+function toHeader(trace: Trace): Trace {
+  return { ...trace, events: [] };
+}
+
+/** Mark a full month as most-recently-used. */
+function touchFullMonth(s: TraceStore, monthKey: string): void {
+  const i = s.fullMonths.indexOf(monthKey);
+  if (i !== -1) s.fullMonths.splice(i, 1);
+  s.fullMonths.push(monthKey);
+}
+
+/** Demote least-recently-used full months back to headers (events dropped). */
+function evictFullMonths(s: TraceStore): void {
+  while (s.fullMonths.length > MAX_FULL_MONTHS) {
+    const key = s.fullMonths.shift()!;
+    const list = s.months.get(key);
+    if (list) s.months.set(key, list.map(toHeader));
+    // The sorted view references the replaced objects and would pin them.
+    s.sortedFlushed = null;
+  }
+}
+
+/** What a read needs from a month: just its headers, or the events too. */
+type MonthTier = "headers" | "full";
+
+/**
+ * Parse one NDJSON month file into the cache at the requested tier, tolerating a
+ * torn final line from a crash. A month already cached at (or above) the tier is
+ * a no-op; asking for `full` on a header-cached month re-reads the file.
+ */
+async function loadMonth(s: TraceStore, monthKey: string, tier: MonthTier): Promise<void> {
+  const isFull = s.fullMonths.includes(monthKey);
+  if (tier === "headers" ? s.loaded.has(monthKey) : isFull) {
+    if (tier === "full") touchFullMonth(s, monthKey);
+    return;
+  }
+
   let text: string;
   try {
     text = await readFile(fileFor(s, monthKey), "utf8");
   } catch {
-    // Missing file — nothing flushed for this month yet.
+    // Missing file — nothing flushed for this month yet. An empty month
+    // satisfies both tiers (there are no events to hold or evict).
     s.months.set(monthKey, []);
     s.loaded.add(monthKey);
+    if (tier === "full") touchFullMonth(s, monthKey);
+    s.sortedFlushed = null;
     return;
   }
+
   const traces: Trace[] = [];
   for (const line of text.split("\n")) {
     const trimmed = line.trim();
@@ -141,34 +200,50 @@ async function ensureMonthLoaded(s: TraceStore, monthKey: string): Promise<void>
       // Skip a corrupt/partial line rather than fail the whole read.
     }
   }
-  s.months.set(monthKey, traces);
+
+  if (tier === "full") {
+    s.months.set(monthKey, traces);
+    touchFullMonth(s, monthKey);
+    evictFullMonths(s);
+  } else {
+    // Headers only — the parsed events are dropped so the heap does not grow
+    // with history (full bodies are re-read from the file when needed).
+    s.months.set(monthKey, traces.map(toHeader));
+  }
   s.loaded.add(monthKey);
+  s.sortedFlushed = null;
 }
 
-/** Load every month file present on disk. The Debug reads (list/detail/bundle) are full-history. */
-async function ensureAllLoaded(s: TraceStore): Promise<void> {
+/** The month keys present on disk, ascending. */
+async function diskMonthKeys(s: TraceStore): Promise<string[]> {
   let entries: string[];
   try {
     entries = await readdir(s.dir);
   } catch {
-    return; // Directory not created yet — nothing flushed.
+    return []; // Directory not created yet — nothing flushed.
   }
+  const keys: string[] = [];
   for (const name of entries) {
     const match = MONTH_FILE_RE.exec(name);
-    if (match) await ensureMonthLoaded(s, match[1]);
+    if (match) keys.push(match[1]);
   }
+  return keys.sort();
+}
+
+/** Load every month file present on disk at the given tier. */
+async function ensureAllLoaded(s: TraceStore, tier: MonthTier): Promise<void> {
+  for (const key of await diskMonthKeys(s)) await loadMonth(s, key, tier);
 }
 
 /** Every flushed trace currently cached, across all loaded months. */
 function flushedTraces(s: TraceStore): Trace[] {
   const out: Trace[] = [];
-  for (const list of s.months.values()) out.push(...list);
+  // A plain loop — spreading a very large month into `push(...)` can blow the
+  // argument limit (`RangeError: Maximum call stack size exceeded`).
+  for (const list of s.months.values()) {
+    for (const trace of list) out.push(trace);
+  }
   return out;
-}
-
-/** Header copy (events dropped) for list views. */
-function toHeader(trace: Trace): Trace {
-  return { ...trace, events: [] };
 }
 
 // --- Write ops (called by the recorder) --------------------------------------
@@ -256,8 +331,9 @@ export async function flushTracesNow(): Promise<void> {
 
     await mkdir(s.dir, { recursive: true });
     for (const [monthKey, traces] of byMonth) {
-      // Load the month first so the cache stays complete before we append to it.
-      await ensureMonthLoaded(s, monthKey);
+      // Load the month at the FULL tier first: the flushed traces carry events,
+      // so appending them to a header-tier list would leave it mixed.
+      await loadMonth(s, monthKey, "full");
       const data = traces.map((t) => JSON.stringify(t)).join("\n") + "\n";
       try {
         await appendFile(fileFor(s, monthKey), data);
@@ -265,8 +341,12 @@ export async function flushTracesNow(): Promise<void> {
         console.error(`Trace flush failed for ${monthKey}:`, err);
         continue; // Leave this group pending; retry next tick.
       }
-      s.months.get(monthKey)!.push(...traces);
-      for (const trace of traces) s.pending.delete(trace.id);
+      const list = s.months.get(monthKey)!;
+      for (const trace of traces) {
+        list.push(trace);
+        s.pending.delete(trace.id);
+      }
+      s.sortedFlushed = null;
     }
   } finally {
     s.flushing = false;
@@ -276,7 +356,7 @@ export async function flushTracesNow(): Promise<void> {
 /** Arm the periodic flush and warm the current month. Idempotent (boot / HMR). */
 export async function startTraceStore(): Promise<void> {
   const s = store();
-  await ensureMonthLoaded(s, monthKeyOf(new Date().toISOString())).catch(() => undefined);
+  await loadMonth(s, monthKeyOf(new Date().toISOString()), "full").catch(() => undefined);
   if (s.flushTimer) return;
   const timer = setInterval(() => void flushTracesNow(), FLUSH_MS);
   if (typeof timer.unref === "function") timer.unref();
@@ -303,13 +383,25 @@ export function __resetTraceStoreForTests(): void {
 
 // --- Query ops (replacing the former Drizzle repository) ---------------------
 
-/** Full trace with ordered events, or null if unknown. Full-history read. */
+/** Full trace with ordered events, or null if unknown. */
 export async function getTrace(id: string): Promise<Trace | null> {
   const s = store();
   const live = s.open.get(id) ?? s.pending.get(id);
   if (live) return live;
-  await ensureAllLoaded(s);
-  return flushedTraces(s).find((t) => t.id === id) ?? null;
+  // Locate the trace via the (cheap) header tier, then load just its month full.
+  await ensureAllLoaded(s, "headers");
+  let header: Trace | null = null;
+  for (const list of s.months.values()) {
+    const found = list.find((t) => t.id === id);
+    if (found) {
+      header = found;
+      break;
+    }
+  }
+  if (!header) return null;
+  const monthKey = monthKeyOf(header.startedAt);
+  await loadMonth(s, monthKey, "full");
+  return s.months.get(monthKey)?.find((t) => t.id === id) ?? null;
 }
 
 export interface ScanTracesInput {
@@ -329,23 +421,41 @@ export interface ScanTracesInput {
  * neither: it wants every LLM round in a period without knowing which traces those
  * are, so it needs a scan.
  *
+ * Range-aware: month files map 1:1 onto `startedAt` months, so only the months
+ * the range intersects are loaded (an unbounded scan still loads everything).
+ * Each month is collected as soon as it is loaded, so a range wider than the
+ * full-month cache never loses events to eviction mid-scan.
+ *
  * Traces are returned by reference, not copied — a scan over all history would
  * otherwise clone the entire store on every dashboard request. Callers must treat
  * the result as read-only.
  */
 export async function scanTraces(input: ScanTracesInput = {}): Promise<Trace[]> {
   const s = store();
-  await ensureAllLoaded(s);
   const from = input.startUtc?.toISOString();
   const to = input.endUtc?.toISOString();
-  const out: Trace[] = [];
-  for (const trace of [...s.open.values(), ...s.pending.values(), ...flushedTraces(s)]) {
-    if (input.feature && trace.feature !== input.feature) continue;
+  const matches = (trace: Trace): boolean => {
+    if (input.feature && trace.feature !== input.feature) return false;
     // ISO-8601 UTC strings compare lexically in chronological order, so the range
     // test needs no Date parsing per trace.
-    if (from && trace.startedAt < from) continue;
-    if (to && trace.startedAt >= to) continue;
-    out.push(trace);
+    if (from && trace.startedAt < from) return false;
+    if (to && trace.startedAt >= to) return false;
+    return true;
+  };
+
+  const out: Trace[] = [];
+  for (const trace of s.open.values()) if (matches(trace)) out.push(trace);
+  for (const trace of s.pending.values()) if (matches(trace)) out.push(trace);
+
+  const fromMonth = from?.slice(0, 7);
+  const toMonth = to?.slice(0, 7);
+  for (const monthKey of await diskMonthKeys(s)) {
+    if (fromMonth && monthKey < fromMonth) continue;
+    if (toMonth && monthKey > toMonth) continue;
+    await loadMonth(s, monthKey, "full");
+    for (const trace of s.months.get(monthKey) ?? []) {
+      if (matches(trace)) out.push(trace);
+    }
   }
   return out;
 }
@@ -363,14 +473,36 @@ export interface ListTracesResult {
   total: number;
 }
 
-/** List trace headers (without events), newest first, with total count. Full-history read. */
+const newestFirst = (a: Trace, b: Trace): number => b.startedAt.localeCompare(a.startedAt);
+
+/** Merge two newest-first arrays into one (stable across the pair). */
+function mergeNewestFirst(a: Trace[], b: Trace[]): Trace[] {
+  const out: Trace[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < a.length && j < b.length) {
+    out.push(newestFirst(a[i], b[j]) <= 0 ? a[i++] : b[j++]);
+  }
+  while (i < a.length) out.push(a[i++]);
+  while (j < b.length) out.push(b[j++]);
+  return out;
+}
+
+/**
+ * List trace headers (without events), newest first, with total count.
+ * Full-history read, served from the header tier; the sorted flushed view is
+ * cached until the store changes rather than re-sorted on every poll.
+ */
 export async function listTraces(input: ListTracesInput = {}): Promise<ListTracesResult> {
   const s = store();
-  await ensureAllLoaded(s);
-  let all = [...s.open.values(), ...s.pending.values(), ...flushedTraces(s)];
+  await ensureAllLoaded(s, "headers");
+  if (!s.sortedFlushed) {
+    s.sortedFlushed = flushedTraces(s).sort(newestFirst);
+  }
+  const live = [...s.open.values(), ...s.pending.values()].sort(newestFirst);
+  let all = mergeNewestFirst(live, s.sortedFlushed);
   if (input.feature) all = all.filter((t) => t.feature === input.feature);
   if (input.status) all = all.filter((t) => t.status === input.status);
-  all.sort((a, b) => b.startedAt.localeCompare(a.startedAt));
 
   const total = all.length;
   const offset = Math.max(input.offset ?? 0, 0);
@@ -381,7 +513,7 @@ export async function listTraces(input: ListTracesInput = {}): Promise<ListTrace
 /** Distinct feature names that have recorded traces, alphabetically. Full-history read. */
 export async function listFeatures(): Promise<string[]> {
   const s = store();
-  await ensureAllLoaded(s);
+  await ensureAllLoaded(s, "headers");
   const names = new Set<string>();
   for (const t of s.open.values()) names.add(t.feature);
   for (const t of s.pending.values()) names.add(t.feature);
@@ -389,16 +521,36 @@ export async function listFeatures(): Promise<string[]> {
   return [...names].sort((a, b) => a.localeCompare(b));
 }
 
-/** Ordered events for many traces, grouped by trace id (bundle export). Full-history read. */
+/** Ordered events for many traces, grouped by trace id (bundle export). */
 export async function getEventsForTraces(ids: string[]): Promise<Map<string, TraceEvent[]>> {
   const grouped = new Map<string, TraceEvent[]>();
   if (ids.length === 0) return grouped;
   const wanted = new Set(ids);
   const s = store();
-  await ensureAllLoaded(s);
-  const all = [...s.open.values(), ...s.pending.values(), ...flushedTraces(s)];
-  for (const trace of all) {
+  for (const trace of s.open.values()) {
     if (wanted.has(trace.id)) grouped.set(trace.id, trace.events);
+  }
+  for (const trace of s.pending.values()) {
+    if (wanted.has(trace.id)) grouped.set(trace.id, trace.events);
+  }
+  // Locate the rest via headers, then load their months full one at a time —
+  // collecting each month's events before the next load can evict it.
+  await ensureAllLoaded(s, "headers");
+  const monthsNeeded = new Map<string, Set<string>>();
+  for (const list of s.months.values()) {
+    for (const trace of list) {
+      if (!wanted.has(trace.id) || grouped.has(trace.id)) continue;
+      const key = monthKeyOf(trace.startedAt);
+      const set = monthsNeeded.get(key) ?? new Set<string>();
+      set.add(trace.id);
+      monthsNeeded.set(key, set);
+    }
+  }
+  for (const [monthKey, idSet] of monthsNeeded) {
+    await loadMonth(s, monthKey, "full");
+    for (const trace of s.months.get(monthKey) ?? []) {
+      if (idSet.has(trace.id)) grouped.set(trace.id, trace.events);
+    }
   }
   return grouped;
 }

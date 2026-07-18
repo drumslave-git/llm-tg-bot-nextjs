@@ -11,8 +11,10 @@ Categories: security, correctness, performance, scalability, refactoring, DX/UX.
 
 Status 2026-07-18: the no-decision quick wins are **done** (marked ✅ below —
 1.4, 1.8, 2.1, 2.3, 3.1, 3.3, 4.2, 8.1, 9.1(2), 9.2's `getHourMessages` half);
-see the session log in `NEXTJS_REWRITE_PROGRESS.md` for proof. Everything else
-is still open.
+and a second pass landed 1.2 (SSRF DNS + redirect checks), 1.5's windowing
+(retention still open — it deletes data, so it needs a decision), and 1.6 (the
+daily-scheduler factory); see the session log in `NEXTJS_REWRITE_PROGRESS.md`
+for proof. Everything else is still open.
 
 ---
 
@@ -36,7 +38,7 @@ bootstrap env var (or a DB-backed password set on first run) checked in
 so API calls are covered even if middleware is bypassed. At minimum, document
 loudly in the README that the dashboard must not be exposed unauthenticated.
 
-### 1.2 [H] security — SSRF guard does not cover DNS resolution
+### 1.2 ✅ [H] security — SSRF guard does not cover DNS resolution (done 2026-07-18)
 
 [url-safety.ts](features/link-fetch/url-safety.ts) blocks bad schemes,
 credentials, localhost names, and *literal* private IPs, and its own comment
@@ -84,7 +86,7 @@ changes take effect without restart" still holds. Alternatively resolve settings
 once per update in `processUpdate` and pass them down (larger refactor, better
 purity).
 
-### 1.5 [H] scalability — Trace store loads all history into RAM and keeps it
+### 1.5 [H] scalability — Trace store loads all history into RAM and keeps it (windowing/eviction/sort/spread ✅ done 2026-07-18; retention still open — it deletes data, so it needs a decision)
 
 [store.ts](server/trace/store.ts) `ensureAllLoaded` reads **every** monthly
 NDJSON file into memory the first time any Debug/analytics read happens, and the
@@ -110,7 +112,7 @@ stay, events dropped), range-aware `scanTraces`, and a retention/pruning setting
 (e.g. "keep N months of traces", enforced at flush time). The store is behind a
 clean API, so all of this is internal.
 
-### 1.6 [M] refactoring — Four copies of the daily-scheduler boilerplate
+### 1.6 ✅ [M] refactoring — Four copies of the daily-scheduler boilerplate (done 2026-07-18)
 
 [summary-scheduler.ts](features/history/server/summary-scheduler.ts),
 [memory/scheduler.ts](features/memory/server/scheduler.ts),

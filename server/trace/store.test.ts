@@ -1,17 +1,20 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
 import { ApiError } from "@/lib/api-error";
+import type { Trace } from "@/lib/trace";
 import { setupTempTraceStore } from "@/test/trace-store";
 import {
   __resetTraceStoreForTests,
   flushTracesNow,
+  getEventsForTraces,
   getLatestTraceIdsByCorrelation,
   getTrace,
   listFeatures,
   listTraces,
+  scanTraces,
 } from "./store";
 import { startTrace, type StartTraceInput } from "./recorder";
 
@@ -233,6 +236,116 @@ describe("listTraces / listFeatures", () => {
     const page = await listTraces({ limit: 2, offset: 0 });
     expect(page.total).toBe(5);
     expect(page.traces).toHaveLength(2);
+  });
+});
+
+/** A settled trace line for a synthetic month file. */
+function traceLine(id: string, startedAt: string, feature = "bot"): Trace {
+  return {
+    id,
+    feature,
+    action: "reply",
+    status: "success",
+    trigger: { kind: "telegram", correlationId: `corr:${id}` },
+    startedAt,
+    finishedAt: startedAt,
+    error: null,
+    events: [
+      {
+        id: `${id}-e0`,
+        traceId: id,
+        seq: 0,
+        ts: startedAt,
+        type: "input",
+        level: "info",
+        message: `event of ${id}`,
+      },
+      {
+        id: `${id}-e1`,
+        traceId: id,
+        seq: 1,
+        ts: startedAt,
+        type: "llm_response",
+        level: "info",
+        message: "model replied",
+        usage: { model: "m", promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+      },
+    ],
+  };
+}
+
+/** Write one `traces-YYYY-MM.ndjson` file directly (a cold multi-month corpus). */
+function writeMonthFile(dir: string, monthKey: string, traces: Trace[]): void {
+  writeFileSync(
+    path.join(dir, `traces-${monthKey}.ndjson`),
+    traces.map((t) => JSON.stringify(t)).join("\n") + "\n",
+  );
+}
+
+describe("multi-month corpus (range + eviction)", () => {
+  /** Six months, two traces each, ids like `2026-01-a`. */
+  function seedSixMonths(dir: string): void {
+    for (let m = 1; m <= 6; m++) {
+      const month = `2026-${String(m).padStart(2, "0")}`;
+      writeMonthFile(dir, month, [
+        traceLine(`${month}-a`, `${month}-10T08:00:00.000Z`),
+        traceLine(`${month}-b`, `${month}-20T09:30:00.000Z`),
+      ]);
+    }
+    __resetTraceStoreForTests(); // cold store: everything must come from disk
+  }
+
+  it("scans only the months a range intersects, and honors the bounds", async () => {
+    seedSixMonths(store.dir);
+    const scanned = await scanTraces({
+      startUtc: new Date("2026-02-15T00:00:00.000Z"),
+      endUtc: new Date("2026-04-15T00:00:00.000Z"),
+    });
+    expect(scanned.map((t) => t.id).sort()).toEqual([
+      "2026-02-b",
+      "2026-03-a",
+      "2026-03-b",
+      "2026-04-a",
+    ]);
+    // The scan carries events — the analytics contract.
+    expect(scanned.every((t) => t.events.length === 2)).toBe(true);
+  });
+
+  it("keeps every trace findable with events even after full-month eviction", async () => {
+    seedSixMonths(store.dir);
+    // An unbounded scan loads all six months full; only the most recent few may
+    // keep events cached — but a later read of an evicted month must reload it.
+    const all = await scanTraces({});
+    expect(all).toHaveLength(12);
+    const jan = await getTrace("2026-01-a");
+    expect(jan).not.toBeNull();
+    expect(jan!.events.map((e) => e.message)).toEqual([
+      "event of 2026-01-a",
+      "model replied",
+    ]);
+  });
+
+  it("lists the whole corpus as headers, newest first, and pages across months", async () => {
+    seedSixMonths(store.dir);
+    const all = await listTraces({});
+    expect(all.total).toBe(12);
+    expect(all.traces[0].id).toBe("2026-06-b");
+    expect(all.traces.at(-1)!.id).toBe("2026-01-a");
+    expect(all.traces.every((t) => t.events.length === 0)).toBe(true);
+
+    const page = await listTraces({ limit: 3, offset: 10 });
+    expect(page.total).toBe(12);
+    expect(page.traces.map((t) => t.id)).toEqual(["2026-01-b", "2026-01-a"]);
+  });
+
+  it("bundles events across more months than the full cache can hold at once", async () => {
+    seedSixMonths(store.dir);
+    const ids = ["2026-01-a", "2026-02-a", "2026-03-a", "2026-04-a", "2026-05-a", "2026-06-a"];
+    const grouped = await getEventsForTraces(ids);
+    expect(grouped.size).toBe(6);
+    for (const id of ids) {
+      expect(grouped.get(id)?.map((e) => e.message)).toEqual([`event of ${id}`, "model replied"]);
+    }
   });
 });
 

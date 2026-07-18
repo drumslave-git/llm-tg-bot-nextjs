@@ -188,6 +188,49 @@ Next: **Priority 12 — Image generation** (Analytics landed 2026-07-15 as the n
 
 ### Session log
 
+- 2026-07-18 (Improvements pass 2, "continue"): **1.2 SSRF DNS checks, 1.5 trace-store
+  windowing, and 1.6 the daily-scheduler factory are done.**
+  - **1.2 SSRF:** `isPrivateIp` is now exported from
+    `features/link-fetch/url-safety.ts` (and handles `::`, plus IPv6-mapped IPv4
+    like `::ffff:10.0.0.1` — the shape `dns.lookup` returns); new
+    `server/resolve-safety.ts` re-checks what a hostname actually **resolves** to
+    (all addresses must be public; unresolvable = blocked, injectable resolver for
+    tests); `playwright.ts` pre-checks the initial URL and routes **every**
+    request — redirect hops and subresources — through the same verdict,
+    aborting private ones (`route.abort`) with a named error for a blocked
+    navigation. Residual TOCTOU rebinding gap is documented in the module header
+    (connect-by-IP pinning isn't exposed by Playwright). 8 new unit tests.
+  - **1.5 trace store:** the month cache is now two-tier — **headers** (events
+    dropped) stay for every loaded month, **full** months (with events) are
+    LRU-capped at 3 and demoted back to headers — so months of full LLM bodies
+    no longer pin the heap forever. `scanTraces` is range-aware (loads only the
+    months the range intersects, collecting each month before the next load can
+    evict it); `listTraces` serves from a cached sorted view (invalidated on any
+    cache change) merged with the live traces; `flushedTraces` uses a plain loop
+    instead of a `push(...spread)` that could blow the arg limit; flush promotes
+    its target month to full before appending so tiers never mix. **Retention is
+    NOT implemented** — it deletes trace files, so it needs the user (11.1 open).
+    4 new tests cover a six-month corpus: range scans, eviction + re-load,
+    paging, and a >cap bundle export.
+  - **1.6 scheduler factory:** new `server/jobs/daily-scheduler.ts`
+    (`createDailyScheduler({ name, feature, runJob })`) owns the `globalThis`
+    store, the minute tick, the due/next math, "Run now", and the shared
+    `DailyJobInfoBase`; the four daily schedulers (history summaries, memory,
+    self-improvement, analytics) now supply only their `runJob` and extra info
+    fields — each file shed ~100 lines. Analytics keeps its queued regenerate on
+    its own `globalThis` slot, claimed at run start (strictly better than
+    before: a "waiting" tick can no longer consume it). Advisory locks stay
+    inside each feature's `runJob`.
+  - **Proof:** lint ✓, typecheck ✓, unit 535 ✓ (61 files), integration 236 ✓ /
+    21 skipped, build ✓. Live check: `/jobs` renders all four factory-backed
+    cards with correct next-run times; "Run now" on Self-improvement ran end to
+    end ("nothing to incorporate") and rolled its next run to tomorrow 04:00.
+  - **Still open:** needs-decision items (1.1 auth, 1.3 `@grammyjs/runner`,
+    7.1 one-shot retry, 1.9 static-notice language, trace retention 1.5/11.1)
+    and no-decision leftovers (1.7 `withTrace`, 4.3 reply splitting, 5.1 trgm
+    index, 6.1 bytea media, 10.1 SettingsForm split, and the smaller [L] items)
+    — see `docs/IMPROVEMENTS.md`.
+
 - 2026-07-18 (Improvements pass, user-requested "work on improvements"): **the
   ten no-decision quick wins from `docs/IMPROVEMENTS.md` are done.**
   - **1.4 settings cache:** `getSettingsRecord` now serves from a 3 s TTL cache

@@ -1,23 +1,12 @@
 import "server-only";
 
 import { getDb } from "@/db/drizzle";
-import { computeNextRun } from "@/features/scheduled-tasks/schedule";
-import {
-  DEFAULT_DAILY_JOBS_RUN_TIME,
-  getDailyJobsRunTime,
-  getLlmRuntime,
-  getTimezone,
-} from "@/features/settings/server/service";
+import { getLlmRuntime, getTimezone } from "@/features/settings/server/service";
 import { FEATURES } from "@/lib/features";
-import { isDailyRunDue } from "@/server/jobs/daily-due";
-import {
-  createIntervalScheduler,
-  type IntervalRunContext,
-  type IntervalScheduler,
-} from "@/server/jobs/interval-scheduler";
+import { createDailyScheduler } from "@/server/jobs/daily-scheduler";
+import type { IntervalRunContext } from "@/server/jobs/interval-scheduler";
 import { withAdvisoryLock } from "@/server/jobs/lock";
 import { chatCompletion } from "@/server/llm/client";
-import { publishEvent } from "@/server/realtime/hub";
 
 import { bucketKeyOfInstant, weekBucketOf } from "../period";
 
@@ -26,10 +15,9 @@ import { regenerateAnalyticsInsights, runAnalyticsInsights } from "./insights";
 import { countHoursNeedingInsight, listInsightHours } from "./repository";
 
 /**
- * In-process daily scheduler for the analytics insight job — the same shape as the
- * memory/summary/self-improvement jobs (the recorded background-job model): a
- * fixed-interval ticker that runs at the configured local time under the shared
- * cross-process advisory lock.
+ * Daily scheduler for the analytics insight job — the shared daily-job model
+ * (`server/jobs/daily-scheduler.ts`), plus one extra piece of state: a queued
+ * drop-and-regenerate request consumed by the next run.
  *
  * It runs at night because it is expensive (an LLM pass per finished chat-day and
  * per touched period) and nothing live depends on it — the numeric charts are
@@ -37,25 +25,24 @@ import { countHoursNeedingInsight, listInsightHours } from "./repository";
  * this. Idempotent: an unchanged day/period is skipped, so a re-run costs nothing.
  */
 
-/** Poll period. A code constant, not a setting. */
-const TICK_MS = 60_000;
-
-const FEATURE = FEATURES["analytics-insights"];
-const STORE_KEY = Symbol.for("llm-tg-bot.analytics.scheduler");
-
-/** A queued drop-and-regenerate, consumed by the next tick. */
+/** A queued drop-and-regenerate, consumed by the next run. */
 export interface RegenerateRequest {
   granularity: Granularity;
   bucket: string;
 }
 
-interface SchedulerStore {
-  scheduler: IntervalScheduler;
-  lastDailyRunAt: Date | null;
-  forceNext: boolean;
-  /** Set by the dashboard; the next tick regenerates instead of scoring what is owed. */
-  pendingRegenerate: RegenerateRequest | null;
-  lastResult: { at: string; summary: string } | null;
+/**
+ * The pending regenerate lives on its own `globalThis` slot (like the scheduler
+ * store itself) so a dev hot-reload cannot drop a queued request.
+ */
+const REGENERATE_KEY = Symbol.for("llm-tg-bot.analytics.regenerate");
+
+function regenerateSlot(): { pending: RegenerateRequest | null } {
+  const g = globalThis as typeof globalThis & {
+    [REGENERATE_KEY]?: { pending: RegenerateRequest | null };
+  };
+  if (!g[REGENERATE_KEY]) g[REGENERATE_KEY] = { pending: null };
+  return g[REGENERATE_KEY];
 }
 
 /**
@@ -64,7 +51,12 @@ interface SchedulerStore {
  * about the pass — the LLM, the lock, the progress reporting — is identical, which
  * is why regenerate goes through the scheduler rather than running beside it.
  */
-async function runJob(ctx?: IntervalRunContext, regenerate?: RegenerateRequest | null): Promise<string> {
+async function runJob(ctx?: IntervalRunContext): Promise<string> {
+  // Claimed before the run so a failure can't leave it queued to fire again.
+  const slot = regenerateSlot();
+  const regenerate = slot.pending;
+  slot.pending = null;
+
   const llm = await getLlmRuntime().catch(() => null);
   if (!llm) return "LLM not configured";
   const timeZone = await getTimezone().catch(() => "UTC");
@@ -83,69 +75,25 @@ async function runJob(ctx?: IntervalRunContext, regenerate?: RegenerateRequest |
   return outcome.result.summary;
 }
 
-/** One poll tick: run when forced, or when the daily wall-clock time is due. */
-async function runTick(store: SchedulerStore, ctx?: IntervalRunContext): Promise<{ summary: string }> {
-  const forced = store.forceNext;
-  store.forceNext = false;
-  // Claimed before the run so a failure can't leave it queued to fire again.
-  const regenerate = store.pendingRegenerate;
-  store.pendingRegenerate = null;
-
-  if (!forced) {
-    const [timezone, runTime] = await Promise.all([
-      getTimezone().catch(() => "UTC"),
-      getDailyJobsRunTime().catch(() => DEFAULT_DAILY_JOBS_RUN_TIME),
-    ]);
-    const now = new Date();
-    if (
-      !isDailyRunDue({ timeOfDay: runTime, now, timeZone: timezone, lastRunAt: store.lastDailyRunAt })
-    ) {
-      const next = computeNextRun({ scheduleKind: "daily", timeOfDay: runTime }, now, timezone);
-      return { summary: `waiting${next ? ` (next run ${next.toISOString()})` : ""}` };
-    }
-    store.lastDailyRunAt = now;
-  }
-
-  const summary = await runJob(ctx, regenerate);
-  store.lastResult = { at: new Date().toISOString(), summary };
-  return { summary };
-}
-
-function store(): SchedulerStore {
-  const g = globalThis as typeof globalThis & { [STORE_KEY]?: SchedulerStore };
-  if (!g[STORE_KEY]) {
-    const s: SchedulerStore = {
-      lastDailyRunAt: null,
-      forceNext: false,
-      pendingRegenerate: null,
-      lastResult: null,
-      scheduler: createIntervalScheduler({
-        name: "analytics",
-        tickMs: TICK_MS,
-        onStatusChange: () => publishEvent(FEATURE.realtimeTopic, { feature: FEATURE.id }),
-        run: (ctx) => runTick(s as SchedulerStore, ctx),
-      }),
-    };
-    g[STORE_KEY] = s;
-  }
-  return g[STORE_KEY];
-}
+const scheduler = createDailyScheduler({
+  name: "analytics",
+  feature: FEATURES["analytics-insights"],
+  runJob,
+});
 
 /** Start the daily poller (boot). Idempotent. */
 export function startAnalyticsScheduler(): void {
-  store().scheduler.start();
+  scheduler.start();
 }
 
 /** Stop the poller (shutdown). */
 export function stopAnalyticsScheduler(): void {
-  store().scheduler.stop();
+  scheduler.stop();
 }
 
 /** Force an insight run as soon as possible (dashboard "Run now"). */
 export function runAnalyticsInsightsNow(): Promise<void> {
-  const s = store();
-  s.forceNext = true;
-  return s.scheduler.runNow();
+  return scheduler.runNow();
 }
 
 /**
@@ -154,10 +102,8 @@ export function runAnalyticsInsightsNow(): Promise<void> {
  * starts, and the re-score costs one LLM pass per dropped day.
  */
 export function regenerateAnalyticsInsightsNow(request: RegenerateRequest): Promise<void> {
-  const s = store();
-  s.pendingRegenerate = request;
-  s.forceNext = true;
-  return s.scheduler.runNow();
+  regenerateSlot().pending = request;
+  return scheduler.runNow();
 }
 
 /** The bucket key a scored `YYYY-MM-DD HH` hour belongs to, at a granularity. */
@@ -195,30 +141,15 @@ export async function getRegenerateBuckets(): Promise<Record<Granularity, string
 
 /** Current job info — reads settings and counts the outstanding backlog. */
 export async function getAnalyticsJobInfo(): Promise<AnalyticsJobInfo> {
-  const s = store();
-  const [timezone, runTime, llm] = await Promise.all([
-    getTimezone().catch(() => "UTC"),
-    getDailyJobsRunTime().catch(() => DEFAULT_DAILY_JOBS_RUN_TIME),
+  const [base, llm] = await Promise.all([
+    scheduler.getBaseInfo(),
     getLlmRuntime().catch(() => null),
   ]);
-  const now = new Date();
-  const currentHour = bucketKeyOfInstant(now, "hour", timezone);
+  const currentHour = bucketKeyOfInstant(new Date(), "hour", base.timezone);
   const [pendingUnits, regenerateBuckets] = await Promise.all([
-    countHoursNeedingInsight(getDb(), { timeZone: timezone, currentHour }).catch(() => 0),
+    countHoursNeedingInsight(getDb(), { timeZone: base.timezone, currentHour }).catch(() => 0),
     getRegenerateBuckets(),
   ]);
 
-  const due = isDailyRunDue({ timeOfDay: runTime, now, timeZone: timezone, lastRunAt: s.lastDailyRunAt });
-  const next = due ? now : computeNextRun({ scheduleKind: "daily", timeOfDay: runTime }, now, timezone);
-
-  return {
-    status: s.scheduler.getStatus(),
-    nextRunAt: next ? next.toISOString() : null,
-    runTime,
-    timezone,
-    lastResult: s.lastResult,
-    pendingUnits,
-    llmConfigured: llm != null,
-    regenerateBuckets,
-  };
+  return { ...base, pendingUnits, llmConfigured: llm != null, regenerateBuckets };
 }
