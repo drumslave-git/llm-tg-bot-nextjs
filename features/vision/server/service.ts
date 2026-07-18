@@ -311,7 +311,7 @@ export async function describeAndStore(
       type: "llm_response",
       message: "describe response",
       data: { content: result.content },
-      usage: llmUsageOf(result),
+      usage: { ...llmUsageOf(result), callKind: "vision-describe" },
     });
 
     const description = result.content.trim();

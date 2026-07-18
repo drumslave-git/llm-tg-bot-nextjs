@@ -165,7 +165,7 @@ export async function summarizeChatDay(
         type: "llm_response",
         message: batches.length > 1 ? `response (batch ${index + 1}/${batches.length})` : "response",
         data: completion.responseBody ?? { content: completion.content },
-        usage: llmUsageOf(completion),
+        usage: { ...llmUsageOf(completion), callKind: "history-summarize" },
       });
       topics.push(...parseSummaryTopics(completion.content));
     }

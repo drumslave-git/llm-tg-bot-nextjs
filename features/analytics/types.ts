@@ -1,20 +1,27 @@
 /**
  * Client-safe analytics types — shared by the server services (the trace/metric
- * writers) and the dashboard UI (the readers). Pure: no server-only *runtime*
- * import (the one type import below is erased), so a Client Component can use them.
+ * readers) and the dashboard UI. Pure: no server-only *runtime* import (the one type
+ * import below is erased), so a Client Component can use them.
  */
 
 import type { IntervalJobStatus } from "@/server/jobs/interval-scheduler";
 
-/**
- * The period selector — the same options everywhere (numeric charts, word of the
- * period, top topic, mood). `all` collapses all history into a single bucket.
- */
-export type Granularity = "day" | "week" | "month" | "year" | "all";
+import type { LlmCallKindId } from "./llm-call-kind";
 
-export const GRANULARITIES: Granularity[] = ["day", "week", "month", "year", "all"];
+/**
+ * A bucketing granularity. Used for the chart axis inside a period, for the
+ * `date_trunc` unit in SQL, and as the unit an insight row is stored at.
+ *
+ * `hour` is the base unit: the insight job scores conversation per chat-hour, and a
+ * day-period chart plots 24 hourly points, so hour is the finest thing anything on
+ * the dashboard is measured at.
+ */
+export type Granularity = "hour" | "day" | "week" | "month" | "year" | "all";
+
+export const GRANULARITIES: Granularity[] = ["hour", "day", "week", "month", "year", "all"];
 
 export const GRANULARITY_LABELS: Record<Granularity, string> = {
+  hour: "Hour",
   day: "Day",
   week: "Week",
   month: "Month",
@@ -22,25 +29,26 @@ export const GRANULARITY_LABELS: Record<Granularity, string> = {
   all: "All time",
 };
 
-/** The LLM-derived insight is stored at every granularity. */
-export type PeriodGranularity = Granularity;
+/**
+ * A period a card can be pointed at. Narrower than {@link Granularity}: you select
+ * *a day* and see its 24 hours, so `hour` is a chart axis, never a selection.
+ */
+export type PeriodUnit = "day" | "week" | "month" | "year" | "all";
+
+export const PERIOD_UNITS: PeriodUnit[] = ["day", "week", "month", "year", "all"];
 
 /**
- * One kind of request made to a model, identified by the trace `feature`/`action`
- * that issued it — `vision`/`describe`, `bot-messaging`/`reply`,
- * `history-summaries`/`summarize`, and so on.
- *
- * This is the level latency is meaningful at. Describing an image, generating a
- * reply through a tool loop, and answering a one-line auxiliary prompt are
- * different workloads with different shapes, and a single per-model average of them
- * mostly reports which mix happened to run.
+ * The periods a **chart** offers. `all` is absent by design: it has no bounded axis
+ * to plot, so it drew a single meaningless dot. Tiles and the insight cards keep it,
+ * where a lifetime total is a real answer.
  */
-export interface RequestTypeStat {
-  /** Trace feature id — `featureLabel()` turns it into a human name. */
-  feature: string;
-  /** Trace action, e.g. `reply`, `describe`, `summarize`. */
-  action: string;
-  /** Completions counted. */
+export const CHART_PERIOD_UNITS: PeriodUnit[] = ["day", "week", "month", "year"];
+
+/** One LLM round's cost, grouped by what the call was *for*. */
+export interface CallKindStat {
+  /** Which kind of call this is — `LLM_CALL_KINDS` turns it into a human label. */
+  callKind: LlmCallKindId;
+  /** Provider rounds counted. A tool-looping reply contributes one per round. */
   calls: number;
   /** Mean end-to-end latency in ms. */
   avgLatencyMs: number;
@@ -48,6 +56,12 @@ export interface RequestTypeStat {
   latencyP50: number | null;
   /** 95th-percentile latency in ms — the slow tail. Null when no call reported latency. */
   latencyP95: number | null;
+  /**
+   * Total wall time this kind accounted for, in ms. The bottleneck ranking: a
+   * 400 ms call made ten thousand times costs more than a 20 s call made twice, and
+   * only this number says so.
+   */
+  totalLatencyMs: number;
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
@@ -56,52 +70,28 @@ export interface RequestTypeStat {
 }
 
 /**
- * One model's total usage, broken down by request type.
+ * One model's usage in the selected period, broken down by call kind.
  *
  * The model level deliberately carries no latency average: it would be a mean over
- * unlike request types. It carries volume (calls, tokens) and throughput —
- * a ratio of sums, which stays well-defined across a mix. Latency lives on
- * {@link requestTypes}.
+ * unlike kinds of work. It carries volume (rounds, tokens) and throughput — a ratio
+ * of sums, which stays well-defined across a mix. Latency lives on {@link callKinds}.
  */
 export interface ModelStat {
   /** Clean model name (registry prefixes stripped). */
   model: string;
-  /** Completions counted, across every request type. */
+  /** Provider rounds counted, across every call kind. */
   calls: number;
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  totalLatencyMs: number;
   /** Completion tokens per second of latency, or null when latency is unknown. */
   tokensPerSec: number | null;
-  /** This model's request types, busiest first. */
-  requestTypes: RequestTypeStat[];
+  /** This model's call kinds, most total time first. */
+  callKinds: CallKindStat[];
 }
 
-/**
- * Deterministic bot-health signals (no LLM), over all history.
- *
- * Every field here is a measurement with an agreed meaning. There is deliberately
- * no composite "health score": rolling satisfaction, error rate, and latency into
- * one number requires inventing weights and thresholds nobody agreed on, so the
- * result looks authoritative while encoding an opinion. Active users and the raw
- * reaction count are absent too — they are reported by the Users tile and by
- * satisfaction respectively, and a second copy just invites the two to disagree.
- */
-export interface HealthSignals {
-  /** 👍 / 👎 reaction counts on the bot's replies — the basis of `satisfaction`. */
-  feedbackUp: number;
-  feedbackDown: number;
-  /** up / (up + down), or null when there is no feedback yet. */
-  satisfaction: number | null;
-  /** Failed bot-messaging traces / total, or null when there is no traffic. */
-  errorRate: number | null;
-  botTraces: number;
-  botErrors: number;
-  /** Mean latency (ms) of a bot reply's LLM calls, or null when there are none. */
-  avgReplyLatencyMs: number | null;
-}
-
-/** One user's activity within the window. */
+/** One user's activity within the period. */
 export interface UserStat {
   userId: string;
   label: string;
@@ -116,17 +106,25 @@ export type MetricScopeKind = "global" | "chat" | "user";
 /**
  * The filters one card carries. Every card owns its own set — the dashboard has no
  * single global filter, so two cards can show different periods side by side (this
- * week's mood next to the year's token trend) without one clobbering the other.
+ * week's mood next to last year's token trend) without one clobbering the other.
  */
 export interface CardFilters {
-  granularity: Granularity;
+  unit: PeriodUnit;
+  /** The selected period's key: `2026-07-18`, `2026-07`, `2026`, or `all`. */
+  anchor: string;
   chatId: string | null;
   userId: string | null;
 }
 
+/** Where a card's data comes from — picks the calendar's availability source. */
+export type MetricSource = "messages" | "traces" | "insights";
+
+export const METRIC_SOURCES: MetricSource[] = ["messages", "traces", "insights"];
+
 /** Everything a card's response carries about *what it is*, echoed back from the filters. */
 export interface MetricContext {
-  granularity: Granularity;
+  unit: PeriodUnit;
+  anchor: string;
   timezone: string;
   scope: MetricScopeKind;
   chatId: string | null;
@@ -139,17 +137,19 @@ export type SeriesSection = "volume" | "tokens" | "users" | "mood";
 export const SERIES_SECTIONS: SeriesSection[] = ["volume", "tokens", "users", "mood"];
 
 /**
- * One line on a chart. `null` is a real gap (no data for that bucket), which is
- * not the same as `0` — an unscored day has no mood, it does not have a mood of 0.
+ * One line on a chart. `null` is a real gap (no data for that bucket), which is not
+ * the same as `0` — an unscored hour has no mood, it does not have a mood of 0.
  */
 export interface NamedSeries {
   name: string;
   data: (number | null)[];
 }
 
-/** A chart card's payload: the dense bucket axis plus its lines. */
+/** A chart card's payload: the dense sub-bucket axis plus its lines. */
 export interface SeriesPayload extends MetricContext {
   section: SeriesSection;
+  /** The granularity the axis is bucketed at — one step finer than `unit`. */
+  bucketUnit: Granularity;
   /** Bucket labels, oldest → newest. Every series' data is aligned to this. */
   buckets: string[];
   series: NamedSeries[];
@@ -157,48 +157,78 @@ export interface SeriesPayload extends MetricContext {
   yMax?: number;
 }
 
-/** The traffic tiles' payload. */
+/**
+ * The traffic tiles' payload — the bot's workload in the period, read from traces.
+ *
+ * "Handled" is what the bot opened a trace for, which is not the same as every
+ * message sent: a group message the bot was never addressed in is not work it did.
+ * Raw message counts are the Message volume chart's job, from history.
+ */
 export interface TotalsPayload extends MetricContext {
   totals: {
-    messages: number;
-    humanMessages: number;
-    botMessages: number;
+    handled: number;
+    replied: number;
+    failed: number;
     tokensProcessed: number;
     tokensGenerated: number;
     activeUsers: number;
-    media: number;
+    images: number;
   };
 }
 
-/**
- * The unfiltered, system-level cards: bot health, model performance, top users.
- * These cover **all history** and take no period or chat/user filter — they
- * describe the bot itself rather than a slice of conversation.
- */
-export interface SystemStats {
-  health: HealthSignals;
+/** The model-performance card's payload for one period. */
+export interface ModelsPayload extends MetricContext {
   models: ModelStat[];
-  topUsers: UserStat[];
 }
 
-/** One bucket's mood point, for the mood trend chart (at the selected granularity). */
+/** The top-users card's payload for one period. */
+export interface TopUsersPayload extends MetricContext {
+  users: UserStat[];
+}
+
+/** One sub-bucket's mood point, for the mood trend chart. */
 export interface MoodPoint {
   bucket: string;
   moodScore: number;
   moodLabel: string;
 }
 
-/** The LLM-derived insight for a selected period (mood + word of the period + topic). */
+/**
+ * The mood of one period, and the points it is made of.
+ *
+ * Deliberately one payload rather than two endpoints: the Mood tile's number is the
+ * message-weighted mean of exactly the points the trend chart draws. Computing them
+ * separately let the tile and the chart disagree about the same period, which is the
+ * one thing a dashboard must never do.
+ */
+export interface MoodPayload {
+  /** Null when no sub-bucket in the period has been scored yet. */
+  aggregate: {
+    moodScore: number;
+    moodLabel: string;
+    /** Scored sub-buckets behind the number. */
+    sourceUnits: number;
+    messageCount: number;
+  } | null;
+  points: MoodPoint[];
+}
+
+/**
+ * The LLM-derived insight for a selected period: the word of the period and the top
+ * topic, plus the mood that the Mood card and the trend chart share.
+ *
+ * Always scoped to one chat. A cross-chat average of unrelated conversations answers
+ * no question anyone asks, so there is no global variant.
+ */
 export interface PeriodInsight {
-  granularity: PeriodGranularity;
-  bucket: string;
-  scope: "global" | "chat";
-  chatId: string | null;
+  unit: PeriodUnit;
+  anchor: string;
+  chatId: string;
   wordOfPeriod: string;
   topTopic: string;
-  moodScore: number;
-  moodLabel: string;
-  sourceDays: number;
+  mood: MoodPayload["aggregate"];
+  /** Scored hours behind the roll-up. */
+  sourceUnits: number;
   messageCount: number;
   model: string;
   computedAt: string;
@@ -214,12 +244,12 @@ export interface AnalyticsJobInfo {
   timezone: string;
   /** Outcome of the last actual run, or null when it has never run. */
   lastResult: { at: string; summary: string } | null;
-  /** Days still awaiting an insight — the visible backlog. */
-  pendingDays: number;
+  /** Chat-hours still awaiting an insight — the visible backlog. */
+  pendingUnits: number;
   /** Whether an LLM is configured (else the job settles as a no-op). */
   llmConfigured: boolean;
   /**
-   * Per-granularity, the buckets that hold scored days — what "Regenerate" can be
+   * Per-granularity, the buckets that hold scored hours — what "Regenerate" can be
    * pointed at. Empty lists mean there is nothing stored to drop.
    */
   regenerateBuckets: Record<Granularity, string[]>;

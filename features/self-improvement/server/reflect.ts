@@ -146,7 +146,7 @@ export async function reflectOnFeedback(
       type: "llm_response",
       message: "response",
       data: result.responseBody ?? { content: result.content },
-      usage: llmUsageOf(result),
+      usage: { ...llmUsageOf(result), callKind: "self-improve-reflect" },
     });
 
     const reflection = result.content.trim();

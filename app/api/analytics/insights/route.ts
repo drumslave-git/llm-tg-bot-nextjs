@@ -3,18 +3,11 @@ import { insightsQuerySchema } from "@/features/analytics/server/schema";
 import { defineRoute, ok, parseQuery } from "@/server/http";
 
 /**
- * The stored LLM-derived roll-up (mood + word of the period + top topic) for a
- * selected month/year/all bucket and scope. Returns `null` when that period has
- * not been computed yet (before the nightly job's first run for it).
+ * The stored LLM-derived roll-up (mood + word of the period + top topic) for one
+ * chat's selected period. Returns `null` when that period has not been rolled up
+ * yet — insights only ever cover finished hours.
  */
 export const GET = defineRoute(async ({ request }) => {
   const query = parseQuery(request, insightsQuerySchema);
-  return ok(
-    await getPeriodInsightCard({
-      granularity: query.granularity,
-      bucket: query.bucket ?? null,
-      scope: query.scope,
-      chatId: query.chatId ?? null,
-    }),
-  );
+  return ok(await getPeriodInsightCard(query));
 });

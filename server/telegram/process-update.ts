@@ -53,7 +53,12 @@ import {
 import { pokeVisionBackfill } from "@/features/vision/server/backfill-scheduler";
 import { ApiError } from "@/lib/api-error";
 import { resolveRequiredLanguage } from "@/lib/language";
-import { chatCompletion, type ChatContentPart, type ChatMessage } from "@/server/llm/client";
+import {
+  chatCompletion,
+  servedModelOf,
+  type ChatContentPart,
+  type ChatMessage,
+} from "@/server/llm/client";
 import { chatCompletionWithTools } from "@/server/llm/tool-loop";
 import { runWithToolContext } from "@/server/mcp/context";
 
@@ -271,7 +276,7 @@ function buildDeps(
     },
     generateReply:
       overrides?.generateReply ??
-      (async (messages: ChatMessage[], onToolCall, onRequest) => {
+      (async (messages: ChatMessage[], onToolCall, onRequest, onRound) => {
         const runtime = await getLlmRuntime();
         if (!runtime) {
           throw ApiError.serviceUnavailable(
@@ -283,7 +288,19 @@ function buildDeps(
         // that needs no tool still costs one inference even when tools are offered.
         const toolset = await getToolset();
         if (!toolset) {
-          return chatCompletion(conn, { model: runtime.model, messages, onRequest });
+          const result = await chatCompletion(conn, { model: runtime.model, messages, onRequest });
+          // Reported as a round too, so the caller records rounds and only rounds —
+          // one code path on the trace whether or not tools were in play.
+          await onRound?.({
+            index: 0,
+            isFinal: true,
+            model: result.model,
+            servedModel: result.servedModel,
+            usage: result.usage,
+            latencyMs: result.latencyMs,
+            responseBody: result.responseBody,
+          });
+          return result;
         }
         // Run the tool-call loop with the current chat bound, so tools only ever
         // read this conversation's data. The sender + thread are bound too, so a
@@ -299,6 +316,18 @@ function buildDeps(
             onRequest,
             onToolCall: (rec) =>
               onToolCall?.({ name: rec.name, args: rec.args, result: rec.result, ok: rec.ok }),
+            onRound: (round, report) =>
+              onRound?.({
+                index: report.index,
+                isFinal: report.isFinal,
+                // The round's identity is the model we asked for; the provider's own
+                // answer (which may be a resolved bundle path) stays separate.
+                model: runtime.model,
+                servedModel: servedModelOf(round.raw),
+                usage: round.usage,
+                latencyMs: round.latencyMs,
+                responseBody: round.raw,
+              }),
           }),
         );
       }),

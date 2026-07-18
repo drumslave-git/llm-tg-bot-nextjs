@@ -164,7 +164,7 @@ export function analyticsJobView(info: AnalyticsJobInfo | null): JobView {
   return {
     id: "analytics-insights",
     title: "Analytics insights",
-    description: `Scores each day's mood + top topic and rolls up period insights, daily at ${info.runTime} (${info.timezone}).`,
+    description: `Scores each chat-hour's mood + top topic and rolls up period insights, daily at ${info.runTime} (${info.timezone}).`,
     activity: intervalActivity(info.status),
     href: "/analytics",
     runEndpoint: "/api/analytics/insights/run",
@@ -172,7 +172,7 @@ export function analyticsJobView(info: AnalyticsJobInfo | null): JobView {
     notice: info.llmConfigured
       ? null
       : "No LLM configured — set one in Settings for insights to compute.",
-    backlog: info.pendingDays > 0 ? { label: "days pending", count: info.pendingDays } : null,
+    backlog: info.pendingUnits > 0 ? { label: "hours pending", count: info.pendingUnits } : null,
     nextRunAt: info.nextRunAt,
     lastRunAt: info.lastResult?.at ?? null,
     lastResult: info.lastResult?.summary ?? null,

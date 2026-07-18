@@ -1,31 +1,33 @@
 /**
- * Pure bucket math for the analytics charts — dependency-free via `Intl`, so it
+ * Pure bucket math for the analytics dashboard — dependency-free via `Intl`, so it
  * is client-safe and directly unit-testable.
  *
- * The period selector is **day / week / month / year / all-time**, and it drives
- * every metric. A chart is "the last N buckets up to now" at the chosen granularity,
- * bucketed by the operator's wall clock (not UTC). The **exact same** bucket-key
- * format is produced here in JS (to build the dense, gap-free x-axis) and by
- * Postgres `to_char(date_trunc(...))` in the repository (to group the values) — the
- * two must agree, which the unit tests pin. Weeks are ISO weeks (Monday start),
- * matching Postgres `date_trunc('week', …)`; the week's key is its Monday's date.
+ * The dashboard's filter is **one selected period**, not a trailing window: a card
+ * shows `day 2026-07-18` (that day, 00:00–24:00 on the operator's wall clock) and
+ * you step to the next or previous one. This module owns the whole contract:
+ *
+ *  - {@link periodRange} turns a `(unit, anchor)` pair into the half-open UTC
+ *    instant range `[startUtc, endUtc)` every query filters on. Half-open is the
+ *    point — the previous shape had a lower bound only, so "day" and "week" both
+ *    swallowed all recent history and reported identical totals.
+ *  - {@link subBucketKeys} turns the same pair into the dense chart axis *inside*
+ *    the period (a day is 24 hours, a year is 12 months), which is what makes every
+ *    period draw a real line instead of one dot.
+ *  - {@link stepAnchor} / {@link currentAnchor} drive the period navigation.
+ *
+ * The **exact same** bucket-key format is produced here in JS (to build the dense,
+ * gap-free axis) and by Postgres `to_char(date_trunc(...))` in the repository (to
+ * group the values) — the two must agree, which the unit tests pin. Weeks are ISO
+ * weeks (Monday start), matching Postgres `date_trunc('week', …)`; a week's key is
+ * its Monday's date.
  */
 
 import { addCalendarDays, zonedWallClockToUtc } from "@/features/scheduled-tasks/schedule";
 
-import type { Granularity } from "./types";
+import type { Granularity, PeriodUnit } from "./types";
 
-/** How many buckets a chart shows by default per granularity. */
-export const DEFAULT_BUCKET_COUNT: Record<Granularity, number> = {
-  day: 30,
-  week: 26,
-  month: 24,
-  year: 10,
-  all: 1,
-};
-
-/** Upper bound on buckets a caller may request, so a query can't fan out unbounded. */
-export const MAX_BUCKET_COUNT = 400;
+/** Far-future sentinel for the open end of the `all` range. */
+const FOREVER = new Date("9999-12-31T00:00:00.000Z");
 
 interface ZonedParts {
   year: number;
@@ -56,18 +58,22 @@ export function zonedParts(instant: Date, timeZone: string): ZonedParts {
 }
 
 /** The `date_trunc` unit for a granularity (null for `all`, which has no unit). */
-export function truncUnit(granularity: Granularity): "day" | "week" | "month" | "year" | null {
+export function truncUnit(
+  granularity: Granularity,
+): "hour" | "day" | "week" | "month" | "year" | null {
   return granularity === "all" ? null : granularity;
 }
 
 /**
  * The Postgres `to_char` format string matching {@link bucketKey}. Applied to
- * `date_trunc(unit, ts at time zone tz)` it yields the identical string this
- * module builds in JS. Week uses the same date form as day — the difference is the
+ * `date_trunc(unit, ts at time zone tz)` it yields the identical string this module
+ * builds in JS. Week uses the same date form as day — the difference is the
  * `date_trunc` unit (week truncates to its Monday).
  */
 export function bucketFormat(granularity: Granularity): string {
   switch (granularity) {
+    case "hour":
+      return "YYYY-MM-DD HH24";
     case "day":
     case "week":
       return "YYYY-MM-DD";
@@ -86,14 +92,25 @@ function weekdayOfYmd(year: number, month: number, day: number): number {
 }
 
 /** The Monday (ISO week start) of the week containing a Y/M/D date. */
-function mondayOf(year: number, month: number, day: number): { year: number; month: number; day: number } {
+function mondayOf(
+  year: number,
+  month: number,
+  day: number,
+): { year: number; month: number; day: number } {
   const back = (weekdayOfYmd(year, month, day) + 6) % 7;
   return addCalendarDays(year, month, day, -back);
+}
+
+/** Days in a calendar month (day 0 of the next month is the last of this one). */
+function daysInMonth(year: number, month: number): number {
+  return new Date(Date.UTC(year, month, 0)).getUTCDate();
 }
 
 /** The bucket key for wall-clock parts at a granularity. */
 export function bucketKey(parts: ZonedParts, granularity: Granularity): string {
   switch (granularity) {
+    case "hour":
+      return `${parts.year}-${pad2(parts.month)}-${pad2(parts.day)} ${pad2(parts.hour)}`;
     case "day":
       return `${parts.year}-${pad2(parts.month)}-${pad2(parts.day)}`;
     case "week": {
@@ -110,7 +127,11 @@ export function bucketKey(parts: ZonedParts, granularity: Granularity): string {
 }
 
 /** The bucket key an instant falls into, in `timeZone`. */
-export function bucketKeyOfInstant(instant: Date, granularity: Granularity, timeZone: string): string {
+export function bucketKeyOfInstant(
+  instant: Date,
+  granularity: Granularity,
+  timeZone: string,
+): string {
   return bucketKey(zonedParts(instant, timeZone), granularity);
 }
 
@@ -128,82 +149,191 @@ export function addDaysToDateStr(dateStr: string, n: number): string {
   return `${r.year}-${pad2(r.month)}-${pad2(r.day)}`;
 }
 
-/** The start-of-bucket parts for the bucket the given parts fall in. */
-function bucketStart(parts: ZonedParts, granularity: Granularity): ZonedParts {
-  switch (granularity) {
+/**
+ * The granularity a period is charted at — one step finer than the period itself.
+ *
+ * This is what gives every period a real line: a day is 24 hourly points, a year is
+ * 12 monthly ones. A month is charted daily rather than weekly because partial weeks
+ * at both ends of a month are a worse lie than 31 honest points.
+ *
+ * `all` has no bounded axis to enumerate, so it is not offered on chart cards; the
+ * month answer here is the sensible one for any caller that asks anyway.
+ */
+export function subUnitOf(unit: PeriodUnit): Granularity {
+  switch (unit) {
     case "day":
-      return { ...parts, hour: 0 };
-    case "week": {
-      const m = mondayOf(parts.year, parts.month, parts.day);
-      return { ...m, hour: 0 };
-    }
+      return "hour";
+    case "week":
     case "month":
-      return { year: parts.year, month: parts.month, day: 1, hour: 0 };
+      return "day";
     case "year":
-      return { year: parts.year, month: 1, day: 1, hour: 0 };
+      return "month";
     case "all":
-      return { ...parts };
+      return "month";
   }
 }
 
-/** Step a bucket-start one bucket earlier (calendar-aware). */
-function stepBack(parts: ZonedParts, granularity: Granularity): ZonedParts {
-  switch (granularity) {
-    case "day": {
-      const d = addCalendarDays(parts.year, parts.month, parts.day, -1);
-      return { ...d, hour: 0 };
-    }
-    case "week": {
-      const d = addCalendarDays(parts.year, parts.month, parts.day, -7);
-      return { ...d, hour: 0 };
-    }
-    case "month":
-      return parts.month === 1
-        ? { year: parts.year - 1, month: 12, day: 1, hour: 0 }
-        : { year: parts.year, month: parts.month - 1, day: 1, hour: 0 };
-    case "year":
-      return { year: parts.year - 1, month: 1, day: 1, hour: 0 };
-    case "all":
-      return { ...parts };
-  }
-}
-
-export interface BucketWindow {
-  /** Bucket keys, oldest → newest. */
-  keys: string[];
-  /** UTC instant of the first bucket's start — the inclusive lower bound for SQL. */
+export interface PeriodRange {
+  /** Inclusive lower bound. */
   startUtc: Date;
+  /** **Exclusive** upper bound — the instant the next period begins. */
+  endUtc: Date;
 }
 
 /**
- * The last `count` bucket keys ending at the bucket `now` falls in, plus the UTC
- * instant the window starts at (for the SQL `sent_at >= startUtc` filter). `all`
- * is a single `"all"` bucket over the whole history (`startUtc` = epoch).
+ * The half-open UTC instant range a `(unit, anchor)` period covers, on the
+ * operator's wall clock.
+ *
+ * Exclusive upper bound rather than an inclusive "end of period" instant: there is
+ * no last representable moment of a day, so any inclusive bound either double-counts
+ * the boundary row or silently drops it. `sent_at >= start and sent_at < end` has
+ * neither failure mode and tiles across periods exactly.
  */
-export function bucketWindow(
-  granularity: Granularity,
-  opts: { now: Date; timeZone: string; count?: number },
-): BucketWindow {
-  if (granularity === "all") {
-    return { keys: ["all"], startUtc: new Date(0) };
+export function periodRange(unit: PeriodUnit, anchor: string, timeZone: string): PeriodRange {
+  if (unit === "all") return { startUtc: new Date(0), endUtc: FOREVER };
+
+  const at = (y: number, m: number, d: number) => zonedWallClockToUtc(y, m, d, 0, 0, timeZone);
+
+  switch (unit) {
+    case "day": {
+      const [y, m, d] = anchor.split("-").map(Number);
+      const next = addCalendarDays(y, m, d, 1);
+      return { startUtc: at(y, m, d), endUtc: at(next.year, next.month, next.day) };
+    }
+    case "week": {
+      const [y, m, d] = anchor.split("-").map(Number);
+      const next = addCalendarDays(y, m, d, 7);
+      return { startUtc: at(y, m, d), endUtc: at(next.year, next.month, next.day) };
+    }
+    case "month": {
+      const [y, m] = anchor.split("-").map(Number);
+      const nextY = m === 12 ? y + 1 : y;
+      const nextM = m === 12 ? 1 : m + 1;
+      return { startUtc: at(y, m, 1), endUtc: at(nextY, nextM, 1) };
+    }
+    case "year": {
+      const y = Number(anchor);
+      return { startUtc: at(y, 1, 1), endUtc: at(y + 1, 1, 1) };
+    }
   }
+}
 
-  const requested = opts.count ?? DEFAULT_BUCKET_COUNT[granularity];
-  const count = Math.max(1, Math.min(requested, MAX_BUCKET_COUNT));
-
-  let cursor = bucketStart(zonedParts(opts.now, opts.timeZone), granularity);
-  const partsNewestFirst: ZonedParts[] = [];
-  for (let i = 0; i < count; i += 1) {
-    partsNewestFirst.push(cursor);
-    cursor = stepBack(cursor, granularity);
+/**
+ * The dense chart axis inside a period, oldest → newest, at {@link subUnitOf}'s
+ * granularity. Built in JS so a bucket with no rows is a visible gap rather than a
+ * missing point — the values are joined onto this axis, never the other way round.
+ *
+ * Empty for `all`, which has no bounded axis (chart cards do not offer it).
+ */
+export function subBucketKeys(unit: PeriodUnit, anchor: string): string[] {
+  switch (unit) {
+    case "day":
+      return Array.from({ length: 24 }, (_, h) => `${anchor} ${pad2(h)}`);
+    case "week":
+      return Array.from({ length: 7 }, (_, i) => addDaysToDateStr(anchor, i));
+    case "month": {
+      const [y, m] = anchor.split("-").map(Number);
+      return Array.from(
+        { length: daysInMonth(y, m) },
+        (_, i) => `${anchor}-${pad2(i + 1)}`,
+      );
+    }
+    case "year":
+      return Array.from({ length: 12 }, (_, i) => `${anchor}-${pad2(i + 1)}`);
+    case "all":
+      return [];
   }
-  const partsOldestFirst = partsNewestFirst.reverse();
-  const first = partsOldestFirst[0];
+}
 
-  return {
-    keys: partsOldestFirst.map((p) => bucketKey(p, granularity)),
-    startUtc: zonedWallClockToUtc(first.year, first.month, first.day, first.hour, 0, opts.timeZone),
-  };
+/** Step an anchor `delta` periods (negative = earlier), calendar-aware. */
+export function stepAnchor(unit: PeriodUnit, anchor: string, delta: number): string {
+  switch (unit) {
+    case "day":
+      return addDaysToDateStr(anchor, delta);
+    case "week":
+      return addDaysToDateStr(anchor, delta * 7);
+    case "month": {
+      const [y, m] = anchor.split("-").map(Number);
+      const total = y * 12 + (m - 1) + delta;
+      return `${Math.floor(total / 12)}-${pad2((total % 12) + 1)}`;
+    }
+    case "year":
+      return String(Number(anchor) + delta);
+    case "all":
+      return "all";
+  }
+}
+
+/** The anchor of the period `now` falls in, on the operator's wall clock. */
+export function currentAnchor(unit: PeriodUnit, now: Date, timeZone: string): string {
+  return unit === "all" ? "all" : bucketKey(zonedParts(now, timeZone), unit);
+}
+
+/** The `YYYY-MM-DD` a period anchor starts on — its representative date. */
+export function anchorStartDate(unit: PeriodUnit, anchor: string, todayDate: string): string {
+  switch (unit) {
+    case "day":
+    case "week":
+      return anchor;
+    case "month":
+      return `${anchor}-01`;
+    case "year":
+      return `${anchor}-01-01`;
+    case "all":
+      return todayDate;
+  }
+}
+
+/** The anchor for a `YYYY-MM-DD` date at a given unit. */
+export function anchorOfDate(unit: PeriodUnit, date: string): string {
+  switch (unit) {
+    case "day":
+      return date;
+    case "week":
+      return weekBucketOf(date);
+    case "month":
+      return date.slice(0, 7);
+    case "year":
+      return date.slice(0, 4);
+    case "all":
+      return "all";
+  }
+}
+
+/**
+ * Carry the current position across a unit change — switching from `day 2026-07-18`
+ * to Month lands on `2026-07`, not on today.
+ *
+ * Resetting to the current period instead would silently throw away where the reader
+ * had navigated to, which is the one thing they were looking at.
+ */
+export function reanchor(
+  fromUnit: PeriodUnit,
+  anchor: string,
+  toUnit: PeriodUnit,
+  todayDate: string,
+): string {
+  return anchorOfDate(toUnit, anchorStartDate(fromUnit, anchor, todayDate));
+}
+
+/**
+ * Whether an anchor is at or past the current period — what disables the "next"
+ * button.
+ *
+ * Compares against a *supplied* current anchor rather than reading the clock, so the
+ * client can use it: "now" on this dashboard is the operator timezone's now,
+ * resolved on the server, and the browser's clock must not get a vote.
+ *
+ * A plain string compare is correct: every anchor form is fixed-width and
+ * zero-padded, so lexical order is chronological order.
+ */
+export function isAtOrAfterAnchor(
+  unit: PeriodUnit,
+  anchor: string,
+  currentAnchorForUnit: string,
+): boolean {
+  if (unit === "all") return true;
+  return anchor >= currentAnchorForUnit;
 }
 
 /** Align a sparse `key → value` map onto the dense `keys` axis, filling gaps with 0. */

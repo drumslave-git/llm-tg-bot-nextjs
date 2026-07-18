@@ -12,7 +12,6 @@ import type {
   TraceTrigger,
 } from "@/lib/trace";
 import { publishEvent } from "@/server/realtime/hub";
-import { recordTraceFacts } from "./facts";
 import { appendTraceEvent, createTrace, settleTrace } from "./store";
 
 /**
@@ -116,8 +115,6 @@ export async function startTrace(input: StartTraceInput): Promise<TraceRecorder>
 
   let seq = 0;
   let settled = false;
-  // Kept for the analytics facts written on settle; freed with the recorder.
-  const events: TraceEvent[] = [];
 
   /** Notify live dashboards that this trace changed (settled). */
   const notify = () => publishEvent("traces", { feature: input.feature });
@@ -135,7 +132,6 @@ export async function startTrace(input: StartTraceInput): Promise<TraceRecorder>
       usage: input.usage,
     };
     appendTraceEvent(id, event);
-    events.push(event);
     // Notify live dashboards so an open trace's detail view streams entries in
     // as they are recorded, not only when the trace settles.
     notify();
@@ -149,38 +145,28 @@ export async function startTrace(input: StartTraceInput): Promise<TraceRecorder>
   }
 
   /**
-   * Settle the in-memory trace, notify dashboards, and write the compact analytics
-   * facts (best-effort). Shared by success/skip/fail so all three record facts.
+   * Settle the in-memory trace and notify dashboards. Shared by success/skip/fail.
+   *
+   * Nothing is mirrored to Postgres. Analytics used to read a compact copy of each
+   * settled trace (`llm_usage` / `trace_facts`), which meant two sources of truth
+   * for the same events and — because the copy was written at settle time — a lossy
+   * one: it could only ever carry what the writer thought to distil. The dashboard
+   * now aggregates the trace files themselves, so the trace is simply the record.
    */
   async function finalize(
     status: "success" | "error" | "skipped",
     finish: FinishInput | undefined,
     settleExtra: { outputSummary?: string; error?: Trace["error"] },
   ): Promise<void> {
-    const finishedAt = new Date().toISOString();
     settleTrace(id, {
       status,
-      finishedAt,
+      finishedAt: new Date().toISOString(),
       outputSummary: settleExtra.outputSummary,
       error: settleExtra.error,
       relatedIds: finish?.relatedIds,
       correlationId: finish?.correlationId,
     });
     notify();
-    await recordTraceFacts({
-      id,
-      feature: input.feature,
-      action: input.action,
-      status,
-      // The correlation the trace settled on (a proactive send learns it late).
-      trigger: {
-        ...input.trigger,
-        correlationId: finish?.correlationId ?? input.trigger.correlationId,
-      },
-      startedAt,
-      finishedAt,
-      events,
-    });
   }
 
   return {

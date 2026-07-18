@@ -134,7 +134,7 @@ export async function runMemoryConsolidation(deps: ConsolidateDeps): Promise<Con
         type: "llm_response",
         message: "response",
         data: completion.responseBody ?? { content: completion.content },
-        usage: llmUsageOf(completion),
+        usage: { ...llmUsageOf(completion), callKind: "memory-consolidate" },
       });
       return completion.content;
     } catch (err) {

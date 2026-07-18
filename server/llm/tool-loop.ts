@@ -57,11 +57,29 @@ export type CompleteRound = (
   conversation: ChatCompletionMessageParam[],
 ) => Promise<ToolLoopRound>;
 
+/** What a completed round was: an intermediate tool turn, or the answer. */
+export interface RoundReport {
+  /** 0-based position in the loop. */
+  index: number;
+  /** True when the model answered instead of asking for tools — the reply round. */
+  isFinal: boolean;
+}
+
 export interface RunToolLoopParams {
   seed: ChatCompletionMessageParam[];
   complete: CompleteRound;
   callTool: (name: string, args: Record<string, unknown>) => Promise<McpToolCallResult>;
   onToolCall?: (record: ToolCallRecord) => void | Promise<void>;
+  /**
+   * Reports every model round as it completes, with its own tokens and latency.
+   *
+   * The loop's summed {@link ToolLoopResult} is still what the caller returns to the
+   * user, but a sum is the wrong unit for performance: a reply that took four rounds
+   * and one that answered immediately became the same indistinguishable row, and a
+   * single slow tool turn was invisible inside the total. Analytics groups on the
+   * round, so it needs each one.
+   */
+  onRound?: (round: ToolLoopRound, report: RoundReport) => void | Promise<void>;
   /** Hard cap on model rounds; unset = unbounded (progress guard still applies). */
   maxRounds?: number;
 }
@@ -137,6 +155,8 @@ export async function runToolLoop(params: RunToolLoopParams): Promise<ToolLoopRe
     lastRaw = round.raw;
 
     const toolCalls = round.toolCalls;
+    // A round that asked for no tools is the answer; anything else is a tool turn.
+    await params.onRound?.(round, { index: rounds - 1, isFinal: toolCalls.length === 0 });
     if (toolCalls.length === 0) {
       return {
         content: round.content,
@@ -216,6 +236,8 @@ export async function chatCompletionWithTools(
     onToolCall?: (record: ToolCallRecord) => void | Promise<void>;
     /** Reports the exact initial request body just before the first round is sent. */
     onRequest?: (requestBody: unknown) => void | Promise<void>;
+    /** Reports each model round's own tokens/latency — see {@link RunToolLoopParams.onRound}. */
+    onRound?: (round: ToolLoopRound, report: RoundReport) => void | Promise<void>;
     maxRounds?: number;
     timeoutMs?: number;
   },
@@ -257,6 +279,7 @@ export async function chatCompletionWithTools(
     complete,
     callTool: input.callTool,
     onToolCall: input.onToolCall,
+    onRound: input.onRound,
     maxRounds: input.maxRounds,
   });
 

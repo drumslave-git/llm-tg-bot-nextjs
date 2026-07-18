@@ -233,7 +233,7 @@ export async function extractChatDay(
         type: "llm_response",
         message: `response${label}`,
         data: completion.responseBody ?? { content: completion.content },
-        usage: llmUsageOf(completion),
+        usage: { ...llmUsageOf(completion), callKind: "memory-extract" },
       });
       // Each batch is validated against the *day's* full roster, not the batch's:
       // a person can speak in the morning and be talked about in the evening, and

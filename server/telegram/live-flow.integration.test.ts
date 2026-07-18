@@ -1,10 +1,10 @@
 import { loadEnvConfig } from "@next/env";
-import { eq, like } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { getDb } from "@/db/drizzle";
 import { closePool } from "@/db/pool";
-import { chatMessages, knownUsers, llmUsage, messageMedia, traceFacts } from "@/db/schema";
+import { chatMessages, knownUsers, messageMedia } from "@/db/schema";
 import { getLlmRuntime } from "@/features/settings/server/service";
 import { stopVisionBackfill } from "@/features/vision/server/backfill-scheduler";
 import { listTraces } from "@/server/trace";
@@ -34,10 +34,8 @@ const USER_ID = "987654321";
 async function cleanup(): Promise<void> {
   const db = getDb();
   const chatId = String(CHAT_ID);
-  // Traces live in the file store (a temp dir, reset by the test setup), but their
-  // analytics facts land in the real DB — keyed by correlationId = `${chatId}:…`.
-  await db.delete(llmUsage).where(like(llmUsage.correlationId, `${chatId}:%`));
-  await db.delete(traceFacts).where(like(traceFacts.correlationId, `${chatId}:%`));
+  // Traces live entirely in the file store (a temp dir, reset by the test setup),
+  // so there is nothing trace-shaped to clean out of the database.
   await db.delete(messageMedia).where(eq(messageMedia.chatId, chatId));
   await db.delete(chatMessages).where(eq(chatMessages.chatId, chatId));
   await db.delete(knownUsers).where(eq(knownUsers.userId, USER_ID));

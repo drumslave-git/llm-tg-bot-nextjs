@@ -13,6 +13,8 @@ export {
   listFeatures,
   getEventsForTraces,
   getLatestTraceIdsByCorrelation,
+  scanTraces,
+  type ScanTracesInput,
   startTraceStore,
   stopTraceStore,
   flushTracesNow,

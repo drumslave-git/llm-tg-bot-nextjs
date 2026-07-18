@@ -50,6 +50,28 @@ export interface GeneratedReply {
   responseBody?: unknown;
 }
 
+/**
+ * One model round inside a reply, reported by the generator as it completes.
+ *
+ * A reply is not one LLM call. It is a tool turn, then another, then an answer — or
+ * just an answer. The generator used to hand back only the sum, which made a
+ * four-round reply and an immediate one indistinguishable on the dashboard and hid
+ * a slow individual turn inside the total. Each round is recorded separately so
+ * "reply · tool turn" and "reply · final answer" are measurable on their own.
+ */
+export interface ReplyRound {
+  /** 0-based position in the loop. */
+  index: number;
+  /** True when this round produced the answer rather than asking for tools. */
+  isFinal: boolean;
+  model: string;
+  servedModel?: string;
+  usage?: ChatUsage;
+  latencyMs: number;
+  /** Raw provider response for this round. */
+  responseBody?: unknown;
+}
+
 /** Normalized view of an incoming Telegram message (built by the runtime). */
 export interface IncomingMessage {
   message: Message;
@@ -91,13 +113,15 @@ export interface BotMessagingDeps {
   /**
    * Generate assistant reply text. Throws on provider/config failure. Reports the
    * exact request body it sends via `onRequest` (recorded verbatim as the full
-   * request trace — model, messages, and tools, not just pieces) and each executed
-   * tool call via `onToolCall`, so the service records both on the reply trace.
+   * request trace — model, messages, and tools, not just pieces), each executed tool
+   * call via `onToolCall`, and each model round via `onRound`, so the service records
+   * all three on the reply trace.
    */
   generateReply: (
     messages: ChatMessage[],
     onToolCall?: (call: ReplyToolCall) => void | Promise<void>,
     onRequest?: (requestBody: unknown) => void | Promise<void>,
+    onRound?: (round: ReplyRound) => void | Promise<void>,
   ) => Promise<GeneratedReply>;
   /**
    * Run one plain completion for the addressing analyzer (real: `chatCompletion`
@@ -246,7 +270,7 @@ async function runAddressAnalyzer(
       type: "llm_response",
       message: "addressing analyzer response",
       data: result.responseBody ?? { content: result.content },
-      usage: llmUsageOf(result),
+      usage: { ...llmUsageOf(result), callKind: "addressing-check" },
     });
     const verdict = parseAnalyzerVerdict(result.content);
     return { addressed: verdict.addressed, source: "analyzer", reason: verdict.reason };
@@ -543,14 +567,22 @@ export async function handleIncomingMessage(
             data: sanitizeRequestBodyForTrace(requestBody),
           });
         },
+        // 4b. One response event per model round, as it happens. A reply that loops
+        // through tools produces several; a direct answer produces one. Recording
+        // the sum instead made those two shapes indistinguishable, which is exactly
+        // what the performance dashboard needs to tell apart.
+        async (round) => {
+          await trace.event({
+            type: "llm_response",
+            message: round.isFinal ? "response" : `tool turn ${round.index + 1} response`,
+            data: round.responseBody ?? {},
+            usage: {
+              ...llmUsageOf(round),
+              callKind: round.isFinal ? "reply-final" : "reply-tool-turn",
+            },
+          });
+        },
       );
-      // 4. LLM response — full raw response body + model/token stats.
-      await trace.event({
-        type: "llm_response",
-        message: "response",
-        data: reply.responseBody ?? { content: reply.content },
-        usage: llmUsageOf(reply),
-      });
 
       const outgoing = formatReply(reply.content);
       const sent = await deps.sendReply(outgoing);

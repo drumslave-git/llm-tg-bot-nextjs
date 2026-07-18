@@ -40,12 +40,18 @@ function deps(over: Partial<BotMessagingDeps> = {}): BotMessagingDeps {
   return {
     bot: BOT,
     policy: OPEN_POLICY,
-    // Mirror the real generator: report the request body (via onRequest) before
-    // returning, so the reply trace records the "request" event like production.
-    generateReply: vi.fn().mockImplementation(async (messages, _onToolCall, onRequest) => {
-      await onRequest?.({ model: "m", messages });
-      return { content: "hi back", model: "m", latencyMs: 5 };
-    }),
+    // Mirror the real generator: report the request body (via onRequest) and each
+    // model round (via onRound) before returning, so the reply trace records the
+    // "request" and "response" events like production. A reply with no tools is one
+    // round, and that round is the final answer.
+    generateReply: vi
+      .fn()
+      .mockImplementation(async (messages, _onToolCall, onRequest, onRound) => {
+        await onRequest?.({ model: "m", messages });
+        const result = { content: "hi back", model: "m", latencyMs: 5 };
+        await onRound?.({ index: 0, isFinal: true, ...result });
+        return result;
+      }),
     sendReply: vi.fn().mockResolvedValue({ messageId: 99 }),
     loadHistory: vi.fn().mockResolvedValue({ messages: [], count: 0 }),
     recordReply: vi.fn().mockResolvedValue(undefined),
@@ -466,10 +472,14 @@ describe("handleIncomingMessage", () => {
     const reply = "y".repeat(300);
     const responseBody = { id: "cmpl-1", choices: [{ message: { content: reply } }] };
     const d = deps({
-      generateReply: vi.fn().mockImplementation(async (messages, _onToolCall, onRequest) => {
-        await onRequest?.({ model: "m", messages });
-        return { content: reply, model: "m", latencyMs: 5, responseBody };
-      }),
+      generateReply: vi
+        .fn()
+        .mockImplementation(async (messages, _onToolCall, onRequest, onRound) => {
+          await onRequest?.({ model: "m", messages });
+          const result = { content: reply, model: "m", latencyMs: 5, responseBody };
+          await onRound?.({ index: 0, isFinal: true, ...result });
+          return result;
+        }),
     });
     await handleIncomingMessage(incoming({ text: longText }), d);
 
@@ -507,35 +517,47 @@ describe("handleIncomingMessage", () => {
   });
 
   it("records tool calls reported by the generator as external_call events on the reply trace", async () => {
-    // A generator that runs one tool before answering, via the onToolCall sink.
+    // A generator that loops once through a tool before answering — the real shape:
+    // round 0 asks for the tool, the tool runs, round 1 is the answer.
     const d = deps({
-      generateReply: vi.fn().mockImplementation(async (messages, onToolCall, onRequest) => {
-        // Report the request first (as production does), then the tool call, so the
-        // trace order is request → tool → response.
-        await onRequest?.({ model: "m", messages });
-        await onToolCall?.({
-          name: "history_search",
-          args: { query: "pizza" },
-          result: { text: "found 2 messages" },
-          ok: true,
-        });
-        return { content: "here you go", model: "m", latencyMs: 5 };
-      }),
+      generateReply: vi
+        .fn()
+        .mockImplementation(async (messages, onToolCall, onRequest, onRound) => {
+          await onRequest?.({ model: "m", messages });
+          await onRound?.({ index: 0, isFinal: false, model: "m", latencyMs: 900 });
+          await onToolCall?.({
+            name: "history_search",
+            args: { query: "pizza" },
+            result: { text: "found 2 messages" },
+            ok: true,
+          });
+          const result = { content: "here you go", model: "m", latencyMs: 5 };
+          await onRound?.({ index: 1, isFinal: true, ...result });
+          return result;
+        }),
     });
     const out = await handleIncomingMessage(incoming({ text: "what did we say about pizza?" }), d);
     expect(out).toEqual({ status: "replied", text: "here you go" });
 
     const events = recorder.event.mock.calls.map((c) => c[0]);
-    // The tool call lands between the request and the response.
+    // Each model round is its own response event, in loop order, with the tool call
+    // between the turn that asked for it and the answer that used it.
     expect(events.map((e) => e.message)).toEqual([
       "addressing check",
       "system prompt composed",
       "history window loaded",
       "request",
+      "tool turn 1 response",
       "tool: history_search",
       "response",
       "send message",
     ]);
+    // The whole point of per-round recording: the slow tool turn is measurable on
+    // its own instead of being summed into the reply it belonged to.
+    const turn = events.find((e) => e.message === "tool turn 1 response");
+    expect(turn.usage).toMatchObject({ callKind: "reply-tool-turn", latencyMs: 900 });
+    const answer = events.find((e) => e.message === "response");
+    expect(answer.usage).toMatchObject({ callKind: "reply-final", latencyMs: 5 });
     const toolEvent = events.find((e) => e.message === "tool: history_search");
     expect(toolEvent.type).toBe("external_call");
     expect(toolEvent.data).toEqual({

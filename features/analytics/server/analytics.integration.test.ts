@@ -1,11 +1,11 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { chatMessages, llmUsage, traceFacts } from "@/db/schema";
+import { chatMessages } from "@/db/schema";
 import type { ChatCompletionResult, ChatMessage } from "@/server/llm/client";
-import { listTraces } from "@/server/trace";
+import { listTraces, startTrace } from "@/server/trace";
 import { startTestDb, type TestDb } from "@/test/db";
 
-import { getMetricTotals, getSeries, getSystemStats } from "./metrics";
+import { getMetricTotals, getModels, getMoodForPeriod, getSeries } from "./metrics";
 import { regenerateAnalyticsInsights, runAnalyticsInsights } from "./insights";
 import { getPeriodInsight } from "./repository";
 
@@ -21,6 +21,10 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await ctx.truncate();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 async function seedMessage(input: {
@@ -41,56 +45,63 @@ async function seedMessage(input: {
   });
 }
 
-async function seedLlmUsage(
-  model: string,
-  latencyMs: number,
-  tokens: { p: number; c: number },
-  trigger?: { actor?: string; correlationId?: string; feature?: string; action?: string },
-) {
-  const traceId = crypto.randomUUID();
-  const feature = trigger?.feature ?? "bot-messaging";
-  const action = trigger?.action ?? "reply";
-  const startedAt = new Date();
-  const triggerActor = trigger?.actor ?? null;
-  const correlationId = trigger?.correlationId ?? null;
-  // The compact facts the recorder writes on settle: the per-trace outcome
-  // (health) and the per-usage row (tokens / model speed).
-  await ctx.db.insert(traceFacts).values({
-    id: traceId,
-    feature,
-    action,
-    status: "success",
-    triggerActor,
-    correlationId,
-    startedAt,
-    finishedAt: startedAt,
-  });
-  await ctx.db.insert(llmUsage).values({
-    id: crypto.randomUUID(),
-    traceId,
-    feature,
-    action,
-    triggerActor,
-    correlationId,
-    model,
-    servedModel: null,
-    promptTokens: tokens.p,
-    completionTokens: tokens.c,
-    totalTokens: tokens.p + tokens.c,
-    latencyMs,
-    startedAt,
-  });
+/**
+ * Record a real trace carrying one LLM round.
+ *
+ * Written through the recorder rather than inserted into a table, because that is
+ * now the only place this data lives: analytics reads the trace files, so a test
+ * that seeded rows directly would be testing a path production does not have. The
+ * clock is faked so the trace lands in a chosen period.
+ */
+async function seedLlmCall(input: {
+  at: Date;
+  model: string;
+  latencyMs: number;
+  tokens: { p: number; c: number };
+  callKind?: string;
+  feature?: string;
+  action?: string;
+  actor?: string;
+  correlationId?: string;
+  status?: "success" | "error";
+}) {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(input.at);
+  try {
+    const trace = await startTrace({
+      feature: input.feature ?? "bot-messaging",
+      action: input.action ?? "reply",
+      trigger: { kind: "telegram", actor: input.actor, correlationId: input.correlationId },
+    });
+    await trace.event({
+      type: "llm_response",
+      message: "response",
+      data: {},
+      usage: {
+        model: input.model,
+        callKind: input.callKind ?? "reply-final",
+        promptTokens: input.tokens.p,
+        completionTokens: input.tokens.c,
+        totalTokens: input.tokens.p + input.tokens.c,
+        latencyMs: input.latencyMs,
+      },
+    });
+    if (input.status === "error") await trace.fail(new Error("boom"));
+    else await trace.succeed();
+  } finally {
+    vi.useRealTimers();
+  }
 }
 
-/** A stub that answers the day and period prompts with valid JSON. */
-function stubComplete(overrides?: { day?: string; period?: string }) {
+/** A stub that answers the hour and roll-up prompts with valid JSON. */
+function stubComplete(overrides?: { hour?: string; rollup?: string }) {
   return async (messages: ChatMessage[]): Promise<ChatCompletionResult> => {
     const user = String(messages[1]?.content ?? "");
-    const isDay = user.includes("Conversation (one day)");
-    const content = isDay
-      ? overrides?.day ??
+    const isHour = user.includes("Conversation (one hour)");
+    const content = isHour
+      ? overrides?.hour ??
         '{"moodScore":70,"moodLabel":"positive","moodSummary":"good chat","topTopic":"weekend","word":"weekend"}'
-      : overrides?.period ?? '{"wordOfPeriod":"weekend","topTopic":"weekend plans"}';
+      : overrides?.rollup ?? '{"topicIndex":1,"wordIndex":1}';
     return {
       content,
       model: "test-model",
@@ -102,114 +113,221 @@ function stubComplete(overrides?: { day?: string; period?: string }) {
   };
 }
 
-describe("getMetricTotals / getSeries (live SQL aggregation)", () => {
-  it("aggregates message and token totals", async () => {
-    const now = new Date();
-    await seedMessage({ chatId: "c1", telegramMessageId: 1, role: "user", userId: "u1", content: "hello", sentAt: now });
-    await seedMessage({ chatId: "c1", telegramMessageId: 2, role: "assistant", content: "hi there", sentAt: now });
-    await seedMessage({ chatId: "c1", telegramMessageId: 3, role: "user", userId: "u2", content: "yo", sentAt: now });
+describe("period bounding", () => {
+  const JULY_15 = new Date("2026-07-15T10:00:00Z");
+  const JULY_02 = new Date("2026-07-02T10:00:00Z");
 
-    await seedLlmUsage("docker.io/ai/gemma3:12b", 1000, { p: 100, c: 50 });
-    await seedLlmUsage("gemma3:12b", 3000, { p: 200, c: 150 });
+  it("counts only the selected day, not everything up to now", async () => {
+    // The regression this whole rework exists for: the old window was "the last N
+    // buckets ending now" with no upper bound, so Day and Month returned identical
+    // totals whenever all the data was recent.
+    await seedLlmCall({ at: JULY_02, model: "m", latencyMs: 100, tokens: { p: 10, c: 5 } });
+    await seedLlmCall({ at: JULY_15, model: "m", latencyMs: 100, tokens: { p: 70, c: 35 } });
 
-    const m = await getMetricTotals({ granularity: "day" }, ctx.db);
+    const day = await getMetricTotals({ unit: "day", anchor: "2026-07-15" }, ctx.db);
+    const month = await getMetricTotals({ unit: "month", anchor: "2026-07" }, ctx.db);
 
-    expect(m.totals.humanMessages).toBe(2);
-    expect(m.totals.botMessages).toBe(1);
-    expect(m.totals.activeUsers).toBe(2);
-    expect(m.totals.tokensProcessed).toBe(300);
-    expect(m.totals.tokensGenerated).toBe(200);
+    expect(day.totals.tokensProcessed).toBe(70);
+    expect(month.totals.tokensProcessed).toBe(80);
+    expect(day.totals.tokensProcessed).toBeLessThan(month.totals.tokensProcessed);
   });
 
-  it("returns a dense series aligned to the bucket axis", async () => {
-    const now = new Date();
-    await seedMessage({ chatId: "c1", telegramMessageId: 1, role: "user", userId: "u1", content: "hello", sentAt: now });
-    await seedMessage({ chatId: "c1", telegramMessageId: 2, role: "assistant", content: "hi", sentAt: now });
+  it("excludes the instant the next period starts", async () => {
+    // Half-open bounds: the boundary belongs to exactly one period, never both.
+    await seedLlmCall({
+      at: new Date("2026-07-16T00:00:00Z"),
+      model: "m",
+      latencyMs: 10,
+      tokens: { p: 999, c: 0 },
+    });
+    const day = await getMetricTotals({ unit: "day", anchor: "2026-07-15" }, ctx.db);
+    expect(day.totals.tokensProcessed).toBe(0);
 
-    const s = await getSeries({ granularity: "day", section: "volume" }, ctx.db);
-    const human = s.series.find((x) => x.name === "From users");
-    expect(human?.data.length).toBe(s.buckets.length);
-    expect(human?.data.reduce((a: number, b) => a + (b ?? 0), 0)).toBe(1);
+    const next = await getMetricTotals({ unit: "day", anchor: "2026-07-16" }, ctx.db);
+    expect(next.totals.tokensProcessed).toBe(999);
   });
 
-  it("scopes tokens and messages to one chat via correlation id", async () => {
-    const now = new Date();
-    await seedMessage({ chatId: "c1", telegramMessageId: 1, role: "user", userId: "u1", content: "a", sentAt: now });
-    await seedMessage({ chatId: "c2", telegramMessageId: 1, role: "user", userId: "u1", content: "bb", sentAt: now });
-    await seedLlmUsage("m", 1000, { p: 40, c: 10 }, { actor: "u1", correlationId: "c1:1" });
-    await seedLlmUsage("m", 1000, { p: 99, c: 99 }, { actor: "u1", correlationId: "c2:1" });
+  it("lets an earlier period be navigated to, not just the latest", async () => {
+    await seedLlmCall({ at: JULY_02, model: "m", latencyMs: 10, tokens: { p: 42, c: 0 } });
+    const past = await getMetricTotals({ unit: "day", anchor: "2026-07-02" }, ctx.db);
+    expect(past.totals.tokensProcessed).toBe(42);
+    expect(past.anchor).toBe("2026-07-02");
+  });
+});
 
-    const m = await getMetricTotals({ granularity: "day", chatId: "c1" }, ctx.db);
+describe("traffic totals", () => {
+  it("reports handled, replied and failed from the traces themselves", async () => {
+    const at = new Date("2026-07-15T10:00:00Z");
+    await seedLlmCall({ at, model: "m", latencyMs: 10, tokens: { p: 1, c: 1 }, actor: "u1" });
+    await seedLlmCall({ at, model: "m", latencyMs: 10, tokens: { p: 1, c: 1 }, actor: "u2" });
+    await seedLlmCall({
+      at,
+      model: "m",
+      latencyMs: 10,
+      tokens: { p: 1, c: 1 },
+      actor: "u2",
+      status: "error",
+    });
+
+    const t = await getMetricTotals({ unit: "day", anchor: "2026-07-15" }, ctx.db);
+    expect(t.totals.handled).toBe(3);
+    expect(t.totals.replied).toBe(2);
+    expect(t.totals.failed).toBe(1);
+    expect(t.totals.activeUsers).toBe(2);
+  });
+
+  it("scopes to one chat by the trace's correlation id", async () => {
+    const at = new Date("2026-07-15T10:00:00Z");
+    await seedLlmCall({
+      at,
+      model: "m",
+      latencyMs: 10,
+      tokens: { p: 40, c: 10 },
+      correlationId: "c1:1",
+    });
+    await seedLlmCall({
+      at,
+      model: "m",
+      latencyMs: 10,
+      tokens: { p: 99, c: 99 },
+      correlationId: "c2:1",
+    });
+
+    const m = await getMetricTotals({ unit: "day", anchor: "2026-07-15", chatId: "c1" }, ctx.db);
     expect(m.scope).toBe("chat");
-    expect(m.totals.humanMessages).toBe(1);
     expect(m.totals.tokensProcessed).toBe(40);
     expect(m.totals.tokensGenerated).toBe(10);
   });
+});
 
-  it("supports the year granularity", async () => {
+describe("getSeries", () => {
+  it("plots a day as its 24 hours, with values on the right hour", async () => {
     await seedMessage({
       chatId: "c1",
       telegramMessageId: 1,
       role: "user",
       userId: "u1",
       content: "hello",
-      sentAt: new Date(),
+      sentAt: new Date("2026-07-15T09:30:00Z"),
     });
-    const s = await getSeries({ granularity: "year", section: "volume" }, ctx.db);
-    expect(s.granularity).toBe("year");
-    // Year buckets are bare 4-digit years, matching the Postgres to_char format.
-    expect(s.buckets.every((b) => /^\d{4}$/.test(b))).toBe(true);
-    expect(s.buckets).toContain(String(new Date().getUTCFullYear()));
+    await seedMessage({
+      chatId: "c1",
+      telegramMessageId: 2,
+      role: "assistant",
+      content: "hi",
+      sentAt: new Date("2026-07-15T09:31:00Z"),
+    });
+
+    const s = await getSeries({ unit: "day", anchor: "2026-07-15", section: "volume" }, ctx.db);
+    expect(s.bucketUnit).toBe("hour");
+    expect(s.buckets).toHaveLength(24);
+    expect(s.buckets[0]).toBe("2026-07-15 00");
+
+    // The JS-built axis and the Postgres to_char key must agree, or the value joins
+    // onto nothing and silently disappears.
+    const human = s.series.find((x) => x.name === "From users");
+    expect(human?.data).toHaveLength(24);
+    expect(human?.data[9]).toBe(1);
+    expect(human?.data[10]).toBe(0);
+  });
+
+  it("plots a year as its 12 months", async () => {
+    await seedMessage({
+      chatId: "c1",
+      telegramMessageId: 1,
+      role: "user",
+      userId: "u1",
+      content: "hello",
+      sentAt: new Date("2026-03-15T09:30:00Z"),
+    });
+    const s = await getSeries({ unit: "year", anchor: "2026", section: "volume" }, ctx.db);
+    expect(s.bucketUnit).toBe("month");
+    expect(s.buckets).toHaveLength(12);
+    const human = s.series.find((x) => x.name === "From users");
+    expect(human?.data[2]).toBe(1);
+  });
+
+  it("plots tokens from the traces on the same axis", async () => {
+    await seedLlmCall({
+      at: new Date("2026-07-15T14:00:00Z"),
+      model: "m",
+      latencyMs: 10,
+      tokens: { p: 30, c: 12 },
+    });
+    const s = await getSeries({ unit: "day", anchor: "2026-07-15", section: "tokens" }, ctx.db);
+    expect(s.series.find((x) => x.name === "Processed")?.data[14]).toBe(30);
+    expect(s.series.find((x) => x.name === "Generated")?.data[14]).toBe(12);
   });
 });
 
-describe("getSystemStats", () => {
-  it("groups model usage by request type, with percentiles", async () => {
-    // One model doing two different jobs: a fast reply and a slow image description.
-    await seedLlmUsage("docker.io/ai/gemma3:12b", 1000, { p: 100, c: 50 });
-    await seedLlmUsage("gemma3:12b", 3000, { p: 200, c: 150 });
-    await seedLlmUsage("gemma3:12b", 20_000, { p: 10, c: 5 }, { feature: "vision", action: "describe" });
+describe("getModels", () => {
+  it("separates every kind of call, so one slow kind cannot hide in another", async () => {
+    const at = new Date("2026-07-15T10:00:00Z");
+    // One model doing three unlike jobs within one message-handling flow.
+    await seedLlmCall({
+      at,
+      model: "docker.io/ai/gemma3:12b",
+      latencyMs: 400,
+      tokens: { p: 20, c: 5 },
+      callKind: "addressing-check",
+    });
+    await seedLlmCall({
+      at,
+      model: "gemma3:12b",
+      latencyMs: 12_000,
+      tokens: { p: 900, c: 40 },
+      callKind: "reply-tool-turn",
+    });
+    await seedLlmCall({
+      at,
+      model: "gemma3:12b",
+      latencyMs: 2000,
+      tokens: { p: 100, c: 150 },
+      callKind: "reply-final",
+    });
 
-    const stats = await getSystemStats(ctx.db);
+    const { models } = await getModels({ unit: "day", anchor: "2026-07-15" }, ctx.db);
 
     // Registry-prefixed variants merge into one clean model name.
-    expect(stats.models).toHaveLength(1);
-    const model = stats.models[0];
+    expect(models).toHaveLength(1);
+    const model = models[0];
     expect(model.model).toBe("gemma3:12b");
     expect(model.calls).toBe(3);
-    expect(model.totalTokens).toBe(150 + 350 + 15);
 
-    // The request types are separated, so the 20s vision call never drags the
-    // reply average up with it.
-    const byType = Object.fromEntries(model.requestTypes.map((r) => [`${r.feature}:${r.action}`, r]));
-    expect(byType["bot-messaging:reply"].calls).toBe(2);
-    expect(byType["bot-messaging:reply"].avgLatencyMs).toBe(2000);
-    expect(byType["bot-messaging:reply"].latencyP50).toBe(2000);
-    expect(byType["vision:describe"].calls).toBe(1);
-    expect(byType["vision:describe"].avgLatencyMs).toBe(20_000);
+    const byKind = Object.fromEntries(model.callKinds.map((k) => [k.callKind, k]));
+    // The addressing check is visible at all — it used to be folded into the reply.
+    expect(byKind["addressing-check"].calls).toBe(1);
+    expect(byKind["addressing-check"].avgLatencyMs).toBe(400);
+    // A tool turn is measured apart from the answer it led to.
+    expect(byKind["reply-tool-turn"].avgLatencyMs).toBe(12_000);
+    expect(byKind["reply-final"].avgLatencyMs).toBe(2000);
+
+    // Ordered by total time contributed — the bottleneck first.
+    expect(model.callKinds[0].callKind).toBe("reply-tool-turn");
   });
 
-  it("measures avg reply latency from reply calls only", async () => {
-    await seedLlmUsage("m", 1000, { p: 1, c: 1 });
-    await seedLlmUsage("m", 60_000, { p: 1, c: 1 }, { feature: "vision", action: "describe" });
-
-    const stats = await getSystemStats(ctx.db);
-    // The minute-long image description is not a reply anyone waited on.
-    expect(stats.health.avgReplyLatencyMs).toBe(1000);
-  });
-
-  it("reports no health score — the signals stand on their own", async () => {
-    const stats = await getSystemStats(ctx.db);
-    expect(stats.health).not.toHaveProperty("score");
-    expect(stats.health.satisfaction).toBeNull();
-    expect(stats.health.errorRate).toBeNull();
+  it("reports percentiles per kind, so a mean cannot hide the tail", async () => {
+    const at = new Date("2026-07-15T10:00:00Z");
+    for (const latency of [100, 100, 100, 100, 9000]) {
+      await seedLlmCall({
+        at,
+        model: "m",
+        latencyMs: latency,
+        tokens: { p: 1, c: 1 },
+        callKind: "reply-final",
+      });
+    }
+    const { models } = await getModels({ unit: "day", anchor: "2026-07-15" }, ctx.db);
+    const kind = models[0].callKinds[0];
+    expect(kind.latencyP50).toBe(100);
+    expect(kind.latencyP95).toBe(9000);
   });
 });
 
 describe("runAnalyticsInsights", () => {
   const NOW = new Date("2026-07-15T12:00:00Z");
 
-  async function seedFinishedDay(chatId = "c1", telegramMessageId = 1) {
+  async function seedFinishedHour(chatId = "c1", telegramMessageId = 1) {
     await seedMessage({
       chatId,
       telegramMessageId,
@@ -227,8 +345,8 @@ describe("runAnalyticsInsights", () => {
     });
   }
 
-  it("scores a finished day and rolls up its periods, and traces the run", async () => {
-    await seedFinishedDay();
+  it("scores a finished hour and rolls it up the calendar, and traces the run", async () => {
+    await seedFinishedHour();
 
     const result = await runAnalyticsInsights({
       complete: stubComplete(),
@@ -237,220 +355,367 @@ describe("runAnalyticsInsights", () => {
       db: ctx.db,
     });
 
-    expect(result.daysComputed).toBe(1);
-    // day + week + month + year + all, each for global + chat scope = 10 roll-ups.
-    expect(result.periodsComputed).toBe(10);
+    expect(result.unitsComputed).toBe(1);
+    // hour + day + week + month + year + all, for the one chat.
+    expect(result.periodsComputed).toBe(6);
 
-    const globalAll = await getPeriodInsight(ctx.db, {
+    const all = await getPeriodInsight(ctx.db, {
       granularity: "all",
       bucket: "all",
-      scope: "global",
-      chatId: "",
+      chatId: "c1",
     });
-    expect(globalAll?.wordOfPeriod).toBe("weekend");
-    expect(globalAll?.moodScore).toBe(70);
+    expect(all?.wordOfPeriod).toBe("weekend");
+    expect(all?.moodScore).toBe(70);
 
-    // The year roll-up exists alongside the others.
-    const globalYear = await getPeriodInsight(ctx.db, {
-      granularity: "year",
-      bucket: "2026",
-      scope: "global",
-      chatId: "",
+    // The hour row is written too, so mood reads are uniform at every grain.
+    const hour = await getPeriodInsight(ctx.db, {
+      granularity: "hour",
+      bucket: "2026-07-14 09",
+      chatId: "c1",
     });
-    expect(globalYear?.moodScore).toBe(70);
-
-    // The "word of the day" exists too (a single-day roll-up copies the scored word).
-    const globalDay = await getPeriodInsight(ctx.db, {
-      granularity: "day",
-      bucket: "2026-07-14",
-      scope: "global",
-      chatId: "",
-    });
-    expect(globalDay?.wordOfPeriod).toBe("weekend");
+    expect(hour?.moodScore).toBe(70);
+    expect(hour?.messageCount).toBe(2);
 
     const runTraces = await listTraces({ feature: "analytics-insights" });
     expect(runTraces.traces).toHaveLength(1);
     expect(runTraces.traces[0].status).toBe("success");
   });
 
-  it("counts source days as calendar days, not chat-day rows", async () => {
-    // Two chats active on the same day. The global day roll-up reads one row per
-    // chat, but that is still one day — counting rows reported "2 days".
-    await seedFinishedDay("c1", 1);
-    await seedFinishedDay("c2", 10);
+  it("keeps each chat's insight separate — there is no cross-chat average", async () => {
+    await seedFinishedHour("c1", 1);
+    await seedFinishedHour("c2", 10);
 
     await runAnalyticsInsights({ complete: stubComplete(), timeZone: "UTC", now: NOW, db: ctx.db });
 
-    const globalDay = await getPeriodInsight(ctx.db, {
-      granularity: "day",
-      bucket: "2026-07-14",
-      scope: "global",
-      chatId: "",
-    });
-    expect(globalDay?.sourceDays).toBe(1);
-    // Both chats' messages are still counted.
-    expect(globalDay?.messageCount).toBe(4);
+    for (const chatId of ["c1", "c2"]) {
+      const day = await getPeriodInsight(ctx.db, {
+        granularity: "day",
+        bucket: "2026-07-14",
+        chatId,
+      });
+      expect(day?.messageCount, chatId).toBe(2);
+      expect(day?.sourceUnits, chatId).toBe(1);
+    }
   });
 
-  it("is idempotent — an unchanged day is not recomputed", async () => {
-    await seedFinishedDay();
+  it("weights a period's mood by messages, level by level", async () => {
+    // Two hours in one day: a quiet unhappy one and a busy happy one. The day's mood
+    // must follow the messages, not the hour count.
+    await seedMessage({
+      chatId: "c1",
+      telegramMessageId: 1,
+      role: "user",
+      userId: "u1",
+      content: "this is broken and I am annoyed",
+      sentAt: new Date("2026-07-14T09:00:00Z"),
+    });
+    for (let i = 0; i < 9; i += 1) {
+      await seedMessage({
+        chatId: "c1",
+        telegramMessageId: 10 + i,
+        role: "user",
+        userId: "u1",
+        content: "great, thanks, this is lovely",
+        sentAt: new Date("2026-07-14T11:00:00Z"),
+      });
+    }
+
+    let call = 0;
+    const complete = async (messages: ChatMessage[]): Promise<ChatCompletionResult> => {
+      const user = String(messages[1]?.content ?? "");
+      const isHour = user.includes("Conversation (one hour)");
+      // First hour scored is 09:00 (1 message, mood 10); second is 11:00 (9, mood 90).
+      const content = isHour
+        ? (call++ === 0
+            ? '{"moodScore":10,"moodLabel":"negative","moodSummary":"x","topTopic":"a bug","word":"bug"}'
+            : '{"moodScore":90,"moodLabel":"positive","moodSummary":"y","topTopic":"a fix","word":"fix"}')
+        : '{"topicIndex":2,"wordIndex":2}';
+      return {
+        content,
+        model: "test-model",
+        latencyMs: 5,
+        requestBody: {},
+        responseBody: {},
+      };
+    };
+
+    await runAnalyticsInsights({ complete, timeZone: "UTC", now: NOW, db: ctx.db });
+
+    const day = await getPeriodInsight(ctx.db, {
+      granularity: "day",
+      bucket: "2026-07-14",
+      chatId: "c1",
+    });
+    // (10*1 + 90*9) / 10 = 82 — not the 50 an unweighted mean would give.
+    expect(day?.moodScore).toBe(82);
+    expect(day?.sourceUnits).toBe(2);
+  });
+
+  it("gives the Mood tile and the Mood trend the same answer for a period", async () => {
+    await seedFinishedHour();
     await runAnalyticsInsights({ complete: stubComplete(), timeZone: "UTC", now: NOW, db: ctx.db });
 
-    const again = await runAnalyticsInsights({ complete: stubComplete(), timeZone: "UTC", now: NOW, db: ctx.db });
-    expect(again.daysComputed).toBe(0);
+    const mood = await getMoodForPeriod(
+      { unit: "day", anchor: "2026-07-14", chatId: "c1" },
+      ctx.db,
+    );
+
+    // The tile's number and the chart's points come from one call, so they cannot
+    // disagree — and the tile is the weighted mean of exactly the points drawn.
+    expect(mood.aggregate?.moodScore).toBe(70);
+    const scored = mood.points.filter((p) => p.moodScore != null);
+    expect(scored).toHaveLength(1);
+    expect(scored[0].bucket).toBe("2026-07-14 09");
+    expect(scored[0].moodScore).toBe(70);
+
+    // And the chart series reads through the same function.
+    const series = await getSeries(
+      { unit: "day", anchor: "2026-07-14", section: "mood", chatId: "c1" },
+      ctx.db,
+    );
+    expect(series.series[0].data[9]).toBe(70);
+    // An unscored hour is a gap, not a mood of zero.
+    expect(series.series[0].data[10]).toBeNull();
+  });
+
+  it("chooses the top topic from the sub-periods, never inventing an umbrella phrase", async () => {
+    await seedMessage({
+      chatId: "c1",
+      telegramMessageId: 1,
+      role: "user",
+      userId: "u1",
+      content: "about the migration",
+      sentAt: new Date("2026-07-14T09:00:00Z"),
+    });
+    await seedMessage({
+      chatId: "c1",
+      telegramMessageId: 2,
+      role: "user",
+      userId: "u1",
+      content: "about the outage",
+      sentAt: new Date("2026-07-14T11:00:00Z"),
+    });
+
+    let call = 0;
+    const complete = async (messages: ChatMessage[]): Promise<ChatCompletionResult> => {
+      const user = String(messages[1]?.content ?? "");
+      const isHour = user.includes("Conversation (one hour)");
+      const content = isHour
+        ? (call++ === 0
+            ? '{"moodScore":50,"moodLabel":"neutral","moodSummary":"x","topTopic":"database migration","word":"migration"}'
+            : '{"moodScore":50,"moodLabel":"neutral","moodSummary":"y","topTopic":"the outage","word":"outage"}')
+        : // A model trying to summarize instead of choosing. The index parse rejects
+          // it, and the deterministic fallback picks a real observed topic.
+          '{"topicIndex":"miscellaneous topics","wordIndex":"various"}';
+      return { content, model: "test-model", latencyMs: 5, requestBody: {}, responseBody: {} };
+    };
+
+    await runAnalyticsInsights({ complete, timeZone: "UTC", now: NOW, db: ctx.db });
+
+    const day = await getPeriodInsight(ctx.db, {
+      granularity: "day",
+      bucket: "2026-07-14",
+      chatId: "c1",
+    });
+    expect(["database migration", "the outage"]).toContain(day?.topTopic);
+    expect(["migration", "outage"]).toContain(day?.wordOfPeriod);
+  });
+
+  it("is idempotent — an unchanged hour is not recomputed", async () => {
+    await seedFinishedHour();
+    await runAnalyticsInsights({ complete: stubComplete(), timeZone: "UTC", now: NOW, db: ctx.db });
+
+    const again = await runAnalyticsInsights({
+      complete: stubComplete(),
+      timeZone: "UTC",
+      now: NOW,
+      db: ctx.db,
+    });
+    expect(again.unitsComputed).toBe(0);
     expect(again.summary).toContain("nothing to compute");
   });
 
-  it("does not re-score a scored day when its message count changes", async () => {
-    await seedFinishedDay();
+  it("does not re-score a scored hour when its message count changes", async () => {
+    await seedFinishedHour();
     await runAnalyticsInsights({ complete: stubComplete(), timeZone: "UTC", now: NOW, db: ctx.db });
 
-    // A late message lands on an already-scored day. The old job noticed the count
-    // drift and silently re-read the day; a scored day is now final until an
-    // operator asks for it again.
+    // A late message lands in an already-scored hour. A scored hour is final until an
+    // operator asks for it again, so the nightly spend stays predictable.
     await seedMessage({
       chatId: "c1",
       telegramMessageId: 99,
       role: "user",
       userId: "u1",
       content: "one more thing",
-      sentAt: new Date("2026-07-14T20:00:00Z"),
+      sentAt: new Date("2026-07-14T09:30:00Z"),
     });
-    const again = await runAnalyticsInsights({ complete: stubComplete(), timeZone: "UTC", now: NOW, db: ctx.db });
-    expect(again.daysComputed).toBe(0);
-    expect(again.summary).toContain("nothing to compute");
-  });
-
-  it("fails closed — a garbled model response leaves the day unstored", async () => {
-    await seedFinishedDay();
-
-    const result = await runAnalyticsInsights({
-      complete: stubComplete({ day: "not valid json" }),
+    const again = await runAnalyticsInsights({
+      complete: stubComplete(),
       timeZone: "UTC",
       now: NOW,
       db: ctx.db,
     });
-    expect(result.daysComputed).toBe(0);
-    expect(result.daysFailed).toBe(1);
+    expect(again.unitsComputed).toBe(0);
+  });
 
-    const globalAll = await getPeriodInsight(ctx.db, {
-      granularity: "all",
-      bucket: "all",
-      scope: "global",
-      chatId: "",
+  it("excludes the in-progress hour", async () => {
+    await seedMessage({
+      chatId: "c1",
+      telegramMessageId: 1,
+      role: "user",
+      userId: "u1",
+      content: "still talking",
+      sentAt: new Date("2026-07-15T12:30:00Z"),
     });
-    expect(globalAll).toBeNull();
+    const result = await runAnalyticsInsights({
+      complete: stubComplete(),
+      timeZone: "UTC",
+      now: NOW,
+      db: ctx.db,
+    });
+    expect(result.unitsComputed).toBe(0);
+  });
+
+  it("fails closed — a garbled model response leaves the hour unstored", async () => {
+    await seedFinishedHour();
+
+    const result = await runAnalyticsInsights({
+      complete: stubComplete({ hour: "not valid json" }),
+      timeZone: "UTC",
+      now: NOW,
+      db: ctx.db,
+    });
+    expect(result.unitsComputed).toBe(0);
+    expect(result.unitsFailed).toBe(1);
+
+    const all = await getPeriodInsight(ctx.db, { granularity: "all", bucket: "all", chatId: "c1" });
+    expect(all).toBeNull();
   });
 });
 
 describe("regenerateAnalyticsInsights", () => {
   const NOW = new Date("2026-07-15T12:00:00Z");
 
-  async function seedDay(date: string, chatId = "c1", id = 1) {
+  async function seedHour(iso: string, chatId = "c1", id = 1) {
     await seedMessage({
       chatId,
       telegramMessageId: id,
       role: "user",
       userId: "u1",
       content: "planning the weekend trip",
-      sentAt: new Date(`${date}T09:00:00Z`),
+      sentAt: new Date(iso),
     });
   }
 
-  it("drops a day's insights and computes them again", async () => {
-    await seedDay("2026-07-14");
+  const NEGATIVE =
+    '{"moodScore":20,"moodLabel":"negative","moodSummary":"bad","topTopic":"delays","word":"delays"}';
+
+  it("drops an hour's insights and computes them again", async () => {
+    await seedHour("2026-07-14T09:00:00Z");
     await runAnalyticsInsights({ complete: stubComplete(), timeZone: "UTC", now: NOW, db: ctx.db });
 
-    // The day is re-scored with a different mood, proving it was really re-read
-    // rather than left alone as an already-scored day.
+    // Re-scored with a different mood, proving it was really re-read rather than
+    // left alone as an already-scored hour.
     const result = await regenerateAnalyticsInsights(
-      {
-        complete: stubComplete({
-          day: '{"moodScore":20,"moodLabel":"negative","moodSummary":"bad","topTopic":"delays","word":"delays"}',
-        }),
-        timeZone: "UTC",
-        now: NOW,
-        db: ctx.db,
-      },
+      { complete: stubComplete({ hour: NEGATIVE }), timeZone: "UTC", now: NOW, db: ctx.db },
       { granularity: "day", bucket: "2026-07-14" },
     );
 
-    expect(result.daysComputed).toBe(1);
+    expect(result.unitsComputed).toBe(1);
     const day = await getPeriodInsight(ctx.db, {
       granularity: "day",
       bucket: "2026-07-14",
-      scope: "global",
-      chatId: "",
+      chatId: "c1",
     });
     expect(day?.moodScore).toBe(20);
     expect(day?.wordOfPeriod).toBe("delays");
   });
 
-  it("rebuilds the wider roll-ups that contained the dropped day", async () => {
-    await seedDay("2026-07-14");
+  it("rebuilds the wider roll-ups that contained the dropped hour", async () => {
+    await seedHour("2026-07-14T09:00:00Z");
     await runAnalyticsInsights({ complete: stubComplete(), timeZone: "UTC", now: NOW, db: ctx.db });
 
     await regenerateAnalyticsInsights(
-      {
-        complete: stubComplete({
-          day: '{"moodScore":20,"moodLabel":"negative","moodSummary":"bad","topTopic":"delays","word":"delays"}',
-        }),
-        timeZone: "UTC",
-        now: NOW,
-        db: ctx.db,
-      },
+      { complete: stubComplete({ hour: NEGATIVE }), timeZone: "UTC", now: NOW, db: ctx.db },
       { granularity: "day", bucket: "2026-07-14" },
     );
 
-    // The month and all-time roll-ups covered that day, so they cannot keep the old
-    // score — they are dropped and rebuilt from the new one.
+    // Every period covering that hour would otherwise be a stale claim about a score
+    // that no longer exists.
     for (const [granularity, bucket] of [
+      ["hour", "2026-07-14 09"],
+      ["week", "2026-07-13"],
       ["month", "2026-07"],
       ["year", "2026"],
       ["all", "all"],
     ] as const) {
-      const row = await getPeriodInsight(ctx.db, { granularity, bucket, scope: "global", chatId: "" });
+      const row = await getPeriodInsight(ctx.db, { granularity, bucket, chatId: "c1" });
       expect(row?.moodScore, `${granularity} ${bucket}`).toBe(20);
     }
   });
 
-  it("leaves days outside the dropped period untouched", async () => {
-    await seedDay("2026-06-10", "c1", 1);
-    await seedDay("2026-07-14", "c1", 2);
+  it("leaves other chats' roll-ups alone when they had no activity in the period", async () => {
+    // Found live: regenerating one day erased the month/year/all-time rows of chats
+    // that were not even active that day. Only the regenerated chat's hours get
+    // re-armed, so those rows had nothing left to rebuild them — silent data loss
+    // recoverable only by re-scoring all history.
+    await seedHour("2026-07-14T09:00:00Z", "c1", 1);
+    await seedHour("2026-06-10T09:00:00Z", "c2", 2);
+    await runAnalyticsInsights({ complete: stubComplete(), timeZone: "UTC", now: NOW, db: ctx.db });
+
+    const before = await getPeriodInsight(ctx.db, {
+      granularity: "all",
+      bucket: "all",
+      chatId: "c2",
+    });
+    expect(before).not.toBeNull();
+
+    // c2 has no hour on 2026-07-14, so nothing of its own became stale.
+    await regenerateAnalyticsInsights(
+      { complete: stubComplete({ hour: NEGATIVE }), timeZone: "UTC", now: NOW, db: ctx.db },
+      { granularity: "day", bucket: "2026-07-14" },
+    );
+
+    for (const granularity of ["all", "year", "month"] as const) {
+      const bucket = granularity === "all" ? "all" : granularity === "year" ? "2026" : "2026-06";
+      const row = await getPeriodInsight(ctx.db, { granularity, bucket, chatId: "c2" });
+      expect(row, `c2 ${granularity}`).not.toBeNull();
+      expect(row?.moodScore, `c2 ${granularity}`).toBe(70);
+    }
+
+    // The regenerated chat did get its overlapping roll-ups rebuilt.
+    const c1 = await getPeriodInsight(ctx.db, { granularity: "all", bucket: "all", chatId: "c1" });
+    expect(c1?.moodScore).toBe(20);
+  });
+
+  it("leaves hours outside the dropped period untouched", async () => {
+    await seedHour("2026-06-10T09:00:00Z", "c1", 1);
+    await seedHour("2026-07-14T09:00:00Z", "c1", 2);
     await runAnalyticsInsights({ complete: stubComplete(), timeZone: "UTC", now: NOW, db: ctx.db });
 
     const result = await regenerateAnalyticsInsights(
-      {
-        complete: stubComplete({
-          day: '{"moodScore":20,"moodLabel":"negative","moodSummary":"bad","topTopic":"delays","word":"delays"}',
-        }),
-        timeZone: "UTC",
-        now: NOW,
-        db: ctx.db,
-      },
+      { complete: stubComplete({ hour: NEGATIVE }), timeZone: "UTC", now: NOW, db: ctx.db },
       { granularity: "month", bucket: "2026-07" },
     );
 
-    // Only July's day was dropped, so only it was re-scored.
-    expect(result.daysComputed).toBe(1);
+    expect(result.unitsComputed).toBe(1);
     const june = await getPeriodInsight(ctx.db, {
       granularity: "day",
       bucket: "2026-06-10",
-      scope: "global",
-      chatId: "",
+      chatId: "c1",
     });
     expect(june?.moodScore).toBe(70);
   });
 
   it("all/all re-scores the whole history", async () => {
-    await seedDay("2026-06-10", "c1", 1);
-    await seedDay("2026-07-14", "c1", 2);
+    await seedHour("2026-06-10T09:00:00Z", "c1", 1);
+    await seedHour("2026-07-14T09:00:00Z", "c1", 2);
     await runAnalyticsInsights({ complete: stubComplete(), timeZone: "UTC", now: NOW, db: ctx.db });
 
     const result = await regenerateAnalyticsInsights(
       { complete: stubComplete(), timeZone: "UTC", now: NOW, db: ctx.db },
       { granularity: "all", bucket: "all" },
     );
-    expect(result.daysComputed).toBe(2);
+    expect(result.unitsComputed).toBe(2);
   });
 });

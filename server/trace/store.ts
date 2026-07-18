@@ -312,6 +312,44 @@ export async function getTrace(id: string): Promise<Trace | null> {
   return flushedTraces(s).find((t) => t.id === id) ?? null;
 }
 
+export interface ScanTracesInput {
+  /** Inclusive lower bound on `startedAt`. Omit for all history. */
+  startUtc?: Date;
+  /** **Exclusive** upper bound on `startedAt`. Omit for "up to now". */
+  endUtc?: Date;
+  /** Restrict to one feature. */
+  feature?: string;
+}
+
+/**
+ * Every trace **with its events** in a time range — the analytics aggregation read.
+ *
+ * Distinct from {@link listTraces}, which drops events for list performance, and
+ * from {@link getEventsForTraces}, which needs the ids up front. Analytics has
+ * neither: it wants every LLM round in a period without knowing which traces those
+ * are, so it needs a scan.
+ *
+ * Traces are returned by reference, not copied — a scan over all history would
+ * otherwise clone the entire store on every dashboard request. Callers must treat
+ * the result as read-only.
+ */
+export async function scanTraces(input: ScanTracesInput = {}): Promise<Trace[]> {
+  const s = store();
+  await ensureAllLoaded(s);
+  const from = input.startUtc?.toISOString();
+  const to = input.endUtc?.toISOString();
+  const out: Trace[] = [];
+  for (const trace of [...s.open.values(), ...s.pending.values(), ...flushedTraces(s)]) {
+    if (input.feature && trace.feature !== input.feature) continue;
+    // ISO-8601 UTC strings compare lexically in chronological order, so the range
+    // test needs no Date parsing per trace.
+    if (from && trace.startedAt < from) continue;
+    if (to && trace.startedAt >= to) continue;
+    out.push(trace);
+  }
+  return out;
+}
+
 export interface ListTracesInput {
   feature?: string;
   status?: TraceStatus;

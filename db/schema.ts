@@ -3,7 +3,6 @@ import {
   bigint,
   boolean,
   check,
-  doublePrecision,
   index,
   integer,
   jsonb,
@@ -26,62 +25,12 @@ import { EMBEDDING_DIMENSIONS } from "@/lib/embeddings";
  * alongside their feature.
  *
  * Ids are generated in application code (`crypto.randomUUID()`), so no
- * database extensions are required. Full traces/debug logs are **not** stored
- * here — they live in the file-backed store under `server/trace` (`TRACES_DIR`).
- * Only compact, queryable *facts* distilled from each trace live in the DB
- * (`trace_facts`, `llm_usage`), so the Analytics dashboard can aggregate them.
+ * database extensions are required. Traces are **not** stored here at all — they
+ * live in the file-backed store under `server/trace` (`TRACES_DIR`), and the
+ * Analytics dashboard aggregates those files directly. An earlier design mirrored
+ * compact per-trace facts into Postgres for the dashboard to query; that was a
+ * second source of truth for the same events, and a lossy one, so it is gone.
  */
-
-/**
- * Per-trace outcome facts, written once when a trace settles. The full trace body
- * lives in the file store; this carries only what the dashboard aggregates
- * (feature/action/status/time), powering bot-messaging reliability without a join.
- */
-export const traceFacts = pgTable(
-  "trace_facts",
-  {
-    id: text("id").primaryKey(),
-    feature: text("feature").notNull(),
-    action: text("action").notNull(),
-    status: text("status").notNull(),
-    triggerActor: text("trigger_actor"),
-    correlationId: text("correlation_id"),
-    startedAt: timestamp("started_at", { withTimezone: true }).notNull(),
-    finishedAt: timestamp("finished_at", { withTimezone: true }),
-  },
-  (t) => [index("trace_facts_feature_started_idx").on(t.feature, t.startedAt)],
-);
-
-/**
- * Compact LLM-usage facts for analytics — one row per usage-bearing trace event
- * (an `llm_response` carrying token/latency usage), written when the trace
- * settles. The trace's `feature`/`action`/`trigger_actor`/`correlation_id`/start
- * are denormalized on so the token, per-model speed, and per-user token queries
- * need no join. The full event (with its raw bodies) still lives in the trace file.
- */
-export const llmUsage = pgTable(
-  "llm_usage",
-  {
-    id: text("id").primaryKey(),
-    /** The file-store trace this usage belongs to (reference only; not an FK). */
-    traceId: text("trace_id").notNull(),
-    feature: text("feature").notNull(),
-    action: text("action").notNull(),
-    triggerActor: text("trigger_actor"),
-    correlationId: text("correlation_id"),
-    /** The model requested (the configured id), or null if unreported. */
-    model: text("model"),
-    /** What the provider reported serving, when it differs from `model`. */
-    servedModel: text("served_model"),
-    promptTokens: integer("prompt_tokens"),
-    completionTokens: integer("completion_tokens"),
-    totalTokens: integer("total_tokens"),
-    latencyMs: doublePrecision("latency_ms"),
-    /** The trace's start instant — the window key every analytics query filters on. */
-    startedAt: timestamp("started_at", { withTimezone: true }).notNull(),
-  },
-  (t) => [index("llm_usage_feature_started_idx").on(t.feature, t.startedAt)],
-);
 
 /**
  * Application settings. A single, typed row (`id = 'singleton'`) holding the
@@ -821,102 +770,104 @@ export type MemoryExtractionDayRow = typeof memoryExtractionDays.$inferSelect;
 export type MemoryExtractionDayInsert = typeof memoryExtractionDays.$inferInsert;
 
 /**
- * One chat's LLM-derived analytics insight for one day — the base grain of the
- * analytics feature's expensive pass (mood + top topic), computed by the nightly
- * insights job from that day's transcript (and the existing {@link chatSummaries}).
+ * One chat's LLM-derived analytics insight for one **hour** — the base grain of the
+ * analytics feature's expensive pass (mood + top topic + word), computed by the
+ * nightly insights job from that hour's transcript (and the existing
+ * {@link chatSummaries} for the day it belongs to).
  *
- * Numeric analytics (message/char/token/latency volumes) are NOT stored — they are
- * aggregated live with SQL over the base tables, which is exact and self-healing.
- * Only these LLM-derived fields, which cost tokens and cannot be recomputed per
- * page view, are precomputed here.
+ * The hour is the grain because it is the finest thing the dashboard plots: a
+ * day-period chart draws 24 points, so mood has to exist at that resolution or it
+ * cannot be shown beside every other metric. Everything coarser — a day's mood, a
+ * month's word — is a roll-up of these rows into {@link periodInsights}, never a
+ * second reading of the transcript.
  *
- * `message_count` is the self-heal trigger (mirrors {@link chatSummaryDays}): the
- * job recomputes a day whose live message count no longer matches the stored one
- * (a late edit or CSV import), and skips an unchanged day. The job fails closed —
- * an unusable model response leaves the existing row untouched. `model` is the
- * clean model name (`normalizeModelName`); informational only.
+ * Only hours that actually hold messages are ever scored, so the cost tracks
+ * conversation volume rather than the calendar.
+ *
+ * A scored hour is final: the job never re-reads it because its message count
+ * drifted, which keeps the nightly token spend a function of new conversation and
+ * nothing else. Rewriting one is an explicit operator action (Regenerate). The job
+ * fails closed — an unusable model response leaves the existing row untouched.
+ * `model` is the clean model name (`normalizeModelName`); informational only.
  */
-export const chatDayInsights = pgTable(
-  "chat_day_insights",
+export const chatHourInsights = pgTable(
+  "chat_hour_insights",
   {
     id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
     /** Telegram chat/group id this insight belongs to. */
     chatId: text("chat_id").notNull(),
-    /** The insight day (`YYYY-MM-DD`) as a wall-clock date in the operator timezone. */
-    insightDate: text("insight_date").notNull(),
-    /** Mood score 0 (very negative) – 100 (very positive) for the day's conversation. */
+    /** The insight hour (`YYYY-MM-DD HH`) as wall-clock in the operator timezone. */
+    insightHour: text("insight_hour").notNull(),
+    /** Mood score 0 (very negative) – 100 (very positive) for the hour's conversation. */
     moodScore: integer("mood_score").notNull(),
     /** Short mood label (e.g. `positive`, `tense`). */
     moodLabel: text("mood_label").notNull(),
     /** One-sentence justification of the mood, for the dashboard. */
     moodSummary: text("mood_summary").notNull(),
-    /** The single most-discussed topic of the day, as named by the model. */
+    /** The single most-discussed topic of the hour, as named by the model. */
     topTopic: text("top_topic").notNull(),
-    /** The standout "word of the day", as named by the model. Null for older rows. */
+    /** The standout word of the hour, as named by the model. */
     word: text("word"),
-    /** Messages the day held when it was scored (the re-run trigger). */
+    /** Messages the hour held when it was scored. */
     messageCount: integer("message_count").notNull(),
     /** Clean model name that produced this insight (informational). */
     model: text("model").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [uniqueIndex("chat_day_insights_chat_date_idx").on(t.chatId, t.insightDate)],
+  (t) => [uniqueIndex("chat_hour_insights_chat_hour_idx").on(t.chatId, t.insightHour)],
 );
 
-export type ChatDayInsightRow = typeof chatDayInsights.$inferSelect;
-export type ChatDayInsightInsert = typeof chatDayInsights.$inferInsert;
+export type ChatHourInsightRow = typeof chatHourInsights.$inferSelect;
+export type ChatHourInsightInsert = typeof chatHourInsights.$inferInsert;
 
 /**
- * The period roll-up of analytics insight — "word of the period", top topic, and
- * an aggregate mood — for a month / year / all-time bucket, either globally or for
- * one chat. Produced by the same nightly job after the day rows are fresh: the
- * mood is a message-weighted average of the period's {@link chatDayInsights}
- * (deterministic), while the word and topic are one cheap LLM pass over the
- * period (user decision: both via LLM).
+ * The period roll-up of analytics insight — "word of the period", top topic, and an
+ * aggregate mood — for one chat at one granularity.
  *
- * `chat_id` is `''` for a global row (scope `global`) and the real chat id for a
- * per-chat row (scope `chat`) — an empty sentinel rather than null so the unique
- * key is a clean upsert target. `message_count` self-heals the period like the day
- * rows.
+ * Produced by the same nightly job once the hour rows are fresh: the mood is a
+ * message-weighted average of the period's {@link chatHourInsights} (deterministic,
+ * so it never depends on a fragile parse), while the word and topic are one cheap
+ * LLM pass that *selects* from the hours' own words and topics rather than inventing
+ * a new phrase.
+ *
+ * A row is written at **every** granularity an hour touches, `hour` included — the
+ * hour row is a straight copy of its {@link chatHourInsights} score, costing no LLM
+ * call. That redundancy is deliberate: it means every mood read, from a day's 24
+ * hourly points to the all-time figure, is the same query against one table instead
+ * of a special case for the finest grain.
+ *
+ * Always per chat. A cross-chat average of unrelated conversations is not a mood
+ * anybody has, so there is no global scope.
  */
 export const periodInsights = pgTable(
   "period_insights",
   {
     id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
-    /** `month` | `year` | `all`. */
+    /** `hour` | `day` | `week` | `month` | `year` | `all`. */
     granularity: text("granularity").notNull(),
-    /** Bucket key: `YYYY-MM` (month), `YYYY` (year), or `all`. */
+    /** Bucket key: `YYYY-MM-DD HH`, `YYYY-MM-DD`, `YYYY-MM`, `YYYY`, or `all`. */
     bucket: text("bucket").notNull(),
-    /** `global` (all chats) or `chat` (one chat). */
-    scope: text("scope").notNull(),
-    /** Real chat id for scope `chat`; `''` for scope `global`. */
-    chatId: text("chat_id").notNull().default(""),
+    /** Telegram chat/group id this roll-up covers. */
+    chatId: text("chat_id").notNull(),
     /** The standout word of the period, as named by the model. */
     wordOfPeriod: text("word_of_period").notNull(),
     /** The most-discussed topic across the period, as named by the model. */
     topTopic: text("top_topic").notNull(),
-    /** Message-weighted average mood 0–100 across the period's day rows. */
+    /** Message-weighted average mood 0–100 across the period's hour rows. */
     moodScore: integer("mood_score").notNull(),
     /** Aggregate mood label. */
     moodLabel: text("mood_label").notNull(),
-    /** Day rows that fed this roll-up. */
-    sourceDays: integer("source_days").notNull(),
-    /** Messages across the period when it was computed (the re-run trigger). */
+    /** Scored hour rows that fed this roll-up. */
+    sourceUnits: integer("source_units").notNull(),
+    /** Messages across the period when it was computed. */
     messageCount: integer("message_count").notNull(),
     /** Clean model name that produced the word/topic (informational). */
     model: text("model").notNull(),
     computedAt: timestamp("computed_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [
-    uniqueIndex("period_insights_key_idx").on(t.granularity, t.bucket, t.scope, t.chatId),
-  ],
+  (t) => [uniqueIndex("period_insights_key_idx").on(t.granularity, t.bucket, t.chatId)],
 );
 
 export type PeriodInsightRow = typeof periodInsights.$inferSelect;
 export type PeriodInsightInsert = typeof periodInsights.$inferInsert;
-
-export type TraceFactRow = typeof traceFacts.$inferSelect;
-export type TraceFactInsert = typeof traceFacts.$inferInsert;
-export type LlmUsageRow = typeof llmUsage.$inferSelect;
-export type LlmUsageInsert = typeof llmUsage.$inferInsert;

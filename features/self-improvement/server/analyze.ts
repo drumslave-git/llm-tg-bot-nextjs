@@ -179,7 +179,7 @@ export async function runSelfImprovement(deps: SelfImprovementDeps): Promise<Sel
         type: "llm_response",
         message: "response",
         data: result.responseBody ?? { content: result.content },
-        usage: llmUsageOf(result),
+        usage: { ...llmUsageOf(result), callKind: "self-improve-analyze" },
       });
       return result;
     } catch (err) {

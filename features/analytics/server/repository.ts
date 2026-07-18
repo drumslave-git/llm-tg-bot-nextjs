@@ -3,23 +3,31 @@ import "server-only";
 import { sql, type SQL } from "drizzle-orm";
 
 import type { DrizzleDb } from "@/db/drizzle";
-import { chatDayInsights, periodInsights } from "@/db/schema";
-// Token/model-speed/health metrics read the compact analytics facts distilled
-// from each settled trace (`llm_usage`, `trace_facts`) — the full traces live in
-// the file-backed store, so these are the queryable source now.
+import { chatHourInsights, periodInsights } from "@/db/schema";
 
 import { addDaysToDateStr, bucketFormat, truncUnit } from "../period";
 import type { Granularity } from "../types";
 
 /**
- * Typed persistence + live-SQL aggregation for analytics. Pure data access: no
- * policy, no LLM, no tracing (the services own those). Numeric metrics are
- * computed live over the base tables; only the LLM-derived insight rows are stored.
+ * Typed persistence + live-SQL aggregation for the analytics cards whose source is
+ * the database: message volume, users, and the stored insight rows.
+ *
+ * Token, model-performance, and traffic metrics are **not** here — their source is
+ * the trace files (`trace-source.ts`). Pure data access: no policy, no LLM, no
+ * tracing (the services own those).
  */
 
-/** Common time/scope filter for the message-based metric queries. */
+/**
+ * Time/scope filter for the message-based metric queries.
+ *
+ * `endUtc` is **exclusive**, and it is not optional. The previous shape had a lower
+ * bound only, so "this day" and "this week" both reached forward to now and returned
+ * the same totals whenever all the data was recent — the bug that made the Traffic
+ * filters look broken.
+ */
 export interface MetricScope {
   startUtc: Date;
+  endUtc: Date;
   chatId?: string | null;
   userId?: string | null;
 }
@@ -33,25 +41,13 @@ function bucketExpr(column: SQL, granularity: Granularity, timeZone: string): SQ
 
 /** Build the shared `chat_messages` WHERE clause from a scope. */
 function messageWhere(scope: MetricScope): SQL {
-  const parts: SQL[] = [sql`deleted_at is null`, sql`sent_at >= ${scope.startUtc}`];
+  const parts: SQL[] = [
+    sql`deleted_at is null`,
+    sql`sent_at >= ${scope.startUtc}`,
+    sql`sent_at < ${scope.endUtc}`,
+  ];
   if (scope.chatId) parts.push(sql`chat_id = ${scope.chatId}`);
   if (scope.userId) parts.push(sql`user_id = ${scope.userId}`);
-  return sql.join(parts, sql` and `);
-}
-
-/**
- * WHERE clause for the token (LLM usage) queries over `llm_usage`. Tokens are the
- * conversation's — `feature = 'bot-messaging'` reply usage — so they read as
- * "processed vs generated" and can be scoped to a chat (the `correlation_id` is
- * `<chatId>:<messageId>`) or a user (the `trigger_actor` is the sender id).
- */
-function tokenWhere(scope: MetricScope): SQL {
-  const parts: SQL[] = [
-    sql`feature = 'bot-messaging'`,
-    sql`started_at >= ${scope.startUtc}`,
-  ];
-  if (scope.chatId) parts.push(sql`correlation_id like ${`${scope.chatId}:%`}`);
-  if (scope.userId) parts.push(sql`trigger_actor = ${scope.userId}`);
   return sql.join(parts, sql` and `);
 }
 
@@ -65,9 +61,9 @@ export interface MessageSeriesRow {
 /** Per-bucket message volume and active users. */
 export async function getMessageSeries(
   db: DrizzleDb,
-  params: MetricScope & { granularity: Granularity; timeZone: string },
+  params: MetricScope & { bucketUnit: Granularity; timeZone: string },
 ): Promise<MessageSeriesRow[]> {
-  const bucket = bucketExpr(sql`sent_at`, params.granularity, params.timeZone);
+  const bucket = bucketExpr(sql`sent_at`, params.bucketUnit, params.timeZone);
   const rows = await db.execute<{ bucket: string; human: number; bot: number; active_users: number }>(sql`
     select
       ${bucket} as bucket,
@@ -86,248 +82,19 @@ export async function getMessageSeries(
   }));
 }
 
-export interface TokenSeriesRow {
-  bucket: string;
-  processed: number;
-  generated: number;
-}
-
-/** Per-bucket LLM tokens: processed = prompt, generated = completion. */
-export async function getTokenSeries(
-  db: DrizzleDb,
-  params: MetricScope & { granularity: Granularity; timeZone: string },
-): Promise<TokenSeriesRow[]> {
-  const bucket = bucketExpr(sql`started_at`, params.granularity, params.timeZone);
-  const rows = await db.execute<{ bucket: string; processed: string; generated: string }>(sql`
-    select
-      ${bucket} as bucket,
-      coalesce(sum(prompt_tokens), 0)::bigint as processed,
-      coalesce(sum(completion_tokens), 0)::bigint as generated
-    from llm_usage
-    where ${tokenWhere(params)}
-    group by 1
-  `);
-  return rows.rows.map((r) => ({
-    bucket: r.bucket,
-    processed: Number(r.processed),
-    generated: Number(r.generated),
-  }));
-}
-
-export interface MetricTotals {
-  human: number;
-  bot: number;
-  activeUsers: number;
-}
-
-/** Whole-window message totals (a distinct-user count a per-bucket sum can't give). */
-export async function getTotals(db: DrizzleDb, scope: MetricScope): Promise<MetricTotals> {
-  const rows = await db.execute<{ human: number; bot: number; active_users: number }>(sql`
-    select
-      count(*) filter (where role = 'user')::int as human,
-      count(*) filter (where role = 'assistant')::int as bot,
-      count(distinct user_id) filter (where role = 'user')::int as active_users
-    from chat_messages
-    where ${messageWhere(scope)}
-  `);
-  const r = rows.rows[0];
-  return { human: Number(r?.human ?? 0), bot: Number(r?.bot ?? 0), activeUsers: Number(r?.active_users ?? 0) };
-}
-
-/** Whole-window token totals (processed / generated). */
-export async function getTokenTotals(
-  db: DrizzleDb,
-  scope: MetricScope,
-): Promise<{ processed: number; generated: number }> {
-  const rows = await db.execute<{ processed: string; generated: string }>(sql`
-    select
-      coalesce(sum(prompt_tokens), 0)::bigint as processed,
-      coalesce(sum(completion_tokens), 0)::bigint as generated
-    from llm_usage
-    where ${tokenWhere(scope)}
-  `);
-  const r = rows.rows[0];
-  return { processed: Number(r?.processed ?? 0), generated: Number(r?.generated ?? 0) };
-}
-
-/** Per-bucket count of users first seen in the window (global only). */
+/** Per-bucket count of users first seen in the period (global only). */
 export async function getNewUserSeries(
   db: DrizzleDb,
-  params: { startUtc: Date; granularity: Granularity; timeZone: string },
+  params: { startUtc: Date; endUtc: Date; bucketUnit: Granularity; timeZone: string },
 ): Promise<Map<string, number>> {
-  const bucket = bucketExpr(sql`first_seen_at`, params.granularity, params.timeZone);
+  const bucket = bucketExpr(sql`first_seen_at`, params.bucketUnit, params.timeZone);
   const rows = await db.execute<{ bucket: string; new_users: number }>(sql`
     select ${bucket} as bucket, count(*)::int as new_users
     from known_users
-    where first_seen_at >= ${params.startUtc}
+    where first_seen_at >= ${params.startUtc} and first_seen_at < ${params.endUtc}
     group by 1
   `);
   return new Map(rows.rows.map((r) => [r.bucket, Number(r.new_users)]));
-}
-
-/** Media rows captured in the window (optionally scoped to one chat). */
-export async function getMediaTotal(
-  db: DrizzleDb,
-  params: { startUtc: Date; chatId?: string | null },
-): Promise<number> {
-  const parts: SQL[] = [sql`created_at >= ${params.startUtc}`];
-  if (params.chatId) parts.push(sql`chat_id = ${params.chatId}`);
-  const rows = await db.execute<{ n: number }>(sql`
-    select count(*)::int as n from message_media where ${sql.join(parts, sql` and `)}
-  `);
-  return Number(rows.rows[0]?.n ?? 0);
-}
-
-export interface ModelStatRaw {
-  /** Clean model name — normalized in SQL, see {@link normalizedModelExpr}. */
-  model: string;
-  /** The trace `feature` this call was made under (e.g. `vision`, `bot-messaging`). */
-  feature: string;
-  /** The trace `action` (e.g. `describe`, `reply`, `summarize`). */
-  action: string;
-  calls: number;
-  latencySum: number;
-  /** Median latency (ms) — the typical call, unmoved by one 90s outlier. */
-  latencyP50: number | null;
-  /** 95th-percentile latency (ms) — the tail an operator actually feels. */
-  latencyP95: number | null;
-  promptTokens: number;
-  completionTokens: number;
-  totalTokens: number;
-}
-
-/**
- * The recorded model id reduced to its clean name, in SQL.
- *
- * This is `normalizeModelName` (features/self-improvement/model-name.ts) expressed
- * for Postgres — trim, drop any path-style prefix up to the last `/`, fall back to
- * `unknown` — and the two must keep agreeing; `model-name.test.ts` pins the rule.
- *
- * It has to happen here rather than in the service because the grouping key must be
- * the *clean* name: percentiles are computed by the aggregate, and no amount of
- * post-hoc merging in JS can combine two groups' percentiles back into a correct
- * one. Sums could be merged afterwards; a median cannot.
- */
-function normalizedModelExpr(raw: SQL): SQL {
-  return sql`nullif(regexp_replace(btrim(${raw}), '^.*/', ''), '')`;
-}
-
-/**
- * The model a usage row should be *attributed* to: the id that was requested.
- *
- * `usage.model` now always holds the requested id, so this is normally just that.
- * The `case` handles rows written before that was true, when `model` held whatever
- * the provider answered with. Docker Model Runner answers a tag with the bundle
- * path of the file it loaded —
- * `/models/bundles/sha256/<digest>/model/<file>.gguf` — and since the digest **is**
- * the model id, such a row is a resolved tag, not a different model. Attributing it
- * to the filename split one configured model across two rows in the dashboard.
- *
- * Old rows carry no record of the requested tag, so the digest is the honest thing
- * to show: it identifies the bundle exactly, whereas the filename inside it is a
- * packaging detail and the tag would be a guess. `docker model ls` maps the short
- * digest straight back to the tag.
- */
-function attributedModelExpr(raw: SQL): SQL {
-  return sql`case
-    when ${raw} ~ '^/models/bundles/sha256/[0-9a-f]+/'
-      then 'bundle ' || substring(${raw} from '^/models/bundles/sha256/([0-9a-f]{12})')
-    else coalesce(${normalizedModelExpr(raw)}, 'unknown')
-  end`;
-}
-
-/**
- * Raw LLM usage across the whole trace timeline, grouped by **(model, feature,
- * action)** — the request type, not just the model.
- *
- * A single model serves work with wildly different cost profiles: describing an
- * image is not a text reply, and a one-line auxiliary classification is not a
- * tool-looping conversation turn. Collapsing them into one per-model mean produced
- * an average of unlike things — a number that moved when the *mix* changed and told
- * you nothing about any actual request. The trace's own `feature`/`action` is
- * already exactly this taxonomy, so it is what we group by.
- *
- * Percentiles come from the same scan because a mean latency over a
- * heavy-tailed distribution is the specific statistic that hides a slow tail.
- * Latency is also summed so the service can re-derive a correct mean when it merges
- * registry-prefixed model variants.
- */
-export async function getModelStatsRaw(
-  db: DrizzleDb,
-  params: { startUtc: Date },
-): Promise<ModelStatRaw[]> {
-  const rows = await db.execute<{
-    model: string;
-    feature: string;
-    action: string;
-    calls: number;
-    latency_sum: string;
-    latency_p50: string | null;
-    latency_p95: string | null;
-    prompt_tokens: string;
-    completion_tokens: string;
-    total_tokens: string;
-  }>(sql`
-    select
-      ${attributedModelExpr(sql`model`)} as model,
-      feature,
-      action,
-      count(*)::int as calls,
-      coalesce(sum(latency_ms), 0) as latency_sum,
-      percentile_cont(0.5) within group (order by latency_ms) as latency_p50,
-      percentile_cont(0.95) within group (order by latency_ms) as latency_p95,
-      coalesce(sum(prompt_tokens), 0) as prompt_tokens,
-      coalesce(sum(completion_tokens), 0) as completion_tokens,
-      coalesce(sum(total_tokens), 0) as total_tokens
-    from llm_usage
-    where model is not null
-      and started_at >= ${params.startUtc}
-    group by 1, 2, 3
-  `);
-  return rows.rows.map((r) => ({
-    model: r.model,
-    feature: r.feature,
-    action: r.action,
-    calls: Number(r.calls),
-    latencySum: Number(r.latency_sum),
-    latencyP50: r.latency_p50 === null ? null : Math.round(Number(r.latency_p50)),
-    latencyP95: r.latency_p95 === null ? null : Math.round(Number(r.latency_p95)),
-    promptTokens: Number(r.prompt_tokens),
-    completionTokens: Number(r.completion_tokens),
-    totalTokens: Number(r.total_tokens),
-  }));
-}
-
-/** 👍 / 👎 reaction counts on bot replies in the window. */
-export async function getFeedbackCounts(
-  db: DrizzleDb,
-  params: { startUtc: Date; chatId?: string | null },
-): Promise<{ up: number; down: number }> {
-  const parts: SQL[] = [sql`created_at >= ${params.startUtc}`];
-  if (params.chatId) parts.push(sql`chat_id = ${params.chatId}`);
-  const rows = await db.execute<{ up: number; down: number }>(sql`
-    select
-      count(*) filter (where reaction = 'up')::int as up,
-      count(*) filter (where reaction = 'down')::int as down
-    from users_feedbacks
-    where ${sql.join(parts, sql` and `)}
-  `);
-  return { up: Number(rows.rows[0]?.up ?? 0), down: Number(rows.rows[0]?.down ?? 0) };
-}
-
-/** Bot-messaging trace reliability in the window. */
-export async function getBotTraceHealth(
-  db: DrizzleDb,
-  params: { startUtc: Date },
-): Promise<{ total: number; errors: number }> {
-  const rows = await db.execute<{ total: number; errors: number }>(sql`
-    select
-      count(*)::int as total,
-      count(*) filter (where status = 'error')::int as errors
-    from trace_facts
-    where feature = 'bot-messaging' and started_at >= ${params.startUtc}
-  `);
-  return { total: Number(rows.rows[0]?.total ?? 0), errors: Number(rows.rows[0]?.errors ?? 0) };
 }
 
 export interface TopUserRow {
@@ -335,16 +102,17 @@ export interface TopUserRow {
   messages: number;
 }
 
-/** The most active human senders in the window (optionally within one chat). */
+/** The most active human senders in the period (optionally within one chat). */
 export async function getTopUsers(
   db: DrizzleDb,
-  params: { startUtc: Date; chatId?: string | null; limit: number },
+  params: { startUtc: Date; endUtc: Date; chatId?: string | null; limit: number },
 ): Promise<TopUserRow[]> {
   const parts: SQL[] = [
     sql`deleted_at is null`,
     sql`role = 'user'`,
     sql`user_id is not null`,
     sql`sent_at >= ${params.startUtc}`,
+    sql`sent_at < ${params.endUtc}`,
   ];
   if (params.chatId) parts.push(sql`chat_id = ${params.chatId}`);
   const rows = await db.execute<{ user_id: string; messages: number }>(sql`
@@ -358,138 +126,207 @@ export async function getTopUsers(
   return rows.rows.map((r) => ({ userId: r.user_id, messages: Number(r.messages) }));
 }
 
-/** Prompt tokens attributed to each of the given users' turns, in the window. */
-export async function getUserTokens(
+/** Bucket keys in a range that hold any message — the calendar's data marks. */
+export async function getMessageAvailability(
   db: DrizzleDb,
-  params: { startUtc: Date; userIds: string[]; chatId?: string | null },
-): Promise<Map<string, number>> {
-  if (params.userIds.length === 0) return new Map();
+  params: {
+    startUtc: Date;
+    endUtc: Date;
+    bucketUnit: Granularity;
+    timeZone: string;
+    chatId?: string | null;
+  },
+): Promise<string[]> {
+  const bucket = bucketExpr(sql`sent_at`, params.bucketUnit, params.timeZone);
   const parts: SQL[] = [
-    sql`feature = 'bot-messaging'`,
-    sql`started_at >= ${params.startUtc}`,
-    sql`trigger_actor in (${sql.join(
-      params.userIds.map((id) => sql`${id}`),
-      sql`, `,
-    )})`,
+    sql`deleted_at is null`,
+    sql`sent_at >= ${params.startUtc}`,
+    sql`sent_at < ${params.endUtc}`,
   ];
-  if (params.chatId) parts.push(sql`correlation_id like ${`${params.chatId}:%`}`);
-  const rows = await db.execute<{ user_id: string; tokens: string }>(sql`
-    select trigger_actor as user_id, coalesce(sum(prompt_tokens), 0)::bigint as tokens
-    from llm_usage
+  if (params.chatId) parts.push(sql`chat_id = ${params.chatId}`);
+  const rows = await db.execute<{ bucket: string }>(sql`
+    select distinct ${bucket} as bucket
+    from chat_messages
     where ${sql.join(parts, sql` and `)}
-    group by trigger_actor
+    order by 1
   `);
-  return new Map(rows.rows.map((r) => [r.user_id, Number(r.tokens)]));
+  return rows.rows.map((r) => r.bucket);
 }
 
 /* ------------------------------------------------------------------------- *
  * Insight-row persistence (written by the nightly job).
+ *
+ * The scored unit is the **chat-hour**. Everything the dashboard shows — a day's
+ * mood curve, a month's word, the all-time top topic — is a roll-up of hours, so
+ * hour is the one place conversation is ever read by an LLM.
  * ------------------------------------------------------------------------- */
 
-export interface PendingInsightDay {
+export interface PendingInsightHour {
   chatId: string;
-  insightDate: string;
+  insightHour: string;
   messageCount: number;
 }
 
 /**
- * (chat, day) pairs that have no stored insight yet. A day is owed only when it
- * has never been scored — a *scored* day is final, and is never silently re-read
+ * (chat, hour) pairs that have no stored insight yet. An hour is owed only when it
+ * has never been scored — a *scored* hour is final, and is never silently re-read
  * because its message count drifted. Correcting an existing score is an explicit
- * operator action ({@link deleteInsightsForPeriod} + a run), so the job's token
- * spend is predictable and nothing rewrites itself behind your back. The current
- * (unfinished) day is excluded.
+ * operator action ({@link deleteInsightsForPeriod} + a run), so the job's token spend
+ * is predictable and nothing rewrites itself behind your back. The current
+ * (unfinished) hour is excluded.
  */
-export async function listDaysNeedingInsight(
+export async function listHoursNeedingInsight(
   db: DrizzleDb,
-  params: { timeZone: string; today: string; limit: number },
-): Promise<PendingInsightDay[]> {
-  const rows = await db.execute<{ chat_id: string; insight_date: string; message_count: number }>(sql`
-    with days as (
+  params: { timeZone: string; currentHour: string; limit: number },
+): Promise<PendingInsightHour[]> {
+  const rows = await db.execute<{ chat_id: string; insight_hour: string; message_count: number }>(sql`
+    with hours as (
       select
         chat_id,
-        to_char((sent_at at time zone ${params.timeZone})::date, 'YYYY-MM-DD') as insight_date,
+        to_char(date_trunc('hour', (sent_at at time zone ${params.timeZone})), 'YYYY-MM-DD HH24') as insight_hour,
         count(*)::int as message_count
       from chat_messages
       where deleted_at is null
       group by 1, 2
     )
-    select days.chat_id, days.insight_date, days.message_count
-    from days
-    left join chat_day_insights i
-      on i.chat_id = days.chat_id and i.insight_date = days.insight_date
-    where days.insight_date < ${params.today}
+    select hours.chat_id, hours.insight_hour, hours.message_count
+    from hours
+    left join chat_hour_insights i
+      on i.chat_id = hours.chat_id and i.insight_hour = hours.insight_hour
+    where hours.insight_hour < ${params.currentHour}
       and i.id is null
-    order by days.insight_date asc, days.chat_id asc
+    order by hours.insight_hour asc, hours.chat_id asc
     limit ${params.limit}
   `);
   return rows.rows.map((r) => ({
     chatId: r.chat_id,
-    insightDate: r.insight_date,
+    insightHour: r.insight_hour,
     messageCount: Number(r.message_count),
   }));
 }
 
-/** Every distinct scored date (`YYYY-MM-DD`), newest first — the regenerate picker's source. */
-export async function listInsightDates(db: DrizzleDb): Promise<string[]> {
-  const rows = await db.execute<{ insight_date: string }>(sql`
-    select distinct insight_date from chat_day_insights order by insight_date desc
+/** Every distinct scored hour (`YYYY-MM-DD HH`), newest first — the regenerate picker's source. */
+export async function listInsightHours(db: DrizzleDb): Promise<string[]> {
+  const rows = await db.execute<{ insight_hour: string }>(sql`
+    select distinct insight_hour from chat_hour_insights order by insight_hour desc
   `);
-  return rows.rows.map((r) => r.insight_date);
+  return rows.rows.map((r) => r.insight_hour);
+}
+
+/** How many (chat, hour) pairs still need an insight — for the dashboard backlog. */
+export async function countHoursNeedingInsight(
+  db: DrizzleDb,
+  params: { timeZone: string; currentHour: string },
+): Promise<number> {
+  const rows = await db.execute<{ n: number }>(sql`
+    with hours as (
+      select
+        chat_id,
+        to_char(date_trunc('hour', (sent_at at time zone ${params.timeZone})), 'YYYY-MM-DD HH24') as insight_hour
+      from chat_messages
+      where deleted_at is null
+      group by 1, 2
+    )
+    select count(*)::int as n
+    from hours
+    left join chat_hour_insights i
+      on i.chat_id = hours.chat_id and i.insight_hour = hours.insight_hour
+    where hours.insight_hour < ${params.currentHour} and i.id is null
+  `);
+  return Number(rows.rows[0]?.n ?? 0);
+}
+
+/** The `chat_hour_insights.insight_hour` filter for a period bucket. */
+function hourDateFilter(granularity: Granularity, bucket: string): SQL | null {
+  // `insight_hour` is `YYYY-MM-DD HH`, so its first 10 chars are the date.
+  const date = sql`left(insight_hour, 10)`;
+  switch (granularity) {
+    case "hour":
+      return sql`insight_hour = ${bucket}`;
+    case "day":
+      return sql`${date} = ${bucket}`;
+    case "week":
+      return sql`${date} >= ${bucket} and ${date} <= ${addDaysToDateStr(bucket, 6)}`;
+    case "month":
+    case "year":
+      return sql`insight_hour like ${`${bucket}-%`}`;
+    case "all":
+      return null;
+  }
 }
 
 /**
- * Drop every stored insight covering a period — the day scores *and* the roll-ups
+ * Drop every stored insight covering a period — the hour scores *and* the roll-ups
  * built from them — so the next run recomputes them from the messages.
  *
- * Deleting the day rows is what re-arms the work: a day with no row is owed (see
- * {@link listDaysNeedingInsight}), so a regenerate that dies half-way is picked up
+ * Deleting the hour rows is what re-arms the work: an hour with no row is owed (see
+ * {@link listHoursNeedingInsight}), so a regenerate that dies half-way is picked up
  * by the next nightly run rather than leaving a permanent hole. The roll-ups go too
- * because a roll-up whose day rows have been dropped is a stale claim about days
+ * because a roll-up whose hour rows have been dropped is a stale claim about hours
  * that no longer exist.
+ *
+ * **Scoped to the chats that actually lost an hour.** A roll-up is only invalidated
+ * by its own chat's hours changing, and only that chat's hours get re-armed — so
+ * deleting across every chat destroyed insights for conversations that had no
+ * activity in the period at all, with nothing left to rebuild them. Found live:
+ * regenerating one day silently erased two other chats' month/year/all-time rows,
+ * recoverable only by re-scoring the entire history.
  */
 export async function deleteInsightsForPeriod(
   db: DrizzleDb,
   params: { granularity: Granularity; bucket: string },
-): Promise<{ days: number; periods: number }> {
-  const dateFilter = periodDateFilter(params.granularity, params.bucket);
-  const dayWhere = dateFilter ? sql`where ${dateFilter}` : sql``;
-  const days = await db.execute<{ n: number }>(sql`
-    with deleted as (delete from chat_day_insights ${dayWhere} returning 1)
-    select count(*)::int as n from deleted
+): Promise<{ units: number; periods: number }> {
+  const dateFilter = hourDateFilter(params.granularity, params.bucket);
+  const hourWhere = dateFilter ? sql`where ${dateFilter}` : sql``;
+  // `returning chat_id` is what makes the scoping possible: the set of affected
+  // chats is exactly the set whose hours we just dropped.
+  const deletedHours = await db.execute<{ chat_id: string }>(sql`
+    delete from chat_hour_insights ${hourWhere} returning chat_id
   `);
+  const units = deletedHours.rows.length;
+  const chatIds = [...new Set(deletedHours.rows.map((r) => r.chat_id))];
 
-  // A day's score feeds every period containing it, so dropping a range of days
-  // invalidates roll-ups at *every* granularity that overlaps the range — not just
-  // the one asked for. `all` overlaps everything, so it clears the table.
-  const periodWhere =
+  if (chatIds.length === 0) return { units, periods: 0 };
+
+  const chatFilter = sql`chat_id in (${sql.join(
+    chatIds.map((id) => sql`${id}`),
+    sql`, `,
+  )})`;
+  // An hour's score feeds every period containing it, so dropping a range of hours
+  // invalidates that chat's roll-ups at *every* granularity that overlaps the range
+  // — not just the one asked for. `all` overlaps everything.
+  const rangeFilter =
     params.granularity === "all"
-      ? sql``
-      : sql`where granularity = 'all' or ${periodOverlapFilter(params.granularity, params.bucket)}`;
+      ? sql`true`
+      : sql`(granularity = 'all' or ${periodOverlapFilter(params.granularity, params.bucket)})`;
   const periods = await db.execute<{ n: number }>(sql`
-    with deleted as (delete from period_insights ${periodWhere} returning 1)
+    with deleted as (
+      delete from period_insights where ${chatFilter} and ${rangeFilter} returning 1
+    )
     select count(*)::int as n from deleted
   `);
 
-  return { days: Number(days.rows[0]?.n ?? 0), periods: Number(periods.rows[0]?.n ?? 0) };
+  return { units, periods: Number(periods.rows[0]?.n ?? 0) };
 }
 
 /**
  * Matches every stored period row whose date range overlaps the given bucket, by
  * comparing each row's own first/last day. A week can straddle two months and a
  * month sits inside a year, so a containment test on the bucket string alone would
- * miss rows that genuinely covered a dropped day.
+ * miss rows that genuinely covered a dropped hour.
  */
 function periodOverlapFilter(granularity: Granularity, bucket: string): SQL {
   const [start, end] = periodDayRange(granularity, bucket);
   // Each row's span, derived from its granularity + bucket key.
   const rowStart = sql`case granularity
+    when 'hour' then left(bucket, 10)
     when 'day' then bucket
     when 'week' then bucket
     when 'month' then bucket || '-01'
     when 'year' then bucket || '-01-01'
   end`;
   const rowEnd = sql`case granularity
+    when 'hour' then left(bucket, 10)
     when 'day' then bucket
     when 'week' then to_char(to_date(bucket, 'YYYY-MM-DD') + 6, 'YYYY-MM-DD')
     when 'month' then to_char((to_date(bucket || '-01', 'YYYY-MM-DD') + interval '1 month' - interval '1 day')::date, 'YYYY-MM-DD')
@@ -501,6 +338,8 @@ function periodOverlapFilter(granularity: Granularity, bucket: string): SQL {
 /** The inclusive first/last `YYYY-MM-DD` a period bucket covers. */
 function periodDayRange(granularity: Granularity, bucket: string): [string, string] {
   switch (granularity) {
+    case "hour":
+      return [bucket.slice(0, 10), bucket.slice(0, 10)];
     case "day":
       return [bucket, bucket];
     case "week":
@@ -514,29 +353,23 @@ function periodDayRange(granularity: Granularity, bucket: string): [string, stri
   }
 }
 
-/** How many (chat, day) pairs still need an insight — for the dashboard backlog. */
-export async function countDaysNeedingInsight(
+/** An hour's messages (role + text), oldest first — the LLM insight input. */
+export async function getHourMessages(
   db: DrizzleDb,
-  params: { timeZone: string; today: string },
-): Promise<number> {
-  const pending = await listDaysNeedingInsight(db, { ...params, limit: 100_000 });
-  return pending.length;
-}
-
-/** A day's messages (role + text), oldest first — the LLM insight input. */
-export async function getDayMessages(
-  db: DrizzleDb,
-  params: { chatId: string; date: string; timeZone: string },
+  params: { chatId: string; insightHour: string; timeZone: string },
 ): Promise<{ role: "user" | "assistant"; content: string }[]> {
   const rows = await db.execute<{ role: string; content: string }>(sql`
     select role, content
     from chat_messages
     where chat_id = ${params.chatId}
       and deleted_at is null
-      and to_char((sent_at at time zone ${params.timeZone})::date, 'YYYY-MM-DD') = ${params.date}
+      and to_char(date_trunc('hour', (sent_at at time zone ${params.timeZone})), 'YYYY-MM-DD HH24') = ${params.insightHour}
     order by sent_at asc, id asc
   `);
-  return rows.rows.map((r) => ({ role: r.role === "assistant" ? "assistant" : "user", content: r.content }));
+  return rows.rows.map((r) => ({
+    role: r.role === "assistant" ? "assistant" : "user",
+    content: r.content,
+  }));
 }
 
 /** A day's already-distilled topic summaries for a chat (extra insight context). */
@@ -552,9 +385,9 @@ export async function getDaySummaryTopics(
   return rows.rows.map((r) => r.content);
 }
 
-export interface UpsertDayInsight {
+export interface UpsertHourInsight {
   chatId: string;
-  insightDate: string;
+  insightHour: string;
   moodScore: number;
   moodLabel: string;
   moodSummary: string;
@@ -564,13 +397,13 @@ export interface UpsertDayInsight {
   model: string;
 }
 
-/** Insert or refresh one (chat, day) scored insight. */
-export async function upsertChatDayInsight(db: DrizzleDb, row: UpsertDayInsight): Promise<void> {
+/** Insert or refresh one (chat, hour) scored insight. */
+export async function upsertChatHourInsight(db: DrizzleDb, row: UpsertHourInsight): Promise<void> {
   await db
-    .insert(chatDayInsights)
+    .insert(chatHourInsights)
     .values(row)
     .onConflictDoUpdate({
-      target: [chatDayInsights.chatId, chatDayInsights.insightDate],
+      target: [chatHourInsights.chatId, chatHourInsights.insightHour],
       set: {
         moodScore: row.moodScore,
         moodLabel: row.moodLabel,
@@ -584,9 +417,9 @@ export async function upsertChatDayInsight(db: DrizzleDb, row: UpsertDayInsight)
     });
 }
 
-export interface PeriodDayRow {
+export interface PeriodUnitRow {
   chatId: string;
-  insightDate: string;
+  insightHour: string;
   moodScore: number;
   moodLabel: string;
   topTopic: string;
@@ -594,48 +427,31 @@ export interface PeriodDayRow {
   messageCount: number;
 }
 
-/** The chat_day_insights date filter for a period bucket. */
-function periodDateFilter(granularity: Granularity, bucket: string): SQL | null {
-  switch (granularity) {
-    case "day":
-      return sql`insight_date = ${bucket}`;
-    case "week":
-      return sql`insight_date >= ${bucket} and insight_date <= ${addDaysToDateStr(bucket, 6)}`;
-    case "month":
-    case "year":
-      return sql`insight_date like ${`${bucket}-%`}`;
-    case "all":
-      return null;
-  }
-}
-
-/** Scored day rows falling within a period bucket (and optional chat scope). */
-export async function listDayInsightsForPeriod(
+/** Scored hour rows falling within a period bucket, for one chat. */
+export async function listHourInsightsForPeriod(
   db: DrizzleDb,
-  params: { granularity: Granularity; bucket: string; chatId?: string | null },
-): Promise<PeriodDayRow[]> {
-  const parts: SQL[] = [];
-  const dateFilter = periodDateFilter(params.granularity, params.bucket);
+  params: { granularity: Granularity; bucket: string; chatId: string },
+): Promise<PeriodUnitRow[]> {
+  const parts: SQL[] = [sql`chat_id = ${params.chatId}`];
+  const dateFilter = hourDateFilter(params.granularity, params.bucket);
   if (dateFilter) parts.push(dateFilter);
-  if (params.chatId) parts.push(sql`chat_id = ${params.chatId}`);
-  const where = parts.length ? sql`where ${sql.join(parts, sql` and `)}` : sql``;
   const rows = await db.execute<{
     chat_id: string;
-    insight_date: string;
+    insight_hour: string;
     mood_score: number;
     mood_label: string;
     top_topic: string;
     word: string | null;
     message_count: number;
   }>(sql`
-    select chat_id, insight_date, mood_score, mood_label, top_topic, word, message_count
-    from chat_day_insights
-    ${where}
-    order by insight_date asc, chat_id asc
+    select chat_id, insight_hour, mood_score, mood_label, top_topic, word, message_count
+    from chat_hour_insights
+    where ${sql.join(parts, sql` and `)}
+    order by insight_hour asc
   `);
   return rows.rows.map((r) => ({
     chatId: r.chat_id,
-    insightDate: r.insight_date,
+    insightHour: r.insight_hour,
     moodScore: Number(r.mood_score),
     moodLabel: r.mood_label,
     topTopic: r.top_topic,
@@ -647,30 +463,29 @@ export async function listDayInsightsForPeriod(
 export interface UpsertPeriodInsight {
   granularity: Granularity;
   bucket: string;
-  scope: "global" | "chat";
   chatId: string;
   wordOfPeriod: string;
   topTopic: string;
   moodScore: number;
   moodLabel: string;
-  sourceDays: number;
+  sourceUnits: number;
   messageCount: number;
   model: string;
 }
 
-/** Insert or refresh one period insight (day/week/month/all × global/chat). */
+/** Insert or refresh one period insight (hour/day/week/month/year/all × chat). */
 export async function upsertPeriodInsight(db: DrizzleDb, row: UpsertPeriodInsight): Promise<void> {
   await db
     .insert(periodInsights)
     .values(row)
     .onConflictDoUpdate({
-      target: [periodInsights.granularity, periodInsights.bucket, periodInsights.scope, periodInsights.chatId],
+      target: [periodInsights.granularity, periodInsights.bucket, periodInsights.chatId],
       set: {
         wordOfPeriod: row.wordOfPeriod,
         topTopic: row.topTopic,
         moodScore: row.moodScore,
         moodLabel: row.moodLabel,
-        sourceDays: row.sourceDays,
+        sourceUnits: row.sourceUnits,
         messageCount: row.messageCount,
         model: row.model,
         computedAt: new Date(),
@@ -680,85 +495,85 @@ export async function upsertPeriodInsight(db: DrizzleDb, row: UpsertPeriodInsigh
 
 export type StoredPeriodInsight = UpsertPeriodInsight & { computedAt: string };
 
-function mapPeriodRow(r: {
+interface PeriodRowShape extends Record<string, unknown> {
   granularity: string;
   bucket: string;
-  scope: string;
   chat_id: string;
   word_of_period: string;
   top_topic: string;
   mood_score: number;
   mood_label: string;
-  source_days: number;
+  source_units: number;
   message_count: number;
   model: string;
   computed_at: string | Date;
-}): StoredPeriodInsight {
+}
+
+function mapPeriodRow(r: PeriodRowShape): StoredPeriodInsight {
   return {
     granularity: r.granularity as Granularity,
     bucket: r.bucket,
-    scope: r.scope as "global" | "chat",
     chatId: r.chat_id,
     wordOfPeriod: r.word_of_period,
     topTopic: r.top_topic,
     moodScore: Number(r.mood_score),
     moodLabel: r.mood_label,
-    sourceDays: Number(r.source_days),
+    sourceUnits: Number(r.source_units),
     messageCount: Number(r.message_count),
     model: r.model,
     computedAt: new Date(r.computed_at).toISOString(),
   };
 }
 
-/** The stored insight for an exact period, or null. */
+/** The stored insight for an exact period in one chat, or null. */
 export async function getPeriodInsight(
   db: DrizzleDb,
-  params: { granularity: Granularity; bucket: string; scope: "global" | "chat"; chatId: string },
+  params: { granularity: Granularity; bucket: string; chatId: string },
 ): Promise<StoredPeriodInsight | null> {
-  const rows = await db.execute<Parameters<typeof mapPeriodRow>[0]>(sql`
+  const rows = await db.execute<PeriodRowShape>(sql`
     select * from period_insights
     where granularity = ${params.granularity} and bucket = ${params.bucket}
-      and scope = ${params.scope} and chat_id = ${params.chatId}
+      and chat_id = ${params.chatId}
     limit 1
   `);
   const r = rows.rows[0];
   return r ? mapPeriodRow(r) : null;
 }
 
-/** The most recently computed period for a granularity/scope — the card default. */
-export async function getLatestPeriodInsight(
+/**
+ * Stored insights for an explicit list of buckets at one granularity, for one chat.
+ *
+ * This is what the mood trend reads: the caller already knows the dense sub-bucket
+ * axis it wants (from {@link import("../period").subBucketKeys}), so it asks for
+ * exactly those and treats a missing row as a gap rather than a zero.
+ */
+export async function listPeriodInsights(
   db: DrizzleDb,
-  params: { granularity: Granularity; scope: "global" | "chat"; chatId: string },
-): Promise<StoredPeriodInsight | null> {
-  const rows = await db.execute<Parameters<typeof mapPeriodRow>[0]>(sql`
+  params: { granularity: Granularity; buckets: string[]; chatId: string },
+): Promise<StoredPeriodInsight[]> {
+  if (params.buckets.length === 0) return [];
+  const rows = await db.execute<PeriodRowShape>(sql`
     select * from period_insights
-    where granularity = ${params.granularity} and scope = ${params.scope} and chat_id = ${params.chatId}
-    order by bucket desc
-    limit 1
+    where granularity = ${params.granularity}
+      and chat_id = ${params.chatId}
+      and bucket in (${sql.join(
+        params.buckets.map((b) => sql`${b}`),
+        sql`, `,
+      )})
+    order by bucket asc
   `);
-  const r = rows.rows[0];
-  return r ? mapPeriodRow(r) : null;
+  return rows.rows.map(mapPeriodRow);
 }
 
-export interface MoodTrendRow {
-  bucket: string;
-  moodScore: number;
-  moodLabel: string;
-}
-
-/** Recent per-bucket mood for a granularity/scope, oldest last — the trend line. */
-export async function getMoodTrend(
+/** Distinct buckets at a granularity that hold a stored insight, for one chat. */
+export async function getInsightAvailability(
   db: DrizzleDb,
-  params: { granularity: Granularity; scope: "global" | "chat"; chatId: string; limit: number },
-): Promise<MoodTrendRow[]> {
-  const rows = await db.execute<{ bucket: string; mood_score: number; mood_label: string }>(sql`
-    select bucket, mood_score, mood_label
-    from period_insights
-    where granularity = ${params.granularity} and scope = ${params.scope} and chat_id = ${params.chatId}
-    order by bucket desc
-    limit ${params.limit}
+  params: { granularity: Granularity; chatId: string },
+): Promise<string[]> {
+  const rows = await db.execute<{ bucket: string }>(sql`
+    select distinct bucket from period_insights
+    where granularity = ${params.granularity} and chat_id = ${params.chatId}
+    order by 1
   `);
-  return rows.rows
-    .map((r) => ({ bucket: r.bucket, moodScore: Number(r.mood_score), moodLabel: r.mood_label }))
-    .reverse();
+  return rows.rows.map((r) => r.bucket);
 }

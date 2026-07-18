@@ -5,6 +5,7 @@
 export { Avatar } from "./Avatar";
 export { Badge, type BadgeTone } from "./Badge";
 export { Button, type ButtonProps, type ButtonVariant, type ButtonSize } from "./Button";
+export { Calendar, initialViewRange, type CalendarMode } from "./Calendar";
 export {
   Card,
   CardAction,

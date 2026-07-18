@@ -72,6 +72,16 @@ export const llmUsageSchema = z.object({
    * *wrong* thing is still visible in Debug.
    */
   servedModel: z.string().optional(),
+  /**
+   * What this call was *for* — see `features/analytics/llm-call-kind.ts`.
+   *
+   * Recorded at the call site rather than derived from the trace's feature/action,
+   * because one traced action can contain several unlike calls: handling a message
+   * is an addressing check, then N tool rounds, then a final answer. Analytics
+   * groups on this, so a slow tool turn is visible instead of being averaged into
+   * the reply it belonged to.
+   */
+  callKind: z.string().optional(),
   promptTokens: z.number().int().nonnegative().optional(),
   completionTokens: z.number().int().nonnegative().optional(),
   totalTokens: z.number().int().nonnegative().optional(),

@@ -3,7 +3,6 @@ import "server-only";
 import type { DrizzleDb } from "@/db/drizzle";
 import { getDb } from "@/db/drizzle";
 import { normalizeModelName } from "@/features/self-improvement/model-name";
-import { zonedDate } from "@/features/scheduled-tasks/schedule";
 import { FEATURES } from "@/lib/features";
 import { llmUsageOf, type ChatCompletionResult, type ChatMessage } from "@/server/llm/client";
 import type { JobProgress } from "@/server/jobs/progress";
@@ -11,78 +10,88 @@ import { publishEvent } from "@/server/realtime/hub";
 import { startTrace } from "@/server/trace";
 
 import { moodLabelForScore } from "../mood";
-import { weekBucketOf } from "../period";
+import { bucketKeyOfInstant, subBucketKeys, weekBucketOf } from "../period";
 import type { Granularity } from "../types";
 import {
-  buildDayInsightRequest,
-  buildPeriodInsightRequest,
-  DAY_INSIGHT_PROMPT,
+  buildHourInsightRequest,
+  buildPeriodRollupRequest,
   formatTranscript,
-  parseDayInsight,
-  parsePeriodInsight,
-  PERIOD_INSIGHT_PROMPT,
+  HOUR_INSIGHT_PROMPT,
+  parseHourInsight,
+  parseRollupChoice,
+  PERIOD_ROLLUP_PROMPT,
+  type RollupChild,
 } from "./prompt";
 import {
   deleteInsightsForPeriod,
-  getDayMessages,
   getDaySummaryTopics,
-  listDayInsightsForPeriod,
-  listDaysNeedingInsight,
-  type PendingInsightDay,
-  type PeriodDayRow,
-  upsertChatDayInsight,
+  getHourMessages,
+  listHourInsightsForPeriod,
+  listHoursNeedingInsight,
+  listPeriodInsights,
+  type PendingInsightHour,
+  upsertChatHourInsight,
   upsertPeriodInsight,
 } from "./repository";
 
 /**
- * The analytics insight job. It scores each finished chat-day's mood, top topic,
- * and word (one LLM call), then rolls those day rows up into a **word of the period
- * + top topic + aggregate mood for every period the day touches** — the day, its
- * week, its month, its year, and all-time — for both the global and the per-chat
- * view. That is what makes "word of the day/week/month/year/all time" and
- * "most-discussed topic" available at every granularity the selector offers.
+ * The analytics insight job.
  *
- * A roll-up over a single day row copies that row's word/topic (no LLM); a roll-up
- * over several days makes one LLM call. Mood is always a deterministic
- * message-weighted average, so it never depends on a fragile parse.
+ * It scores each finished chat-**hour**'s mood, top topic, and word (one LLM call),
+ * then rolls those hour rows up the calendar: hour → day → week/month → year → all
+ * time, for every period a scored hour touches. That is what makes mood, "word of
+ * the period", and "top topic" available at whatever period the dashboard is pointed
+ * at — and, because the hour is the finest thing the dashboard plots, what lets a
+ * day's mood curve exist at all.
  *
- * **Work is only ever added by an unscored day.** A scored day is final: the job
+ * **Roll-ups are hierarchical, not flat.** A month is rolled up from its *days*, not
+ * from its ~700 hours: reading every hour into every enclosing period would put a
+ * year's worth of rows in one prompt. Each level reads only its immediate children,
+ * so every call sees at most 31 entries regardless of how much history exists.
+ *
+ * The mood at every level is a deterministic message-weighted mean, so it never
+ * depends on a fragile parse — and because a child's own mood is already the weighted
+ * mean of *its* children, rolling up levels gives exactly the same number as
+ * averaging the underlying hours directly. The word and topic are one cheap LLM pass
+ * that *selects* among the children rather than writing new text.
+ *
+ * **Work is only ever added by an unscored hour.** A scored hour is final: the job
  * never re-reads it because its message count drifted, and never reconciles stored
  * roll-ups against what it thinks they should be. Both of those were self-healing
  * scans, and both made the nightly token spend a function of invisible state.
- * Rewriting a scored day is an operator action — {@link regenerateAnalyticsInsights}
- * drops the rows, which re-arms them through the ordinary unscored-day path.
+ * Rewriting a scored hour is an operator action — {@link regenerateAnalyticsInsights}
+ * drops the rows, which re-arms them through the ordinary unscored-hour path.
  *
  * Fails **closed** per unit: an unusable model response leaves the stored row
- * untouched, and the day stays owed for the next run.
+ * untouched, and the hour stays owed for the next run.
  */
 
 const FEATURE = FEATURES["analytics-insights"];
 
 /** Safety valves on one run (not business rules) — bound a runaway backlog. */
-const MAX_DAYS_PER_RUN = 200;
-const MAX_PERIODS_PER_RUN = 400;
+const MAX_HOURS_PER_RUN = 500;
+const MAX_PERIODS_PER_RUN = 800;
 
 export interface AnalyticsInsightsDeps {
   complete: (messages: ChatMessage[]) => Promise<ChatCompletionResult>;
   timeZone: string;
   now?: Date;
-  /** Publish live per-day / per-period progress (drives the Jobs dashboard). */
+  /** Publish live per-hour / per-period progress (drives the Jobs dashboard). */
   onProgress?: (progress: JobProgress | null) => void;
   db?: DrizzleDb;
 }
 
 export interface AnalyticsInsightsResult {
-  daysComputed: number;
-  daysFailed: number;
+  unitsComputed: number;
+  unitsFailed: number;
   periodsComputed: number;
   periodsFailed: number;
   summary: string;
 }
 
 const EMPTY: Omit<AnalyticsInsightsResult, "summary"> = {
-  daysComputed: 0,
-  daysFailed: 0,
+  unitsComputed: 0,
+  unitsFailed: 0,
   periodsComputed: 0,
   periodsFailed: 0,
 };
@@ -90,82 +99,99 @@ const EMPTY: Omit<AnalyticsInsightsResult, "summary"> = {
 interface PeriodTarget {
   granularity: Granularity;
   bucket: string;
-  scope: "global" | "chat";
   chatId: string;
 }
 
 function targetKey(t: PeriodTarget): string {
-  return `${t.granularity}|${t.bucket}|${t.scope}|${t.chatId}`;
+  return `${t.granularity}|${t.bucket}|${t.chatId}`;
 }
 
-/** Every period bucket a (date, chat) touches — day/week/month/year/all × global/chat. */
-function periodsForDay(date: string, chatId: string): PeriodTarget[] {
+/**
+ * The order roll-ups must be computed in, coarsest last. A month reads its days, so
+ * the days have to exist first; processing targets in this order is what makes one
+ * pass sufficient.
+ */
+const GRANULARITY_ORDER: Granularity[] = ["hour", "day", "week", "month", "year", "all"];
+
+/**
+ * Which granularity a period rolls up **from**.
+ *
+ * Week and month both read days rather than week reading nothing and month reading
+ * weeks: a week straddles month boundaries, so a month built from weeks would count
+ * days outside itself. Both reading days keeps every period exactly the sum of its
+ * own calendar range.
+ */
+const ROLLUP_CHILD: Record<Exclude<Granularity, "hour">, Granularity> = {
+  day: "hour",
+  week: "day",
+  month: "day",
+  year: "month",
+  all: "year",
+};
+
+/** Every period bucket a (hour, chat) touches — hour/day/week/month/year/all. */
+function periodsForHour(insightHour: string, chatId: string): PeriodTarget[] {
+  const date = insightHour.slice(0, 10);
   const [year, month] = date.split("-");
   const buckets: [Granularity, string][] = [
+    ["hour", insightHour],
     ["day", date],
     ["week", weekBucketOf(date)],
     ["month", `${year}-${month}`],
     ["year", year],
     ["all", "all"],
   ];
-  const out: PeriodTarget[] = [];
-  for (const [granularity, bucket] of buckets) {
-    out.push({ granularity, bucket, scope: "global", chatId: "" });
-    out.push({ granularity, bucket, scope: "chat", chatId });
-  }
-  return out;
+  return buckets.map(([granularity, bucket]) => ({ granularity, bucket, chatId }));
 }
 
-/**
- * How many distinct calendar days a period's rows cover.
- *
- * Not `rows.length`: the rows are (chat, day) pairs, so a *global* roll-up returns
- * one row per chat per day. Counting rows made a one-day global bucket with two
- * active chats report "2 days".
- */
-function distinctDays(days: { insightDate: string }[]): number {
-  return new Set(days.map((d) => d.insightDate)).size;
-}
-
-/** Message-weighted mean mood across a period's day rows. */
-function weightedMood(days: { moodScore: number; messageCount: number }[]): number {
-  const totalMsgs = days.reduce((a, d) => a + d.messageCount, 0);
+/** Message-weighted mean mood across a period's child rows. */
+function weightedMood(children: { moodScore: number; messageCount: number }[]): number {
+  const totalMsgs = children.reduce((a, c) => a + c.messageCount, 0);
   if (totalMsgs === 0) return 50;
-  return Math.round(days.reduce((a, d) => a + d.moodScore * d.messageCount, 0) / totalMsgs);
+  return Math.round(
+    children.reduce((a, c) => a + c.moodScore * c.messageCount, 0) / totalMsgs,
+  );
 }
 
-/** The (chat, day) pairs owed a score right now. */
-async function pendingDays(db: DrizzleDb, deps: AnalyticsInsightsDeps): Promise<PendingInsightDay[]> {
+/** The (chat, hour) pairs owed a score right now. */
+async function pendingHours(
+  db: DrizzleDb,
+  deps: AnalyticsInsightsDeps,
+): Promise<PendingInsightHour[]> {
   const now = deps.now ?? new Date();
-  const zoned = zonedDate(now, deps.timeZone);
-  const today = `${zoned.year}-${String(zoned.month).padStart(2, "0")}-${String(zoned.day).padStart(2, "0")}`;
-  return listDaysNeedingInsight(db, { timeZone: deps.timeZone, today, limit: MAX_DAYS_PER_RUN });
+  return listHoursNeedingInsight(db, {
+    timeZone: deps.timeZone,
+    // The in-progress hour is excluded: scoring it would freeze a partial
+    // conversation, and a scored hour is never re-read.
+    currentHour: bucketKeyOfInstant(now, "hour", deps.timeZone),
+    limit: MAX_HOURS_PER_RUN,
+  });
 }
 
 /**
- * The nightly run: score whatever days are owed and roll up the periods they
- * touch. Costs nothing when nothing is owed.
+ * The nightly run: score whatever hours are owed and roll up the periods they touch.
+ * Costs nothing when nothing is owed.
  */
 export async function runAnalyticsInsights(
   deps: AnalyticsInsightsDeps,
 ): Promise<AnalyticsInsightsResult> {
   const db = deps.db ?? getDb();
-  const pending = await pendingDays(db, deps);
+  const pending = await pendingHours(db, deps);
   if (pending.length === 0) return { ...EMPTY, summary: "nothing to compute" };
   return runInsightPass(deps, db, pending, {
     action: "insights",
-    inputSummary: `${pending.length} day(s) pending`,
+    inputSummary: `${pending.length} hour(s) pending`,
   });
 }
 
 /**
- * Drop every insight covering a period and compute it again from the messages.
- * The operator's answer to a score that is wrong or was produced by a since-changed
- * prompt — and the only way a scored day is ever re-read.
+ * Drop every insight covering a period and compute it again from the messages. The
+ * operator's answer to a score that is wrong or was produced by a since-changed
+ * prompt — and the only way a scored hour is ever re-read.
  *
- * Deletion is deliberately wider than the requested bucket: dropping a day's score
- * invalidates every roll-up containing that day, at every granularity. The re-score
- * then rebuilds exactly the periods the re-scored days touch.
+ * Deletion is deliberately wider than the requested bucket: dropping an hour's score
+ * invalidates every roll-up containing that hour, at every granularity. The re-score
+ * then rebuilds exactly the periods the re-scored hours touch.
  */
 export async function regenerateAnalyticsInsights(
   deps: AnalyticsInsightsDeps,
@@ -173,16 +199,16 @@ export async function regenerateAnalyticsInsights(
 ): Promise<AnalyticsInsightsResult> {
   const db = deps.db ?? getDb();
   const dropped = await deleteInsightsForPeriod(db, params);
-  const pending = await pendingDays(db, deps);
+  const pending = await pendingHours(db, deps);
   if (pending.length === 0) {
     return {
       ...EMPTY,
-      summary: `dropped ${dropped.days} day score(s) and ${dropped.periods} roll-up(s); no finished day to re-score`,
+      summary: `dropped ${dropped.units} hour score(s) and ${dropped.periods} roll-up(s); no finished hour to re-score`,
     };
   }
   return runInsightPass(deps, db, pending, {
     action: "regenerate",
-    inputSummary: `${params.granularity} ${params.bucket}: dropped ${dropped.days} day score(s), ${dropped.periods} roll-up(s); re-scoring ${pending.length} day(s)`,
+    inputSummary: `${params.granularity} ${params.bucket}: dropped ${dropped.units} hour score(s), ${dropped.periods} roll-up(s); re-scoring ${pending.length} hour(s)`,
     dropped,
   });
 }
@@ -195,34 +221,37 @@ export async function regenerateAnalyticsInsights(
 async function runInsightPass(
   deps: AnalyticsInsightsDeps,
   db: DrizzleDb,
-  pending: PendingInsightDay[],
-  meta: { action: string; inputSummary: string; dropped?: { days: number; periods: number } },
+  pending: PendingInsightHour[],
+  meta: { action: string; inputSummary: string; dropped?: { units: number; periods: number } },
 ): Promise<AnalyticsInsightsResult> {
-  const trace = await startTrace(
-    {
-      feature: FEATURE.id,
-      action: meta.action,
-      trigger: { kind: "system", actor: "analytics" },
-      inputSummary: meta.inputSummary,
-    }
-  );
+  const trace = await startTrace({
+    feature: FEATURE.id,
+    action: meta.action,
+    trigger: { kind: "system", actor: "analytics" },
+    inputSummary: meta.inputSummary,
+  });
 
   const result = { ...EMPTY };
 
   /** One LLM pass, fully traced. Null on failure. */
-  async function complete(system: string, userContent: string): Promise<{ content: string; model: string } | null> {
+  async function complete(
+    system: string,
+    userContent: string,
+    callKind: "insight-hour" | "insight-rollup",
+  ): Promise<{ content: string; model: string } | null> {
     const messages: ChatMessage[] = [
       { role: "system", content: system },
       { role: "user", content: userContent },
     ];
-    await trace.event({ type: "llm_request", message: "request", data: { messages } });
+    const label = callKind === "insight-hour" ? "hour insight" : "period roll-up";
+    await trace.event({ type: "llm_request", message: `${label} request`, data: { messages } });
     try {
       const completion = await deps.complete(messages);
       await trace.event({
         type: "llm_response",
-        message: "response",
+        message: `${label} response`,
         data: completion.responseBody ?? { content: completion.content },
-        usage: llmUsageOf(completion),
+        usage: { ...llmUsageOf(completion), callKind },
       });
       return { content: completion.content, model: normalizeModelName(completion.model) };
     } catch (err) {
@@ -237,80 +266,94 @@ async function runInsightPass(
   }
 
   try {
-    // Every period a freshly-scored day belongs to, deduped — the roll-up set.
+    // Every period a freshly-scored hour belongs to, deduped — the roll-up set.
     const touched = new Map<string, PeriodTarget>();
 
-    /* Pass 1 — score each pending (chat, day). */
-    let dayIdx = 0;
-    for (const day of pending) {
+    /* Pass 1 — score each pending (chat, hour). */
+    let unitIdx = 0;
+    for (const unit of pending) {
       deps.onProgress?.({
-        step: `Scoring day ${day.insightDate}`,
-        current: ++dayIdx,
+        step: `Scoring hour ${unit.insightHour}`,
+        current: ++unitIdx,
         total: pending.length,
       });
       const [messages, topics] = await Promise.all([
-        getDayMessages(db, { chatId: day.chatId, date: day.insightDate, timeZone: deps.timeZone }),
-        getDaySummaryTopics(db, { chatId: day.chatId, date: day.insightDate }),
+        getHourMessages(db, {
+          chatId: unit.chatId,
+          insightHour: unit.insightHour,
+          timeZone: deps.timeZone,
+        }),
+        getDaySummaryTopics(db, { chatId: unit.chatId, date: unit.insightHour.slice(0, 10) }),
       ]);
       const transcript = formatTranscript(messages);
       if (!transcript) {
-        await upsertChatDayInsight(db, {
-          chatId: day.chatId,
-          insightDate: day.insightDate,
+        await upsertChatHourInsight(db, {
+          chatId: unit.chatId,
+          insightHour: unit.insightHour,
           moodScore: 50,
           moodLabel: moodLabelForScore(50),
-          moodSummary: "No readable text this day.",
+          moodSummary: "No readable text this hour.",
           topTopic: "—",
           word: "—",
-          messageCount: day.messageCount,
+          messageCount: unit.messageCount,
           model: "n/a",
         });
-        result.daysComputed += 1;
-        for (const t of periodsForDay(day.insightDate, day.chatId)) touched.set(targetKey(t), t);
+        result.unitsComputed += 1;
+        for (const t of periodsForHour(unit.insightHour, unit.chatId)) touched.set(targetKey(t), t);
         continue;
       }
 
-      const out = await complete(DAY_INSIGHT_PROMPT, buildDayInsightRequest({ transcript, topics }));
+      const out = await complete(
+        HOUR_INSIGHT_PROMPT,
+        buildHourInsightRequest({ transcript, topics }),
+        "insight-hour",
+      );
       if (!out) {
-        result.daysFailed += 1;
+        result.unitsFailed += 1;
         continue;
       }
-      const parsed = parseDayInsight(out.content);
+      const parsed = parseHourInsight(out.content);
       if (!parsed) {
-        result.daysFailed += 1;
+        result.unitsFailed += 1;
         await trace.event({
           type: "step",
           level: "warn",
-          message: "unusable day insight — left for the next run",
-          data: { chatId: day.chatId, date: day.insightDate, content: out.content },
+          message: "unusable hour insight — left for the next run",
+          data: { chatId: unit.chatId, hour: unit.insightHour, content: out.content },
         });
         continue;
       }
 
-      await upsertChatDayInsight(db, {
-        chatId: day.chatId,
-        insightDate: day.insightDate,
+      await upsertChatHourInsight(db, {
+        chatId: unit.chatId,
+        insightHour: unit.insightHour,
         moodScore: parsed.moodScore,
         moodLabel: parsed.moodLabel,
         moodSummary: parsed.moodSummary,
         topTopic: parsed.topTopic,
         word: parsed.word,
-        messageCount: day.messageCount,
+        messageCount: unit.messageCount,
         model: out.model,
       });
-      result.daysComputed += 1;
-      for (const t of periodsForDay(day.insightDate, day.chatId)) touched.set(targetKey(t), t);
+      result.unitsComputed += 1;
+      for (const t of periodsForHour(unit.insightHour, unit.chatId)) touched.set(targetKey(t), t);
 
       await trace.event({
         type: "step",
         level: "success",
-        message: `day scored: ${day.chatId} ${day.insightDate}`,
-        data: { ...parsed, messageCount: day.messageCount },
+        message: `hour scored: ${unit.chatId} ${unit.insightHour}`,
+        data: { ...parsed, messageCount: unit.messageCount },
       });
     }
 
-    /* Pass 2 — roll up every touched period. */
-    const targets = [...touched.values()].slice(0, MAX_PERIODS_PER_RUN);
+    /* Pass 2 — roll up every touched period, finest granularity first. */
+    const targets = [...touched.values()]
+      .sort(
+        (a, b) =>
+          GRANULARITY_ORDER.indexOf(a.granularity) - GRANULARITY_ORDER.indexOf(b.granularity),
+      )
+      .slice(0, MAX_PERIODS_PER_RUN);
+
     let periodIdx = 0;
     for (const target of targets) {
       deps.onProgress?.({
@@ -318,82 +361,16 @@ async function runInsightPass(
         current: ++periodIdx,
         total: targets.length,
       });
-      const days = await listDayInsightsForPeriod(db, {
-        granularity: target.granularity,
-        bucket: target.bucket,
-        chatId: target.scope === "chat" ? target.chatId : null,
-      });
-      if (days.length === 0) continue;
-
-      const moodScore = weightedMood(days);
-      const messageCount = days.reduce((a, d) => a + d.messageCount, 0);
-
-      let word: string;
-      let topTopic: string;
-      let model: string;
-
-      if (days.length === 1) {
-        // A single scored day: copy its word/topic — no LLM call needed.
-        const only = days[0];
-        word = only.word ?? only.topTopic;
-        topTopic = only.topTopic;
-        model = "copy";
-      } else {
-        const out = await complete(
-          PERIOD_INSIGHT_PROMPT,
-          buildPeriodInsightRequest({
-            granularity: target.granularity,
-            bucket: target.bucket,
-            days: days.map((d: PeriodDayRow) => ({
-              insightDate: d.insightDate,
-              moodLabel: d.moodLabel,
-              topTopic: d.topTopic,
-              word: d.word ?? d.topTopic,
-              messageCount: d.messageCount,
-            })),
-          }),
-        );
-        if (!out) {
-          result.periodsFailed += 1;
-          continue;
-        }
-        const parsed = parsePeriodInsight(out.content);
-        if (!parsed) {
-          result.periodsFailed += 1;
-          await trace.event({
-            type: "step",
-            level: "warn",
-            message: "unusable period roll-up — left for the next run",
-            data: { ...target, content: out.content },
-          });
-          continue;
-        }
-        word = parsed.wordOfPeriod;
-        topTopic = parsed.topTopic;
-        model = out.model;
-      }
-
-      await upsertPeriodInsight(db, {
-        granularity: target.granularity,
-        bucket: target.bucket,
-        scope: target.scope,
-        chatId: target.chatId,
-        wordOfPeriod: word,
-        topTopic,
-        moodScore,
-        moodLabel: moodLabelForScore(moodScore),
-        sourceDays: distinctDays(days),
-        messageCount,
-        model,
-      });
-      result.periodsComputed += 1;
+      const rolled = await rollUpPeriod(db, target, complete);
+      if (rolled === "failed") result.periodsFailed += 1;
+      else if (rolled === "written") result.periodsComputed += 1;
     }
 
     const summary =
-      (meta.dropped ? `${meta.dropped.days} day score(s) dropped, ` : "") +
-      `${result.daysComputed} day(s) scored, ${result.periodsComputed} period(s) rolled up` +
-      (result.daysFailed + result.periodsFailed > 0
-        ? `, ${result.daysFailed + result.periodsFailed} left pending`
+      (meta.dropped ? `${meta.dropped.units} hour score(s) dropped, ` : "") +
+      `${result.unitsComputed} hour(s) scored, ${result.periodsComputed} period(s) rolled up` +
+      (result.unitsFailed + result.periodsFailed > 0
+        ? `, ${result.unitsFailed + result.periodsFailed} left pending`
         : "");
 
     await trace.succeed({ outputSummary: summary });
@@ -403,4 +380,156 @@ async function runInsightPass(
     await trace.fail(err);
     throw err;
   }
+}
+
+type RollupOutcome = "written" | "failed" | "empty";
+
+/**
+ * Roll one period up from its immediate children.
+ *
+ * The `hour` granularity is a straight copy of the scored hour row — no LLM call —
+ * so that every mood read, from a day's 24 points to the all-time figure, is one
+ * uniform query against `period_insights` instead of a special case for the finest
+ * grain.
+ */
+async function rollUpPeriod(
+  db: DrizzleDb,
+  target: PeriodTarget,
+  complete: (
+    system: string,
+    userContent: string,
+    callKind: "insight-hour" | "insight-rollup",
+  ) => Promise<{ content: string; model: string } | null>,
+): Promise<RollupOutcome> {
+  const children = await loadChildren(db, target);
+  if (children.length === 0) return "empty";
+
+  const moodScore = weightedMood(children);
+  const messageCount = children.reduce((a, c) => a + c.messageCount, 0);
+  const sourceUnits = children.reduce((a, c) => a + c.sourceUnits, 0);
+
+  // The heaviest child — the deterministic answer, and the fallback whenever the
+  // model's choice is unusable. It is a real observed topic either way.
+  const heaviest = children.reduce((a, c) => (c.messageCount > a.messageCount ? c : a));
+
+  let word = heaviest.word;
+  let topTopic = heaviest.topTopic;
+  let model = "copy";
+
+  if (children.length > 1) {
+    const label = target.granularity === "all" ? "all time" : `${target.granularity} ${target.bucket}`;
+    const out = await complete(
+      PERIOD_ROLLUP_PROMPT,
+      buildPeriodRollupRequest({
+        label,
+        children: children.map(
+          (c): RollupChild => ({
+            bucket: c.bucket,
+            moodLabel: c.moodLabel,
+            topTopic: c.topTopic,
+            word: c.word,
+            messageCount: c.messageCount,
+          }),
+        ),
+      }),
+      "insight-rollup",
+    );
+    if (!out) return "failed";
+    const choice = parseRollupChoice(out.content, children.length);
+    // An unusable choice is not a failed period: the heaviest child is already a
+    // correct "top", so the period is written rather than left permanently owed.
+    if (choice) {
+      topTopic = children[choice.topicIndex].topTopic;
+      word = children[choice.wordIndex].word;
+      model = out.model;
+    }
+  }
+
+  await upsertPeriodInsight(db, {
+    granularity: target.granularity,
+    bucket: target.bucket,
+    chatId: target.chatId,
+    wordOfPeriod: word,
+    topTopic,
+    moodScore,
+    moodLabel: moodLabelForScore(moodScore),
+    sourceUnits,
+    messageCount,
+    model,
+  });
+  return "written";
+}
+
+/** One child row feeding a roll-up, normalized across the two source tables. */
+interface RollupSource {
+  bucket: string;
+  moodScore: number;
+  moodLabel: string;
+  topTopic: string;
+  word: string;
+  messageCount: number;
+  /** Scored hours behind this child (1 for an hour row). */
+  sourceUnits: number;
+}
+
+/**
+ * The rows a period rolls up from: the scored hour itself for `hour`, and the stored
+ * next-finer roll-ups for everything else.
+ */
+async function loadChildren(db: DrizzleDb, target: PeriodTarget): Promise<RollupSource[]> {
+  if (target.granularity === "hour") {
+    const rows = await listHourInsightsForPeriod(db, {
+      granularity: "hour",
+      bucket: target.bucket,
+      chatId: target.chatId,
+    });
+    return rows.map((r) => ({
+      bucket: r.insightHour,
+      moodScore: r.moodScore,
+      moodLabel: r.moodLabel,
+      topTopic: r.topTopic,
+      word: r.word ?? r.topTopic,
+      messageCount: r.messageCount,
+      sourceUnits: 1,
+    }));
+  }
+
+  const childGranularity = ROLLUP_CHILD[target.granularity];
+  const rows = await listPeriodInsights(db, {
+    granularity: childGranularity,
+    buckets: childBuckets(target),
+    chatId: target.chatId,
+  });
+  return rows.map((r) => ({
+    bucket: r.bucket,
+    moodScore: r.moodScore,
+    moodLabel: r.moodLabel,
+    topTopic: r.topTopic,
+    word: r.wordOfPeriod,
+    messageCount: r.messageCount,
+    sourceUnits: r.sourceUnits,
+  }));
+}
+
+/**
+ * How far back `all` looks for year rows. `all` has no key prefix to match on, so
+ * its children have to be enumerated; bounding by the calendar rather than by the
+ * data keeps this a pure function, and absent years simply return no rows.
+ */
+const ALL_TIME_YEARS = 30;
+
+/**
+ * The exact child bucket keys a period covers.
+ *
+ * This is the same enumeration the charts use for their x-axis
+ * ({@link subBucketKeys}) — a month's children and a month chart's points are the
+ * same list of days, so they share one definition rather than two that could drift.
+ */
+function childBuckets(target: PeriodTarget): string[] {
+  if (target.granularity === "hour") return [];
+  if (target.granularity === "all") {
+    const thisYear = new Date().getUTCFullYear();
+    return Array.from({ length: ALL_TIME_YEARS }, (_, i) => String(thisYear - i));
+  }
+  return subBucketKeys(target.granularity, target.bucket);
 }

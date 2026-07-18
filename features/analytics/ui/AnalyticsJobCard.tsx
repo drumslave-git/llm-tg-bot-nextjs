@@ -26,8 +26,8 @@ export function AnalyticsJobCard({ job }: { job: AnalyticsJobInfo }) {
           : "No LLM configured — set one in Settings for insights to compute."
       }
       badges={
-        job.pendingDays > 0 ? (
-          <Badge tone="warning">{job.pendingDays} day(s) pending</Badge>
+        job.pendingUnits > 0 ? (
+          <Badge tone="warning">{job.pendingUnits} hour(s) pending</Badge>
         ) : (
           <Badge tone="success">Up to date</Badge>
         )

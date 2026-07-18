@@ -137,7 +137,7 @@ export async function fireScheduledTask(task: ScheduledTask, deps: FireDeps): Pr
       type: "llm_response",
       message: "response",
       data: reply.responseBody ?? { content: reply.content },
-      usage: llmUsageOf(reply),
+      usage: { ...llmUsageOf(reply), callKind: "scheduled-task-fire" },
     });
 
     const outgoing = formatReply(reply.content);

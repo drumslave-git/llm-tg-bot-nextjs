@@ -152,9 +152,9 @@ describe("daily job views", () => {
   it("analytics: warns and disables Run now when no LLM is configured", () => {
     const view = analyticsJobView({
       ...dailyBase,
-      pendingDays: 0,
+      pendingUnits: 0,
       llmConfigured: false,
-      regenerateBuckets: { day: [], week: [], month: [], year: [], all: ["all"] },
+      regenerateBuckets: { hour: [], day: [], week: [], month: [], year: [], all: ["all"] },
     });
     expect(view.runDisabled).toBe(true);
     expect(view.notice).toContain("No LLM configured");

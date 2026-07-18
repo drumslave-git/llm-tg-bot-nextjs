@@ -5,7 +5,16 @@ import dynamic from "next/dynamic";
 import { useCallback } from "react";
 
 import { formatCompact } from "../format";
-import type { CardFilters, Granularity, NamedSeries, SeriesPayload, SeriesSection } from "../types";
+import {
+  CHART_PERIOD_UNITS,
+  type CardFilters,
+  type Granularity,
+  type MetricSource,
+  type NamedSeries,
+  type PeriodUnit,
+  type SeriesPayload,
+  type SeriesSection,
+} from "../types";
 import { STATUS, type ChartTheme } from "./chart-theme";
 import { CardBody, FilterableCard, type FilterOption } from "./FilterableCard";
 import { useCardData } from "./useCardData";
@@ -17,17 +26,27 @@ const Chart = dynamic(() => import("./Chart").then((m) => m.Chart), {
   loading: () => <div style={{ height: 260 }} aria-hidden />,
 });
 
-/** Shorten a bucket key for an axis tick, per granularity. */
-function shortBucket(label: string, granularity: Granularity): string {
-  switch (granularity) {
+/**
+ * Shorten a sub-bucket key for an axis tick.
+ *
+ * The axis is always *inside* one period, so the enclosing period is already named on
+ * the card's own control — repeating it on every tick is noise. An hour shows as
+ * `14:00`, a day within a month as `07-15`.
+ */
+function shortBucket(label: string, bucketUnit: Granularity): string {
+  switch (bucketUnit) {
+    case "hour":
+      // "2026-07-15 14" → "14:00"
+      return `${label.slice(11)}:00`;
     case "day":
     case "week":
       // "2026-07-15" → "07-15"
       return label.slice(5);
     case "month":
-      return label; // "2026-07"
+      // "2026-07" → "07"
+      return label.slice(5);
     case "year":
-      return label; // "2026"
+      return label;
     case "all":
       return "All time";
   }
@@ -38,7 +57,7 @@ function lineOption(
   theme: ChartTheme,
   input: {
     buckets: string[];
-    granularity: Granularity;
+    bucketUnit: Granularity;
     series: NamedSeries[];
     yMax?: number;
     area?: boolean;
@@ -61,7 +80,7 @@ function lineOption(
     },
     xAxis: {
       type: "category",
-      data: input.buckets.map((b) => shortBucket(b, input.granularity)),
+      data: input.buckets.map((b) => shortBucket(b, input.bucketUnit)),
       boundaryGap: false,
       axisLine: { lineStyle: { color: theme.baseline } },
       axisTick: { show: false },
@@ -97,10 +116,10 @@ function ChartFor({
   area?: boolean;
   colors?: string[];
 }) {
-  const { buckets, granularity, series, yMax } = payload;
+  const { buckets, bucketUnit, series, yMax } = payload;
   const build = useCallback(
-    (theme: ChartTheme) => lineOption(theme, { buckets, granularity, series, yMax, area, colors }),
-    [buckets, granularity, series, yMax, area, colors],
+    (theme: ChartTheme) => lineOption(theme, { buckets, bucketUnit, series, yMax, area, colors }),
+    [buckets, bucketUnit, series, yMax, area, colors],
   );
   return <Chart buildOption={build} ariaLabel={payload.section} />;
 }
@@ -108,8 +127,11 @@ function ChartFor({
 /**
  * One filtered chart card. Every series section answers with the same
  * `{ buckets, series }` shape, so this single component is every chart on the
- * dashboard — message volume, tokens, users, and the mood trend differ only by
- * which section they ask for and how they are titled.
+ * dashboard — message volume, tokens, users, and the mood trend differ only by which
+ * section they ask for, which filters they honour, and how they are titled.
+ *
+ * Chart cards never offer the `all` period: it has no bounded axis, so it drew a
+ * single dot and called it a trend.
  */
 export function SeriesCard({
   section,
@@ -117,7 +139,9 @@ export function SeriesCard({
   description,
   chats,
   users,
-  defaultFilters,
+  chatRequired,
+  source,
+  todayAnchors,
   area,
   colors,
   emptyMessage = "No data for this period.",
@@ -125,9 +149,11 @@ export function SeriesCard({
   section: SeriesSection;
   title: string;
   description?: string;
-  chats: FilterOption[];
-  users: FilterOption[];
-  defaultFilters?: CardFilters;
+  chats?: FilterOption[];
+  users?: FilterOption[];
+  chatRequired?: boolean;
+  source: MetricSource;
+  todayAnchors: Record<PeriodUnit, string>;
   area?: boolean;
   colors?: string[];
   emptyMessage?: string;
@@ -138,7 +164,10 @@ export function SeriesCard({
       description={description}
       chats={chats}
       users={users}
-      defaultFilters={defaultFilters}
+      chatRequired={chatRequired}
+      units={CHART_PERIOD_UNITS}
+      source={source}
+      todayAnchors={todayAnchors}
     >
       {(filters) => (
         <SeriesBody

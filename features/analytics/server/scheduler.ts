@@ -1,7 +1,7 @@
 import "server-only";
 
 import { getDb } from "@/db/drizzle";
-import { computeNextRun, zonedDate } from "@/features/scheduled-tasks/schedule";
+import { computeNextRun } from "@/features/scheduled-tasks/schedule";
 import {
   DEFAULT_DAILY_JOBS_RUN_TIME,
   getDailyJobsRunTime,
@@ -19,11 +19,11 @@ import { withAdvisoryLock } from "@/server/jobs/lock";
 import { chatCompletion } from "@/server/llm/client";
 import { publishEvent } from "@/server/realtime/hub";
 
-import { weekBucketOf } from "../period";
+import { bucketKeyOfInstant, weekBucketOf } from "../period";
 
 import { GRANULARITIES, type AnalyticsJobInfo, type Granularity } from "../types";
 import { regenerateAnalyticsInsights, runAnalyticsInsights } from "./insights";
-import { countDaysNeedingInsight, listInsightDates } from "./repository";
+import { countHoursNeedingInsight, listInsightHours } from "./repository";
 
 /**
  * In-process daily scheduler for the analytics insight job — the same shape as the
@@ -160,9 +160,12 @@ export function regenerateAnalyticsInsightsNow(request: RegenerateRequest): Prom
   return s.scheduler.runNow();
 }
 
-/** The bucket key a scored `YYYY-MM-DD` belongs to, at a granularity. */
-function bucketKeyOfDate(date: string, granularity: Granularity): string {
+/** The bucket key a scored `YYYY-MM-DD HH` hour belongs to, at a granularity. */
+function bucketKeyOfHour(insightHour: string, granularity: Granularity): string {
+  const date = insightHour.slice(0, 10);
   switch (granularity) {
+    case "hour":
+      return insightHour;
     case "day":
       return date;
     case "week":
@@ -177,15 +180,15 @@ function bucketKeyOfDate(date: string, granularity: Granularity): string {
 }
 
 /**
- * The buckets that actually hold scored days, per granularity — the regenerate
- * picker only ever offers periods there is something to drop. Derived from one
- * scan of the scored dates, newest first.
+ * The buckets that actually hold scored hours, per granularity — the regenerate
+ * picker only ever offers periods there is something to drop. Derived from one scan
+ * of the scored hours, newest first.
  */
 export async function getRegenerateBuckets(): Promise<Record<Granularity, string[]>> {
-  const dates = await listInsightDates(getDb()).catch(() => []);
+  const hours = await listInsightHours(getDb()).catch(() => []);
   const out = {} as Record<Granularity, string[]>;
   for (const g of GRANULARITIES) {
-    out[g] = g === "all" ? ["all"] : [...new Set(dates.map((d) => bucketKeyOfDate(d, g)))];
+    out[g] = g === "all" ? ["all"] : [...new Set(hours.map((h) => bucketKeyOfHour(h, g)))];
   }
   return out;
 }
@@ -199,10 +202,9 @@ export async function getAnalyticsJobInfo(): Promise<AnalyticsJobInfo> {
     getLlmRuntime().catch(() => null),
   ]);
   const now = new Date();
-  const zoned = zonedDate(now, timezone);
-  const today = `${zoned.year}-${String(zoned.month).padStart(2, "0")}-${String(zoned.day).padStart(2, "0")}`;
-  const [pendingDays, regenerateBuckets] = await Promise.all([
-    countDaysNeedingInsight(getDb(), { timeZone: timezone, today }).catch(() => 0),
+  const currentHour = bucketKeyOfInstant(now, "hour", timezone);
+  const [pendingUnits, regenerateBuckets] = await Promise.all([
+    countHoursNeedingInsight(getDb(), { timeZone: timezone, currentHour }).catch(() => 0),
     getRegenerateBuckets(),
   ]);
 
@@ -215,7 +217,7 @@ export async function getAnalyticsJobInfo(): Promise<AnalyticsJobInfo> {
     runTime,
     timezone,
     lastResult: s.lastResult,
-    pendingDays,
+    pendingUnits,
     llmConfigured: llm != null,
     regenerateBuckets,
   };

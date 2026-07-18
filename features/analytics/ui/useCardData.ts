@@ -42,7 +42,8 @@ export function useCardData<T>(
   const [reloadKey, setReloadKey] = useState(0);
 
   const query = new URLSearchParams({
-    granularity: filters.granularity,
+    unit: filters.unit,
+    anchor: filters.anchor,
     ...(filters.chatId ? { chatId: filters.chatId } : {}),
     ...(filters.userId ? { userId: filters.userId } : {}),
     ...params,
