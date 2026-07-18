@@ -9,6 +9,11 @@ changes).
 Legend: **[H]** high value · **[M]** medium · **[L]** low / polish.
 Categories: security, correctness, performance, scalability, refactoring, DX/UX.
 
+Status 2026-07-18: the no-decision quick wins are **done** (marked ✅ below —
+1.4, 1.8, 2.1, 2.3, 3.1, 3.3, 4.2, 8.1, 9.1(2), 9.2's `getHourMessages` half);
+see the session log in `NEXTJS_REWRITE_PROGRESS.md` for proof. Everything else
+is still open.
+
 ---
 
 ## 1. Cross-cutting
@@ -64,7 +69,7 @@ independent). The pipeline is already transport-agnostic and DB-backed, so it
 should tolerate concurrency; the things to audit are the tool context
 (`AsyncLocalStorage` — safe) and the typing loop.
 
-### 1.4 [H] performance — The settings row is re-read on every use
+### 1.4 ✅ [H] performance — The settings row is re-read on every use (done 2026-07-18)
 
 [repository.ts](features/settings/server/repository.ts) `getSettingsRecord` has
 23 call sites and no caching. Handling one message reads the singleton settings
@@ -138,7 +143,7 @@ withTrace({ feature, action, trigger, inputSummary }, async (trace) => { … })
 that owns the try/fail/rethrow contract. Call sites shrink by ~10 lines each and
 the settle-exactly-once rule is enforced in one place.
 
-### 1.8 [M] DX — `defineRoute` swallows unexpected errors silently
+### 1.8 ✅ [M] DX — `defineRoute` swallows unexpected errors silently (done 2026-07-18)
 
 [http.ts](server/http.ts:128) maps any thrown value to a JSON 500 but never
 logs it. An operator seeing "Internal server error" in the UI has nothing in the
@@ -161,7 +166,7 @@ decision on tone).
 
 ## 2. Shared infrastructure
 
-### 2.1 [M] db — `pg` Pool is not HMR-safe
+### 2.1 ✅ [M] db — `pg` Pool is not HMR-safe (done 2026-07-18)
 
 [pool.ts](db/pool.ts) keeps the pool in a module-local variable, unlike every
 other process-wide singleton in this codebase (hub, trace store, bot manager,
@@ -177,7 +182,7 @@ pool and leak connections. Suggestion: adopt the same `Symbol.for` +
 `z.treeifyError` / `z.flattenError`. Migrate before a future Zod major removes
 it.
 
-### 2.3 [L] http — CSV BOM as a literal character
+### 2.3 ✅ [L] http — CSV BOM as a literal character (done 2026-07-18)
 
 [http.ts](server/http.ts:61) embeds the BOM as an invisible literal character in
 the template string (`` `﻿${csv}` ``). It works, but any editor/formatter that
@@ -213,7 +218,7 @@ subscribed.
 
 ## 3. LLM core (`server/llm`)
 
-### 3.1 [M] correctness — Stall guard doc promises a "forced final answer" it never makes
+### 3.1 ✅ [M] correctness — Stall guard doc promises a "forced final answer" it never makes
 
 The header comment of [tool-loop.ts](server/llm/tool-loop.ts:29) says a stall
 "takes the tools away for one final forced answer" — the MVP behavior. The
@@ -233,7 +238,7 @@ the sequence, and `onToolCall` could still be invoked in completion order.
 Suggestion: `Promise.all` over the round's calls (optionally capped), keeping
 the `conversation.push` order aligned with the call list.
 
-### 3.3 [L] performance — Tool list is rebuilt per turn
+### 3.3 ✅ [L] performance — Tool list is rebuilt per turn (done 2026-07-18)
 
 `getToolset()` → `registry.listOpenAiTools()` does an MCP `listTools` round trip
 plus schema conversion on **every reply**. The registry is append-only after
@@ -271,7 +276,7 @@ Suggestions (compoundable):
 - Make the analyzer opt-in per group (a `known_groups` flag), so quiet DMs and
   name-shaped groups pay nothing.
 
-### 4.2 [M] performance — Reply context loads are sequential
+### 4.2 ✅ [M] performance — Reply context loads are sequential (done 2026-07-18)
 
 [service.ts](features/bot-messaging/server/service.ts:411-486) awaits
 `loadChatContext` → `loadMemory` → `loadSenderPreferences` → `loadCurrentTurn`
@@ -379,7 +384,7 @@ place would keep the assumption single-sourced.
 
 ## 8. Memory & self-improvement
 
-### 8.1 [L] refactoring — `embedForStorage` / `embedQuery` are duplicates
+### 8.1 ✅ [L] refactoring — `embedForStorage` / `embedQuery` are duplicates (done 2026-07-18)
 
 Same body, different names ([service.ts](features/memory/server/service.ts:55)).
 One `tryEmbed(text)` with the two call sites keeps the intent without the copy.
@@ -388,7 +393,7 @@ One `tryEmbed(text)` with the two call sites keeps the intent without the copy.
 
 ## 9. Analytics
 
-### 9.1 [H] performance — Every dashboard read re-scans all trace history
+### 9.1 [H] performance — Every dashboard read re-scans all trace history (2. scan-once ✅ done 2026-07-18; 1. and 3. open)
 
 [trace-source.ts](features/analytics/server/trace-source.ts): `readUsageRows`,
 `readTrafficTotals`, and `readTraceAvailability` each call `scanTraces`
@@ -404,7 +409,7 @@ active. Suggestions, in order of leverage:
    aggregate per (month, model, callKind) built at flush time — but only after
    1 and 2, which are nearly free.
 
-### 9.2 [M] performance — Hour queries filter on computed expressions
+### 9.2 [M] performance — Hour queries filter on computed expressions (`getHourMessages` ✅ done 2026-07-18; due-scan watermark open)
 
 `getHourMessages` and `listHoursNeedingInsight`
 ([repository.ts](features/analytics/server/repository.ts:357)) filter/group by

@@ -18,9 +18,12 @@ import type { CallKindStat, Granularity, ModelStat } from "../types";
  * of truth that could only carry what the writer thought to distil — and it distilled
  * away exactly the detail Model performance needs. This module reads the real thing.
  *
- * The shape is deliberately: **scan once → flatten to rows → aggregate**. Every
- * caller filters and buckets the same flat row type, so a chat filter or a bucket
- * key means the same thing on every card.
+ * The shape is deliberately: **scan once → flatten to rows → aggregate**. The
+ * service fetches the period's traces once ({@link scanScopeTraces}) and passes
+ * them into the pure aggregators, so one metrics request costs one store scan no
+ * matter how many readings it takes. Every caller filters and buckets the same
+ * flat row type, so a chat filter or a bucket key means the same thing on every
+ * card.
  */
 
 /** One LLM round pulled out of a trace — the atom every trace metric aggregates. */
@@ -83,9 +86,13 @@ function inScope(trace: Trace, scope: TraceScope): boolean {
   return true;
 }
 
-/** Every LLM round recorded in the period, flattened. */
-export async function readUsageRows(scope: TraceScope): Promise<UsageRow[]> {
-  const traces = await scanTraces({ startUtc: scope.startUtc, endUtc: scope.endUtc });
+/** One scan of the period's traces — the input every aggregator below shares. */
+export async function scanScopeTraces(range: { startUtc: Date; endUtc: Date }): Promise<Trace[]> {
+  return scanTraces({ startUtc: range.startUtc, endUtc: range.endUtc });
+}
+
+/** Every LLM round recorded in the scanned traces, flattened. */
+export function usageRowsFrom(traces: Trace[], scope: TraceScope): UsageRow[] {
   const rows: UsageRow[] = [];
   for (const trace of traces) {
     if (!inScope(trace, scope)) continue;
@@ -249,8 +256,7 @@ export interface TrafficTotals {
  * useful reading of traffic for an operator (load, success rate), and the raw
  * message counts are what the Message volume chart reports from history.
  */
-export async function readTrafficTotals(scope: TraceScope): Promise<TrafficTotals> {
-  const traces = await scanTraces({ startUtc: scope.startUtc, endUtc: scope.endUtc });
+export function trafficTotalsFrom(traces: Trace[], scope: TraceScope): TrafficTotals {
   const actors = new Set<string>();
   let handled = 0;
   let replied = 0;
@@ -274,10 +280,10 @@ export async function readTrafficTotals(scope: TraceScope): Promise<TrafficTotal
  * The sub-bucket keys that hold any trace activity — the calendar's data marks for
  * trace-sourced cards.
  */
-export async function readTraceAvailability(
-  params: { startUtc: Date; endUtc: Date; bucketUnit: Granularity; timeZone: string },
-): Promise<string[]> {
-  const traces = await scanTraces({ startUtc: params.startUtc, endUtc: params.endUtc });
+export function traceAvailabilityFrom(
+  traces: Trace[],
+  params: { bucketUnit: Granularity; timeZone: string },
+): string[] {
   const keys = new Set<string>();
   for (const trace of traces) {
     keys.add(bucketKeyOfInstant(new Date(trace.startedAt), params.bucketUnit, params.timeZone));

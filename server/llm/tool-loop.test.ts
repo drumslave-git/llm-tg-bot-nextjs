@@ -124,6 +124,36 @@ describe("runToolLoop", () => {
     expect(result.loopDetected).toBe(true);
     expect(complete).toHaveBeenCalledTimes(2);
   });
+
+  it("forces one tools-free final answer on a stall when completeFinal is provided", async () => {
+    const complete = vi.fn().mockResolvedValue(calls([toolCall("c1", "spin", { n: 1 })]));
+    const completeFinal = vi.fn().mockResolvedValue(answer("best effort", 7));
+    const callTool = vi.fn().mockResolvedValue(okResult("again"));
+    const reports: boolean[] = [];
+    const result = await runToolLoop({
+      seed: [],
+      complete,
+      completeFinal,
+      callTool,
+      onRound: (_round, report) => void reports.push(report.isFinal),
+    });
+    // Still flagged — the caller must be able to tell a forced answer from a real one.
+    expect(result).toMatchObject({ content: "best effort", loopDetected: true });
+    expect(completeFinal).toHaveBeenCalledTimes(1);
+    // The forced round counts, carries its latency, and is reported as the final round.
+    expect(result.rounds).toBe(complete.mock.calls.length + 1);
+    expect(reports.at(-1)).toBe(true);
+  });
+
+  it("forces the final answer when maxRounds is exhausted", async () => {
+    let n = 0;
+    const complete = vi.fn().mockImplementation(async () => calls([toolCall(`c${n}`, "t", { n: n++ })]));
+    const completeFinal = vi.fn().mockResolvedValue(answer("capped"));
+    const callTool = vi.fn().mockResolvedValue(okResult("x"));
+    const result = await runToolLoop({ seed: [], complete, completeFinal, callTool, maxRounds: 2 });
+    expect(result).toMatchObject({ content: "capped", loopDetected: true, rounds: 3 });
+    expect(complete).toHaveBeenCalledTimes(2);
+  });
 });
 
 // Mock the OpenAI SDK so chatCompletionWithTools can be exercised end-to-end
@@ -196,5 +226,37 @@ describe("chatCompletionWithTools — result identity", () => {
 
     expect(result.model).toBe("gemma4:26B");
     expect(result.servedModel).toBeUndefined();
+  });
+
+  it("answers via a tools-free forced round when the model stalls", async () => {
+    const { chatCompletionWithTools } = await import("./tool-loop");
+    // A request that carries tools always stalls on the same call; the forced
+    // final request must drop `tools`, and only then does the model answer.
+    createMock.mockImplementation(async (body: { tools?: unknown[] }) =>
+      body.tools
+        ? {
+            choices: [
+              {
+                message: {
+                  role: "assistant",
+                  content: null,
+                  tool_calls: [toolCall("c1", "spin", { n: 1 })],
+                },
+              },
+            ],
+          }
+        : { choices: [{ message: { role: "assistant", content: "from what I have" } }] },
+    );
+
+    const result = await chatCompletionWithTools(conn, {
+      model: "gemma4:26B",
+      messages: [{ role: "user", content: "hi" }],
+      tools: [{ type: "function", function: { name: "spin", parameters: {} } }],
+      callTool: async () => okResult("again"),
+    });
+
+    expect(result.content).toBe("from what I have");
+    const finalBody = createMock.mock.calls.at(-1)?.[0] as { tools?: unknown };
+    expect(finalBody.tools).toBeUndefined();
   });
 });

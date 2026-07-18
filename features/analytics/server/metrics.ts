@@ -34,11 +34,12 @@ import {
 import {
   buildModelStats,
   bucketTokens,
-  readTraceAvailability,
-  readTrafficTotals,
-  readUsageRows,
+  scanScopeTraces,
   tokensByActor,
   totalTokens,
+  traceAvailabilityFrom,
+  trafficTotalsFrom,
+  usageRowsFrom,
 } from "./trace-source";
 
 /**
@@ -89,11 +90,10 @@ export async function getMetricTotals(
   db: DrizzleDb = getDb(),
 ): Promise<TotalsPayload> {
   const { ctx, scope } = await resolvePeriod(query, db);
-  const [traffic, usage] = await Promise.all([
-    readTrafficTotals(scope),
-    readUsageRows(scope),
-  ]);
-  const tokens = totalTokens(usage);
+  // One store scan feeds both readings — they used to scan independently.
+  const traces = await scanScopeTraces(scope);
+  const traffic = trafficTotalsFrom(traces, scope);
+  const tokens = totalTokens(usageRowsFrom(traces, scope));
 
   return {
     ...ctx,
@@ -132,7 +132,7 @@ async function seriesFor(
       };
     }
     case "tokens": {
-      const rows = await readUsageRows(scope);
+      const rows = usageRowsFrom(await scanScopeTraces(scope), scope);
       const byBucket = bucketTokens(rows, bucketUnit, timeZone);
       return {
         series: [
@@ -197,7 +197,7 @@ export async function getModels(
   db: DrizzleDb = getDb(),
 ): Promise<ModelsPayload> {
   const { ctx, scope } = await resolvePeriod(query, db);
-  const rows = await readUsageRows(scope);
+  const rows = usageRowsFrom(await scanScopeTraces(scope), scope);
   return { ...ctx, models: buildModelStats(rows) };
 }
 
@@ -214,10 +214,11 @@ export async function getTopUsersCard(
     limit: TOP_USERS,
   });
   const userIds = rows.map((r) => r.userId);
-  const [labelRows, usage] = await Promise.all([
+  const [labelRows, traces] = await Promise.all([
     userIds.length > 0 ? getKnownUsersByIds(db, userIds) : Promise.resolve([]),
-    readUsageRows(scope),
+    scanScopeTraces(scope),
   ]);
+  const usage = usageRowsFrom(traces, scope);
   const labelById = new Map(labelRows.map((u) => [u.userId, formatKnownUserLabel(u)]));
   const tokens = tokensByActor(usage);
 
@@ -342,7 +343,10 @@ export async function getAvailability(
         chatId: query.chatId ?? null,
       });
     case "traces":
-      return readTraceAvailability({ startUtc, endUtc, bucketUnit: query.unit, timeZone: timezone });
+      return traceAvailabilityFrom(await scanScopeTraces({ startUtc, endUtc }), {
+        bucketUnit: query.unit,
+        timeZone: timezone,
+      });
     case "insights":
       return query.chatId
         ? getInsightAvailability(db, { granularity: query.unit, chatId: query.chatId })

@@ -67,6 +67,24 @@ export interface SettingsPatch {
   dailyJobsRunTime?: string;
 }
 
+/**
+ * Handling one message reads the settings row several times (policy, persona,
+ * timezone, language, LLM runtime…), and every scheduler tick re-reads it. The
+ * row changes only through {@link upsertSettings}, so a short-lived cache keeps
+ * "read at call time so changes apply without restart" while collapsing those
+ * reads to one query per window. Keyed per db handle so test databases never
+ * share entries with the app pool. Disabled under Vitest: integration tests
+ * truncate tables underneath the repository, which no invalidation here can see.
+ */
+const SETTINGS_CACHE_TTL_MS = process.env.VITEST ? 0 : 3_000;
+
+interface CacheEntry {
+  record: SettingsRecord | null;
+  expiresAt: number;
+}
+
+const cache = new WeakMap<DrizzleDb, CacheEntry>();
+
 function mapRow(row: SettingsRow): SettingsRecord {
   return {
     llmBaseUrl: row.llmBaseUrl,
@@ -92,8 +110,12 @@ function mapRow(row: SettingsRow): SettingsRecord {
 
 /** The settings record, or null when it has never been written. */
 export async function getSettingsRecord(db: DrizzleDb): Promise<SettingsRecord | null> {
+  const cached = cache.get(db);
+  if (cached && cached.expiresAt > Date.now()) return cached.record;
   const row = await db.query.settings.findFirst({ where: eq(settings.id, SETTINGS_ID) });
-  return row ? mapRow(row) : null;
+  const record = row ? mapRow(row) : null;
+  cache.set(db, { record, expiresAt: Date.now() + SETTINGS_CACHE_TTL_MS });
+  return record;
 }
 
 /**
@@ -110,5 +132,7 @@ export async function upsertSettings(
     .values({ id: SETTINGS_ID, ...changed })
     .onConflictDoUpdate({ target: settings.id, set: changed })
     .returning();
-  return mapRow(row);
+  const record = mapRow(row);
+  cache.set(db, { record, expiresAt: Date.now() + SETTINGS_CACHE_TTL_MS });
+  return record;
 }

@@ -5,6 +5,8 @@ import { sql, type SQL } from "drizzle-orm";
 import type { DrizzleDb } from "@/db/drizzle";
 import { chatHourInsights, periodInsights } from "@/db/schema";
 
+import { addCalendarDays, zonedWallClockToUtc } from "@/features/scheduled-tasks/schedule";
+
 import { addDaysToDateStr, bucketFormat, truncUnit } from "../period";
 import type { Granularity } from "../types";
 
@@ -353,17 +355,44 @@ function periodDayRange(granularity: Granularity, bucket: string): [string, stri
   }
 }
 
-/** An hour's messages (role + text), oldest first — the LLM insight input. */
+/** The half-open UTC instant range one `YYYY-MM-DD HH` wall-clock hour covers. */
+function insightHourUtcRange(
+  insightHour: string,
+  timeZone: string,
+): { fromUtc: Date; toUtc: Date } {
+  const [date, hourStr] = insightHour.split(" ");
+  const [year, month, day] = date.split("-").map(Number);
+  const hour = Number(hourStr);
+  const next =
+    hour === 23
+      ? { ...addCalendarDays(year, month, day, 1), hour: 0 }
+      : { year, month, day, hour: hour + 1 };
+  return {
+    fromUtc: zonedWallClockToUtc(year, month, day, hour, 0, timeZone),
+    toUtc: zonedWallClockToUtc(next.year, next.month, next.day, next.hour, 0, timeZone),
+  };
+}
+
+/**
+ * An hour's messages (role + text), oldest first — the LLM insight input.
+ *
+ * The hour is turned into UTC instant bounds in code rather than filtering on a
+ * `to_char(… at time zone …)` expression: the range predicate uses the
+ * `(chat_id, sent_at)` index, where the computed expression re-derived the local
+ * hour for every row of the chat.
+ */
 export async function getHourMessages(
   db: DrizzleDb,
   params: { chatId: string; insightHour: string; timeZone: string },
 ): Promise<{ role: "user" | "assistant"; content: string }[]> {
+  const { fromUtc, toUtc } = insightHourUtcRange(params.insightHour, params.timeZone);
   const rows = await db.execute<{ role: string; content: string }>(sql`
     select role, content
     from chat_messages
     where chat_id = ${params.chatId}
       and deleted_at is null
-      and to_char(date_trunc('hour', (sent_at at time zone ${params.timeZone})), 'YYYY-MM-DD HH24') = ${params.insightHour}
+      and sent_at >= ${fromUtc}
+      and sent_at < ${toUtc}
     order by sent_at asc, id asc
   `);
   return rows.rows.map((r) => ({

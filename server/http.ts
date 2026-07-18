@@ -58,7 +58,7 @@ export function jsonDownload(data: unknown, filename: string): Response {
  * on import, so an export still round-trips.
  */
 export function csvDownload(csv: string, filename: string): Response {
-  return new Response(`﻿${csv}`, {
+  return new Response("\uFEFF" + csv, {
     status: 200,
     headers: {
       "content-type": "text/csv; charset=utf-8",
@@ -134,7 +134,14 @@ export function defineRoute(body: RouteBody) {
       const params = (await context?.params) ?? {};
       return await body({ request, params });
     } catch (err) {
-      return errorResponse(toApiError(err));
+      const apiError = toApiError(err);
+      // Expected failures travel as ApiError/ZodError; anything else is a bug the
+      // operator can only diagnose from the server log — the JSON body says
+      // "internal error" and no trace covers a throw before a service opens one.
+      if (apiError.code === "internal_error") {
+        console.error(`Unhandled error in ${new URL(request.url).pathname}:`, err);
+      }
+      return errorResponse(apiError);
     }
   };
 }

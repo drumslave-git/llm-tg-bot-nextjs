@@ -404,57 +404,63 @@ export async function handleIncomingMessage(
         },
       });
 
-      // 2b. Chat context — injected as a system message so the model knows who it
-      // is talking to: in a group, the roster of known participants (plus operator
-      // notes); in a private chat, the identity of the person and their known
-      // names. Skipped when there is nothing to inject.
-      let chatContext: { content: string; data?: Record<string, unknown> } | null = null;
-      if (deps.loadChatContext) {
-        chatContext = await deps.loadChatContext();
-        if (chatContext) {
-          await trace.event({
-            type: "step",
-            message: "chat context loaded",
-            data: chatContext.data ?? {},
-          });
-        }
+      // 2b–3b. Context loads — chat context, long-term memory, sender
+      // preferences, the current turn, the history window, and vision are
+      // independent reads (DB, plus the vision recognition call), so they run
+      // concurrently; one reply used to pay for them back to back. The trace
+      // steps are emitted after resolution, in the fixed order the prompt is
+      // composed in, so the Debug event flow stays identical.
+      const [chatContext, memory, senderPreferences, currentTurn, history, vision] =
+        await Promise.all([
+          // 2b. Chat context — injected as a system message so the model knows who
+          // it is talking to: in a group, the roster of known participants (plus
+          // operator notes); in a private chat, the identity of the person and
+          // their known names. Skipped when there is nothing to inject.
+          deps.loadChatContext?.() ?? null,
+          // 2b'. Long-term memory — what the bot durably knows about the people in
+          // this conversation, injected right after the chat context: the roster
+          // says *who* is here, this says what is known *about* them. Skipped when
+          // the bot knows nothing about anyone here.
+          deps.loadMemory?.() ?? null,
+          // 2b''. Sender preferences — what this person likes/dislikes about the
+          // bot's replies (distilled from their feedback), injected as a system
+          // message after the chat context. Skipped when the sender has none.
+          deps.loadSenderPreferences?.() ?? null,
+          // 2c. Current turn — the message being answered, rendered in the same
+          // transcript-line format as history (id anchor, sender label, resolved
+          // reply target). Falls back to the raw text when no loader is wired.
+          deps.loadCurrentTurn?.() ?? null,
+          // 3. The recent-history window (last 24 hours), injected as one
+          // transcript message between the (cache-stable) system prompt and the
+          // current message.
+          deps.loadHistory(),
+          // 3b. Vision — any image(s) on this turn (or a replied-to image), to
+          // attach to the current user message below.
+          deps.loadVision?.() ?? null,
+        ]);
+
+      if (chatContext) {
+        await trace.event({
+          type: "step",
+          message: "chat context loaded",
+          data: chatContext.data ?? {},
+        });
+      }
+      if (memory) {
+        await trace.event({
+          type: "step",
+          message: "long-term memory loaded",
+          data: memory.data ?? {},
+        });
+      }
+      if (senderPreferences) {
+        await trace.event({
+          type: "step",
+          message: "communication preferences loaded",
+          data: senderPreferences.data ?? {},
+        });
       }
 
-      // 2b'. Long-term memory — what the bot durably knows about the people in
-      // this conversation, injected right after the chat context: the roster says
-      // *who* is here, this says what is known *about* them. Skipped when the bot
-      // knows nothing about anyone here.
-      let memory: { content: string; data?: Record<string, unknown> } | null = null;
-      if (deps.loadMemory) {
-        memory = await deps.loadMemory();
-        if (memory) {
-          await trace.event({
-            type: "step",
-            message: "long-term memory loaded",
-            data: memory.data ?? {},
-          });
-        }
-      }
-
-      // 2b''. Sender preferences — what this person likes/dislikes about the
-      // bot's replies (distilled from their feedback), injected as a system
-      // message after the chat context. Skipped when the sender has none.
-      let senderPreferences: { content: string; data?: Record<string, unknown> } | null = null;
-      if (deps.loadSenderPreferences) {
-        senderPreferences = await deps.loadSenderPreferences();
-        if (senderPreferences) {
-          await trace.event({
-            type: "step",
-            message: "communication preferences loaded",
-            data: senderPreferences.data ?? {},
-          });
-        }
-      }
-
-      // 2c. Current turn — the message being answered, rendered in the same
-      // transcript-line format as history (id anchor, sender label, resolved
-      // reply target). Falls back to the raw text when no loader is wired.
-      const currentTurn = deps.loadCurrentTurn ? await deps.loadCurrentTurn() : null;
       // Group addressing hint: who is asking and how they addressed the bot, so
       // the model separates the requester from the people being talked about.
       const addressingHint = buildAddressingHint({
@@ -469,21 +475,16 @@ export async function handleIncomingMessage(
         });
       }
 
-      // 3. Load the recent-history window (last 24 hours) and inject it as one
-      // transcript message between the (cache-stable) system prompt and the
-      // current message.
-      const history = await deps.loadHistory();
       await trace.event({
         type: "step",
         message: "history window loaded",
         data: { messageCount: history.count },
       });
 
-      // 3b. Vision — attach any image(s) on this turn (or a replied-to image) to
-      // the current user message so the model reads them alongside the text.
+      // Attach the vision media to the current user message so the model reads
+      // them alongside the text.
       const userText = currentTurn?.content ?? text;
       let userContent: string | ChatContentPart[] = userText;
-      const vision = deps.loadVision ? await deps.loadVision() : null;
       // Attach the images when present; otherwise (media-only, answered from the
       // recognition text) fold the description note into the turn text.
       if (vision && (vision.imageParts.length > 0 || vision.note)) {

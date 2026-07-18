@@ -44,22 +44,16 @@ const FEATURE = FEATURES.memory;
 /* -------------------------------------------------------------- embedding */
 
 /**
- * Embed one text for storage, or null when no embedding model is configured or
- * the provider call fails.
+ * Embed one text (a fact for storage, or a search query), or null when no
+ * embedding model is configured or the provider call fails.
  *
  * Null is a first-class outcome, not swallowed breakage: memory is stored,
  * injected, and read back regardless — only *semantic search* over that row is
- * lost, and the dashboard shows it as unembedded. Making an operator edit fail
- * because an embedding endpoint is down would be the worse trade.
+ * lost (search degrades to lexical-only), and the dashboard shows the row as
+ * unembedded. Making an operator edit fail because an embedding endpoint is
+ * down would be the worse trade.
  */
-async function embedForStorage(text: string): Promise<number[] | null> {
-  const runtime = await getEmbeddingRuntime().catch(() => null);
-  if (!runtime) return null;
-  return embedOne(runtime, text).catch(() => null);
-}
-
-/** Embed a search query, or null when embeddings are unavailable (lexical-only search). */
-async function embedQuery(text: string): Promise<number[] | null> {
+async function tryEmbed(text: string): Promise<number[] | null> {
   const runtime = await getEmbeddingRuntime().catch(() => null);
   if (!runtime) return null;
   return embedOne(runtime, text).catch(() => null);
@@ -200,7 +194,7 @@ export async function searchMemory(
   const collected = new Map<string, MemoryMatch>();
 
   for (const query of params.queries) {
-    const vector = await embedQuery(query);
+    const vector = await tryEmbed(query);
     const hits = await searchMemories(db, {
       queryText: query,
       queryVector: vector,
@@ -363,7 +357,7 @@ export async function editUserMemory(
       const stored = await upsertUserMemory(db, {
         userId,
         content: input.content,
-        embedding: await embedForStorage(input.content),
+        embedding: await tryEmbed(input.content),
       });
       await trace.event({
         type: "step",

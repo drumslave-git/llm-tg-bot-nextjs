@@ -36,6 +36,12 @@ export class BotMcpRegistry {
   private connectPromise: Promise<Client> | null = null;
   /** name -> owning feature, for dashboard grouping. */
   private toolFeatures = new Map<string, string>();
+  /**
+   * OpenAI-shaped tool list, built once. The registry is append-only and frozen
+   * after boot, but every reply turn asks for this list — without the cache each
+   * turn pays an MCP `listTools` round trip plus schema conversion.
+   */
+  private openAiTools: Promise<ChatCompletionFunctionTool[]> | null = null;
 
   constructor() {
     this.server = new McpServer({ name: "llm-tg-bot", version: "1.0.0" });
@@ -45,6 +51,7 @@ export class BotMcpRegistry {
   registerTools(feature: string, registrar: McpToolRegistrar, toolNames: string[]): void {
     registrar(this.server);
     for (const name of toolNames) this.toolFeatures.set(name, feature);
+    this.openAiTools = null;
   }
 
   /** Connect the in-process client/server pair. Idempotent. */
@@ -80,9 +87,18 @@ export class BotMcpRegistry {
 
   /** Every registered tool in OpenAI tool shape, for the chat-completion request. */
   async listOpenAiTools(): Promise<ChatCompletionFunctionTool[]> {
-    const client = await this.ensureConnected();
-    const { tools } = await client.listTools();
-    return tools.map((tool) => mcpToolToOpenAi(tool as McpListedTool));
+    if (!this.openAiTools) {
+      this.openAiTools = (async () => {
+        const client = await this.ensureConnected();
+        const { tools } = await client.listTools();
+        return tools.map((tool) => mcpToolToOpenAi(tool as McpListedTool));
+      })().catch((err) => {
+        // A failed build must not be pinned as the forever-answer.
+        this.openAiTools = null;
+        throw err;
+      });
+    }
+    return this.openAiTools;
   }
 
   /**

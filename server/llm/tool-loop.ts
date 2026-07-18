@@ -82,6 +82,13 @@ export interface RunToolLoopParams {
   onRound?: (round: ToolLoopRound, report: RoundReport) => void | Promise<void>;
   /** Hard cap on model rounds; unset = unbounded (progress guard still applies). */
   maxRounds?: number;
+  /**
+   * Runs one round with the tools taken away — the forced final answer when the
+   * stall guard or round cap stops the loop. A degraded answer from what the
+   * model already gathered beats a hard failure. Unset = the stall surfaces
+   * as-is (empty content, `loopDetected`).
+   */
+  completeFinal?: CompleteRound;
 }
 
 export interface ToolLoopResult {
@@ -92,7 +99,11 @@ export interface ToolLoopResult {
   rounds: number;
   /** Raw provider response of the final round. */
   responseBody: unknown;
-  /** True when the loop was stopped by the stall guard rather than a real answer. */
+  /**
+   * True when the stall guard or round cap stopped the loop. With a
+   * {@link RunToolLoopParams.completeFinal} the content is then the forced
+   * tools-free answer; without one it is empty.
+   */
   loopDetected: boolean;
 }
 
@@ -143,9 +154,32 @@ export async function runToolLoop(params: RunToolLoopParams): Promise<ToolLoopRe
   let rounds = 0;
   let lastRaw: unknown = null;
 
+  // The stall guard or round cap stopped the loop: the model is stuck or out of
+  // budget. With a completeFinal, ask once more — tools withheld — for an answer
+  // from what it already has; the result stays flagged so callers can tell a
+  // forced answer from a real one.
+  const forceFinal = async (): Promise<ToolLoopResult> => {
+    if (!params.completeFinal) {
+      return { content: "", usage, latencyMs, rounds, responseBody: lastRaw, loopDetected: true };
+    }
+    const round = await params.completeFinal(conversation);
+    rounds += 1;
+    latencyMs += round.latencyMs;
+    addUsage(usage, round.usage);
+    await params.onRound?.(round, { index: rounds - 1, isFinal: true });
+    return {
+      content: round.content,
+      usage,
+      latencyMs,
+      rounds,
+      responseBody: round.raw,
+      loopDetected: true,
+    };
+  };
+
   for (;;) {
     if (params.maxRounds != null && rounds >= params.maxRounds) {
-      return { content: "", usage, latencyMs, rounds, responseBody: lastRaw, loopDetected: true };
+      return forceFinal();
     }
 
     const round = await params.complete(conversation);
@@ -173,7 +207,7 @@ export async function runToolLoop(params: RunToolLoopParams): Promise<ToolLoopRe
     if (introducesNew) {
       stalls = 0;
     } else if ((stalls += 1) >= MAX_STALL_ROUNDS) {
-      return { content: "", usage, latencyMs, rounds, responseBody: lastRaw, loopDetected: true };
+      return forceFinal();
     }
 
     conversation.push(round.assistantMessage);
@@ -223,8 +257,8 @@ function mapUsage(usage: { prompt_tokens?: number; completion_tokens?: number; t
  * Generate a chat completion with tool support against an OpenAI-compatible
  * endpoint. Returns the same {@link ChatCompletionResult} shape as
  * {@link chatCompletion} so the caller records request/response bodies and usage
- * uniformly. Throws a clean {@link ApiError} on provider failure or when the loop
- * ends without an answer (a stall or empty final content).
+ * uniformly. A stalled loop degrades to a forced tools-free final answer; only a
+ * provider failure or an empty final content throws a clean {@link ApiError}.
  */
 export async function chatCompletionWithTools(
   conn: LlmConnection,
@@ -252,38 +286,45 @@ export async function chatCompletionWithTools(
   // request precedes any tool-call events the loop then produces.
   await input.onRequest?.(requestBody);
 
-  const complete: CompleteRound = async (conversation) => {
-    const start = Date.now();
-    try {
-      const completion = await client.chat.completions.create(
-        { model: input.model, messages: conversation, tools: input.tools },
-        { timeout },
-      );
-      const latencyMs = Date.now() - start;
-      const message = completion.choices[0]?.message;
-      return {
-        assistantMessage: (message ?? { role: "assistant", content: "" }) as ChatCompletionMessageParam,
-        toolCalls: message?.tool_calls ?? [],
-        content: message?.content?.trim() ?? "",
-        usage: mapUsage(completion.usage),
-        latencyMs,
-        raw: completion,
-      };
-    } catch (err) {
-      throw toLlmError(err, conn.baseUrl);
-    }
-  };
+  // One factory for both round kinds so the forced final answer is exactly the
+  // same request minus the tools (a model that cannot ask for tools must answer).
+  const completeWith =
+    (tools: ChatCompletionTool[] | undefined): CompleteRound =>
+    async (conversation) => {
+      const start = Date.now();
+      try {
+        const completion = await client.chat.completions.create(
+          { model: input.model, messages: conversation, ...(tools ? { tools } : {}) },
+          { timeout },
+        );
+        const latencyMs = Date.now() - start;
+        const message = completion.choices[0]?.message;
+        return {
+          assistantMessage: (message ?? { role: "assistant", content: "" }) as ChatCompletionMessageParam,
+          toolCalls: message?.tool_calls ?? [],
+          content: message?.content?.trim() ?? "",
+          usage: mapUsage(completion.usage),
+          latencyMs,
+          raw: completion,
+        };
+      } catch (err) {
+        throw toLlmError(err, conn.baseUrl);
+      }
+    };
 
   const result = await runToolLoop({
     seed,
-    complete,
+    complete: completeWith(input.tools),
+    completeFinal: completeWith(undefined),
     callTool: input.callTool,
     onToolCall: input.onToolCall,
     onRound: input.onRound,
     maxRounds: input.maxRounds,
   });
 
-  if (result.loopDetected || !result.content) {
+  // A stall that still produced a forced final answer is a degraded success —
+  // only an empty answer is a failure.
+  if (!result.content) {
     throw ApiError.serviceUnavailable(
       result.loopDetected
         ? "LLM tool loop stalled without producing a reply"

@@ -188,6 +188,59 @@ Next: **Priority 12 — Image generation** (Analytics landed 2026-07-15 as the n
 
 ### Session log
 
+- 2026-07-18 (Improvements pass, user-requested "work on improvements"): **the
+  ten no-decision quick wins from `docs/IMPROVEMENTS.md` are done.**
+  - **1.4 settings cache:** `getSettingsRecord` now serves from a 3 s TTL cache
+    (WeakMap keyed per db handle, refreshed by `upsertSettings`); one message no
+    longer re-reads the settings row 5–8 times. Disabled under Vitest — the
+    integration suite truncates tables underneath the repository, which no
+    invalidation hook can see.
+  - **1.8 route error logging:** `defineRoute` now `console.error`s (with the
+    route path) any throw that maps to `internal_error`, so an operator seeing
+    "Internal server error" in the UI has a server-side line to correlate.
+    Expected `ApiError`/`ZodError` failures stay silent.
+  - **2.1 pool singleton:** `db/pool.ts` holds the `pg` Pool on `globalThis`
+    (`Symbol.for("llm-tg-bot.db.pool")`), matching the hub/trace-store/bot-manager
+    pattern, so dev hot-reloads stop leaking pools.
+  - **2.3 BOM:** `csvDownload` prepends the BOM as the visible `\uFEFF` escape
+    instead of an invisible literal a formatter could strip.
+  - **3.1 stall guard:** the tool loop now does what its header always promised —
+    on a stall or `maxRounds` exhaustion, `runToolLoop` makes one forced final
+    round via the new `completeFinal` param (same request minus `tools`), and
+    `chatCompletionWithTools` wires that up, so a looping model degrades to a
+    best-effort answer instead of the generic error reply. Result stays flagged
+    `loopDetected`; only an *empty* final answer still throws 503. Covered by 3
+    new unit tests (loop-level stall + cap, and an end-to-end one asserting the
+    forced request carries no `tools`).
+  - **3.3 toolset cache:** `BotMcpRegistry.listOpenAiTools` caches the converted
+    list (registry is append-only after boot; a failed build is not pinned), so
+    a reply no longer pays an MCP `listTools` round trip.
+  - **4.2 parallel context loads:** the reply path's six independent loads (chat
+    context, memory, sender preferences, current turn, history, vision) run under
+    one `Promise.all`; trace steps are emitted after resolution in the same fixed
+    order, so the Debug event flow is unchanged.
+  - **8.1 dedupe:** memory's `embedForStorage`/`embedQuery` merged into one
+    `tryEmbed`.
+  - **9.1(2) scan-once:** `trace-source.ts` readers became pure aggregators
+    (`usageRowsFrom`, `trafficTotalsFrom`, `traceAvailabilityFrom`) over one
+    `scanScopeTraces` fetch per metrics request; `getMetricTotals` in particular
+    no longer scans the store twice.
+  - **9.2 hour bounds:** `getHourMessages` filters `sent_at` against UTC instant
+    bounds computed in code (`zonedWallClockToUtc`), so the `(chat_id, sent_at)`
+    index is usable. The due-scan CTE in `listHoursNeedingInsight` /
+    `countHoursNeedingInsight` still groups the full table — the suggested
+    watermark needs a design (history imports and regenerates can re-arm hours
+    *older* than any scored hour, so "oldest unscored" has no cheap definition);
+    left open in `docs/IMPROVEMENTS.md`.
+  - **Proof:** lint ✓, typecheck ✓, unit 523 ✓ (60 files), integration 236 ✓ /
+    21 skipped (no failures), build ✓. No migrations, no schema changes.
+  - **Remaining from the review:** everything marked **needs decision** (1.1
+    auth, 1.3 concurrent updates via `@grammyjs/runner`, 7.1 one-shot retry,
+    1.9 reply-language of static notices) plus the larger no-decision items
+    (1.2 SSRF DNS check, 1.5 trace-store windowing/retention, 1.6 scheduler
+    factory, 1.7 `withTrace`, 4.3 reply splitting, 5.1 trgm index, 6.1 bytea,
+    10.1 SettingsForm split) — see `docs/IMPROVEMENTS.md`.
+
 - 2026-07-16 (Self-improvement follow-up, user-requested): **feedback answers are
   acknowledged by a toast, and every answer is self-reflected on (done).**
   - **Decisions (user, AskUserQuestion — recorded in Decision Notes):** (1) an
