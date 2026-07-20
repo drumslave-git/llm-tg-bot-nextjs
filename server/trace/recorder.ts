@@ -116,8 +116,38 @@ export async function startTrace(input: StartTraceInput): Promise<TraceRecorder>
   let seq = 0;
   let settled = false;
 
-  /** Notify live dashboards that this trace changed (settled). */
-  const notify = () => publishEvent("traces", { feature: input.feature });
+  // Per-event publishes are throttled per trace: a reply with tool rounds emits
+  // a dozen events in seconds, and each publish triggers a (debounced) refresh
+  // in every open Debug tab — a full server re-render per refresh. Coalescing to
+  // one publish per second per trace keeps open-trace detail views streaming
+  // while capping the refresh pressure. Trailing edge included, so the last
+  // event of a burst is never silently withheld.
+  const PUBLISH_THROTTLE_MS = 1_000;
+  let lastPublishAt = 0;
+  let publishTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /** Notify live dashboards immediately (trace opened / settled). */
+  const notify = () => {
+    if (publishTimer) {
+      clearTimeout(publishTimer);
+      publishTimer = null;
+    }
+    lastPublishAt = Date.now();
+    publishEvent("traces", { feature: input.feature });
+  };
+
+  /** Notify live dashboards, coalesced to one publish per throttle window. */
+  const notifyThrottled = () => {
+    const elapsed = Date.now() - lastPublishAt;
+    if (elapsed >= PUBLISH_THROTTLE_MS) {
+      notify();
+      return;
+    }
+    if (!publishTimer) {
+      publishTimer = setTimeout(notify, PUBLISH_THROTTLE_MS - elapsed);
+      publishTimer.unref?.();
+    }
+  };
 
   async function appendEvent(input: EventInput): Promise<TraceEvent> {
     const event: TraceEvent = {
@@ -134,7 +164,7 @@ export async function startTrace(input: StartTraceInput): Promise<TraceRecorder>
     appendTraceEvent(id, event);
     // Notify live dashboards so an open trace's detail view streams entries in
     // as they are recorded, not only when the trace settles.
-    notify();
+    notifyThrottled();
     return event;
   }
 

@@ -2,59 +2,41 @@
 
 import { Check, Plug, Save } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useCallback, useState } from "react";
+import { useState } from "react";
 
 import { Badge, Button, Field, Input, Select, Switch, Tabs, type TabItem } from "@/components/ui";
 import { formatKnownUserLabel } from "@/features/known-users/format";
 import type { KnownUser } from "@/features/known-users/server/schema";
-import type { ApiErrorBody } from "@/lib/api-error";
 import { EMBEDDING_DIMENSIONS } from "@/lib/embeddings";
 import type { Settings } from "../server/schema";
+import {
+  readError,
+  useBackendConnection,
+  useProbe,
+  useSecretField,
+} from "./connection";
+import { ConnectionSection } from "./ConnectionSection";
 
 /**
- * Bot settings editor. Client Component with three tabs: **Core** (the LLM
+ * Bot settings editor. Client Component with four tabs: **Core** (the LLM
  * connection + model, Telegram token, owner, and maintenance mode — without which
  * the bot cannot run), **Embeddings** (the endpoint powering semantic recall over
- * history summaries), and **Integrations** (optional feature keys like Tavily for
- * web search). One Save button below the tabs persists every changed field
- * regardless of the active tab. Secret keys are write-only — shown as
- * "configured" but their values never leave the server.
+ * history summaries), **Images** (the endpoint powering image generation), and
+ * **Integrations** (optional feature keys like Tavily for web search). One Save
+ * button below the tabs persists every changed field regardless of the active
+ * tab. Secret keys are write-only — shown as "configured" but their values never
+ * leave the server.
+ *
+ * The repeated machinery lives in `connection.ts` (probe + secret-input + backend
+ * state hooks) and `ConnectionSection.tsx` (the embeddings/images section shell);
+ * this component is composition plus the save patch.
  */
 
-type Conn =
-  | { kind: "idle" }
-  | { kind: "testing" }
-  | { kind: "connected"; count: number }
-  | { kind: "error"; message: string };
-
-/** Outcome of the embeddings probe — a real embed call, so it reports the width. */
-type Embed =
-  | { kind: "idle" }
-  | { kind: "testing" }
-  | { kind: "ok"; model: string; dimensions: number }
-  | { kind: "error"; message: string };
-
-/** Outcome of the image probe — checks the model is served, without drawing one. */
-type ImageTest =
-  | { kind: "idle" }
-  | { kind: "testing" }
-  | { kind: "ok"; model: string; modelCount: number }
-  | { kind: "error"; message: string };
-
-type Save =
+type SaveState =
   | { kind: "idle" }
   | { kind: "saving" }
   | { kind: "saved" }
   | { kind: "error"; message: string };
-
-async function readError(res: Response): Promise<string> {
-  try {
-    const body = (await res.json()) as ApiErrorBody;
-    return body.error?.message ?? `Request failed (${res.status})`;
-  } catch {
-    return `Request failed (${res.status})`;
-  }
-}
 
 export function SettingsForm({
   initial,
@@ -75,141 +57,80 @@ export function SettingsForm({
   knownUsers?: KnownUser[];
 }) {
   const router = useRouter();
+
+  // Core LLM connection.
   const [llmBaseUrl, setLlmBaseUrl] = useState(initial.llmBaseUrl ?? "");
-  const [apiKey, setApiKey] = useState("");
-  const [apiKeyDirty, setApiKeyDirty] = useState(false);
-  const [botToken, setBotToken] = useState("");
-  const [botTokenDirty, setBotTokenDirty] = useState(false);
-  const [tavilyKey, setTavilyKey] = useState("");
-  const [tavilyKeyDirty, setTavilyKeyDirty] = useState(false);
-  const [ownerUserId, setOwnerUserId] = useState(initial.ownerUserId ?? "");
-  const [maintenanceMode, setMaintenanceMode] = useState(initial.maintenanceModeEnabled);
-  const [timezone, setTimezone] = useState(initial.timezone);
-  const [dailyJobsRunTime, setDailyJobsRunTime] = useState(initial.dailyJobsRunTime);
-  const [embeddingBaseUrl, setEmbeddingBaseUrl] = useState(initial.embeddingBaseUrl ?? "");
-  // A stored embedding URL *is* the "separate backend" flag — the two can never
-  // disagree, so the checkbox is derived from it rather than persisted alongside it.
-  const [separateEmbeddingBackend, setSeparateEmbeddingBackend] = useState(
-    Boolean(initial.embeddingBaseUrl),
-  );
-  const [embeddingKey, setEmbeddingKey] = useState("");
-  const [embeddingKeyDirty, setEmbeddingKeyDirty] = useState(false);
-  const [embeddingModel, setEmbeddingModel] = useState(initial.embeddingModel ?? "");
-  const [embed, setEmbed] = useState<Embed>({ kind: "idle" });
-  const [imageBaseUrl, setImageBaseUrl] = useState(initial.imageBaseUrl ?? "");
-  // Same derivation as the embedding backend flag: a stored URL *is* the flag.
-  const [separateImageBackend, setSeparateImageBackend] = useState(Boolean(initial.imageBaseUrl));
-  const [imageKey, setImageKey] = useState("");
-  const [imageKeyDirty, setImageKeyDirty] = useState(false);
-  const [imageModel, setImageModel] = useState(initial.imageModel ?? "");
-  const [imageProbe, setImageProbe] = useState<ImageTest>({ kind: "idle" });
+  const apiKey = useSecretField(initial.apiKeyConfigured);
   const [model, setModel] = useState(initial.model ?? "");
   // Seed with the server-preloaded list (falling back to just the saved model);
   // a successful "Test connection" replaces this with a fresh list.
   const [models, setModels] = useState<string[]>(
     initialModels.length > 0 ? initialModels : initial.model ? [initial.model] : [],
   );
-  const [conn, setConn] = useState<Conn>({ kind: "idle" });
-  const [save, setSave] = useState<Save>({ kind: "idle" });
+  const connProbe = useProbe<{ models: string[] }>("/api/settings/test-connection");
 
-  // Probe the endpoint (a user action, not an effect) and settle `conn`/`models`.
-  const runTest = useCallback(async (baseUrl: string, key: string | undefined) => {
-    setConn({ kind: "testing" });
-    try {
-      const res = await fetch("/api/settings/test-connection", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ llmBaseUrl: baseUrl, ...(key !== undefined ? { apiKey: key } : {}) }),
-      });
-      if (!res.ok) {
-        setConn({ kind: "error", message: await readError(res) });
-        return;
-      }
-      const { data } = (await res.json()) as { data: { models: string[] } };
-      setModels(data.models);
-      setConn({ kind: "connected", count: data.models.length });
-    } catch {
-      setConn({ kind: "error", message: "Network error — could not reach the server" });
-    }
-  }, []);
+  // Core operational settings.
+  const botToken = useSecretField(initial.telegramBotTokenConfigured);
+  const tavilyKey = useSecretField(initial.webSearchConfigured);
+  const [ownerUserId, setOwnerUserId] = useState(initial.ownerUserId ?? "");
+  const [maintenanceMode, setMaintenanceMode] = useState(initial.maintenanceModeEnabled);
+  const [timezone, setTimezone] = useState(initial.timezone);
+  const [dailyJobsRunTime, setDailyJobsRunTime] = useState(initial.dailyJobsRunTime);
 
+  // Optional backends. Editing a section invalidates its own probe result.
+  const embedProbe = useProbe<{ model: string; dimensions: number }>(
+    "/api/settings/test-embeddings",
+  );
+  const emb = useBackendConnection(
+    { baseUrl: initial.embeddingBaseUrl, model: initial.embeddingModel },
+    embedProbe.reset,
+  );
+  const embKey = useSecretField(initial.embeddingApiKeyConfigured);
+  const imageProbe = useProbe<{ model: string; modelCount: number }>("/api/settings/test-images");
+  const img = useBackendConnection(
+    { baseUrl: initial.imageBaseUrl, model: initial.imageModel },
+    imageProbe.reset,
+  );
+  const imgKey = useSecretField(initial.imageApiKeyConfigured);
+
+  const [save, setSave] = useState<SaveState>({ kind: "idle" });
+
+  // Probe the LLM endpoint (a user action, not an effect); its model list also
+  // feeds the dropdowns below.
   async function onTest(event: React.FormEvent) {
     event.preventDefault();
     if (llmBaseUrl.trim() === "") return;
-    await runTest(llmBaseUrl, apiKeyDirty ? apiKey : undefined);
+    const data = await connProbe.run({
+      llmBaseUrl,
+      // Only send the key when the operator typed one; otherwise the server
+      // tests with the stored key and the secret never round-trips.
+      ...(apiKey.dirty ? { apiKey: apiKey.value } : {}),
+    });
+    if (data) setModels(data.models);
   }
-
-  // The embedding endpoint as configured right now: its own URL only when the
-  // operator asked for a separate backend, otherwise "reuse the LLM connection"
-  // (null). Used identically by the probe and the save, so a passing test is a
-  // test of what will actually be stored.
-  const resolvedEmbeddingUrl =
-    separateEmbeddingBackend && embeddingBaseUrl.trim() !== "" ? embeddingBaseUrl.trim() : null;
-  const embeddingUrlMissing = separateEmbeddingBackend && embeddingBaseUrl.trim() === "";
 
   // Probe the embedding endpoint with a real embed call: it reports the vector
   // width, which is the one thing a model listing cannot tell us and the one
   // mismatch that would break every later write.
-  async function onTestEmbeddings() {
-    if (embeddingModel.trim() === "" || embeddingUrlMissing) return;
-    setEmbed({ kind: "testing" });
-    try {
-      const res = await fetch("/api/settings/test-embeddings", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          embeddingBaseUrl: resolvedEmbeddingUrl,
-          embeddingModel: embeddingModel,
-          // Only send the key when the operator typed one; otherwise the server
-          // tests with the stored key and the secret never round-trips.
-          ...(embeddingKeyDirty ? { embeddingApiKey: embeddingKey.trim() } : {}),
-        }),
-      });
-      if (!res.ok) {
-        setEmbed({ kind: "error", message: await readError(res) });
-        return;
-      }
-      const { data } = (await res.json()) as { data: { model: string; dimensions: number } };
-      setEmbed({ kind: "ok", model: data.model, dimensions: data.dimensions });
-    } catch {
-      setEmbed({ kind: "error", message: "Network error — could not reach the server" });
-    }
+  function onTestEmbeddings() {
+    if (emb.model.trim() === "" || emb.urlMissing) return;
+    void embedProbe.run({
+      embeddingBaseUrl: emb.resolvedUrl,
+      embeddingModel: emb.model,
+      ...(embKey.dirty ? { embeddingApiKey: embKey.value.trim() } : {}),
+    });
   }
-
-  // The image endpoint as configured right now — same "resolve exactly as the
-  // runtime will" rule as the embedding pair above, so a passing test is a test of
-  // what gets stored.
-  const resolvedImageUrl =
-    separateImageBackend && imageBaseUrl.trim() !== "" ? imageBaseUrl.trim() : null;
-  const imageUrlMissing = separateImageBackend && imageBaseUrl.trim() === "";
 
   // Probe the image endpoint. Unlike embeddings this does not make a real
   // generation — nothing about an image can only be learned by drawing it, and a
   // diffusion model would keep the operator waiting minutes for the answer.
-  async function onTestImages() {
-    if (imageModel.trim() === "" || imageUrlMissing) return;
-    setImageProbe({ kind: "testing" });
-    try {
-      const res = await fetch("/api/settings/test-images", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          imageBaseUrl: resolvedImageUrl,
-          imageModel: imageModel,
-          // Only send the key when the operator typed one; otherwise the server
-          // tests with the stored key and the secret never round-trips.
-          ...(imageKeyDirty ? { imageApiKey: imageKey.trim() } : {}),
-        }),
-      });
-      if (!res.ok) {
-        setImageProbe({ kind: "error", message: await readError(res) });
-        return;
-      }
-      const { data } = (await res.json()) as { data: { model: string; modelCount: number } };
-      setImageProbe({ kind: "ok", model: data.model, modelCount: data.modelCount });
-    } catch {
-      setImageProbe({ kind: "error", message: "Network error — could not reach the server" });
-    }
+  function onTestImages() {
+    if (img.model.trim() === "" || img.urlMissing) return;
+    void imageProbe.run({
+      imageBaseUrl: img.resolvedUrl,
+      imageModel: img.model,
+      ...(imgKey.dirty ? { imageApiKey: imgKey.value.trim() } : {}),
+    });
   }
 
   async function onSave() {
@@ -218,9 +139,9 @@ export function SettingsForm({
       llmBaseUrl: llmBaseUrl.trim() === "" ? null : llmBaseUrl.trim(),
       model: model === "" ? null : model,
     };
-    if (apiKeyDirty) patch.apiKey = apiKey.trim() === "" ? null : apiKey.trim();
-    if (botTokenDirty) patch.telegramBotToken = botToken.trim() === "" ? null : botToken.trim();
-    if (tavilyKeyDirty) patch.tavilyApiKey = tavilyKey.trim() === "" ? null : tavilyKey.trim();
+    if (apiKey.dirty) patch.apiKey = apiKey.patchValue;
+    if (botToken.dirty) patch.telegramBotToken = botToken.patchValue;
+    if (tavilyKey.dirty) patch.tavilyApiKey = tavilyKey.patchValue;
     if (ownerUserId !== (initial.ownerUserId ?? "")) {
       patch.ownerUserId = ownerUserId === "" ? null : ownerUserId;
     }
@@ -233,31 +154,31 @@ export function SettingsForm({
     if (dailyJobsRunTime.trim() !== initial.dailyJobsRunTime && dailyJobsRunTime.trim() !== "") {
       patch.dailyJobsRunTime = dailyJobsRunTime.trim();
     }
-    if (resolvedEmbeddingUrl !== (initial.embeddingBaseUrl ?? null)) {
-      patch.embeddingBaseUrl = resolvedEmbeddingUrl;
+    if (emb.resolvedUrl !== (initial.embeddingBaseUrl ?? null)) {
+      patch.embeddingBaseUrl = emb.resolvedUrl;
     }
-    if (embeddingModel !== (initial.embeddingModel ?? "")) {
-      patch.embeddingModel = embeddingModel === "" ? null : embeddingModel;
+    if (emb.model !== (initial.embeddingModel ?? "")) {
+      patch.embeddingModel = emb.model === "" ? null : emb.model;
     }
     // Turning the separate backend off clears its key too: it authenticated a host
     // we are no longer calling, and leaving it behind would resurrect on re-enable.
-    if (!separateEmbeddingBackend && initial.embeddingApiKeyConfigured) {
+    if (!emb.separate && initial.embeddingApiKeyConfigured) {
       patch.embeddingApiKey = null;
-    } else if (embeddingKeyDirty) {
-      patch.embeddingApiKey = embeddingKey.trim() === "" ? null : embeddingKey.trim();
+    } else if (embKey.dirty) {
+      patch.embeddingApiKey = embKey.patchValue;
     }
-    if (resolvedImageUrl !== (initial.imageBaseUrl ?? null)) {
-      patch.imageBaseUrl = resolvedImageUrl;
+    if (img.resolvedUrl !== (initial.imageBaseUrl ?? null)) {
+      patch.imageBaseUrl = img.resolvedUrl;
     }
-    if (imageModel !== (initial.imageModel ?? "")) {
-      patch.imageModel = imageModel === "" ? null : imageModel;
+    if (img.model !== (initial.imageModel ?? "")) {
+      patch.imageModel = img.model === "" ? null : img.model;
     }
     // Same rule as the embedding key above: dropping the separate backend drops
     // the key that authenticated it.
-    if (!separateImageBackend && initial.imageApiKeyConfigured) {
+    if (!img.separate && initial.imageApiKeyConfigured) {
       patch.imageApiKey = null;
-    } else if (imageKeyDirty) {
-      patch.imageApiKey = imageKey.trim() === "" ? null : imageKey.trim();
+    } else if (imgKey.dirty) {
+      patch.imageApiKey = imgKey.patchValue;
     }
 
     try {
@@ -271,26 +192,17 @@ export function SettingsForm({
         return;
       }
       const { data } = (await res.json()) as { data: Settings };
-      setApiKeyDirty(false);
-      setApiKey("");
-      setBotTokenDirty(false);
-      setBotToken("");
-      setTavilyKeyDirty(false);
-      setTavilyKey("");
-      setEmbeddingKeyDirty(false);
-      setEmbeddingKey("");
+      apiKey.clear();
+      botToken.clear();
+      tavilyKey.clear();
+      embKey.clear();
+      imgKey.clear();
       setOwnerUserId(data.ownerUserId ?? "");
       setMaintenanceMode(data.maintenanceModeEnabled);
       setTimezone(data.timezone);
       setDailyJobsRunTime(data.dailyJobsRunTime);
-      setEmbeddingBaseUrl(data.embeddingBaseUrl ?? "");
-      setSeparateEmbeddingBackend(Boolean(data.embeddingBaseUrl));
-      setEmbeddingModel(data.embeddingModel ?? "");
-      setImageKeyDirty(false);
-      setImageKey("");
-      setImageBaseUrl(data.imageBaseUrl ?? "");
-      setSeparateImageBackend(Boolean(data.imageBaseUrl));
-      setImageModel(data.imageModel ?? "");
+      emb.applySaved({ baseUrl: data.embeddingBaseUrl, model: data.embeddingModel });
+      img.applySaved({ baseUrl: data.imageBaseUrl, model: data.imageModel });
       setSave({ kind: "saved" });
       // Re-read server state so masked "configured" placeholders reflect the save.
       router.refresh();
@@ -299,7 +211,6 @@ export function SettingsForm({
     }
   }
 
-  const connected = conn.kind === "connected";
   const canPickModel = models.length > 0;
 
   // Embedding model options. When embeddings share the LLM endpoint (the common
@@ -309,18 +220,17 @@ export function SettingsForm({
   // saved model is always kept as an option, so an unreachable endpoint cannot
   // silently blank out a working selection.
   const listedEmbeddingModels =
-    !separateEmbeddingBackend && models.length > 0 ? models : initialEmbeddingModels;
+    !emb.separate && models.length > 0 ? models : initialEmbeddingModels;
   const embeddingModels =
-    embeddingModel && !listedEmbeddingModels.includes(embeddingModel)
-      ? [embeddingModel, ...listedEmbeddingModels]
+    emb.model && !listedEmbeddingModels.includes(emb.model)
+      ? [emb.model, ...listedEmbeddingModels]
       : listedEmbeddingModels;
 
   // Image model options, resolved exactly like the embedding ones above.
-  const listedImageModels =
-    !separateImageBackend && models.length > 0 ? models : initialImageModels;
+  const listedImageModels = !img.separate && models.length > 0 ? models : initialImageModels;
   const imageModels =
-    imageModel && !listedImageModels.includes(imageModel)
-      ? [imageModel, ...listedImageModels]
+    img.model && !listedImageModels.includes(img.model)
+      ? [img.model, ...listedImageModels]
       : listedImageModels;
 
   const coreTab = (
@@ -339,7 +249,7 @@ export function SettingsForm({
             value={llmBaseUrl}
             onChange={(e) => {
               setLlmBaseUrl(e.target.value);
-              setConn({ kind: "idle" });
+              connProbe.reset();
             }}
             placeholder="https://api.openai.com/v1"
           />
@@ -357,12 +267,9 @@ export function SettingsForm({
             aria-describedby={describedBy}
             type="password"
             autoComplete="off"
-            value={apiKey}
-            onChange={(e) => {
-              setApiKey(e.target.value);
-              setApiKeyDirty(true);
-            }}
-            placeholder={initial.apiKeyConfigured && !apiKeyDirty ? "•••••••• (configured)" : "optional"}
+            value={apiKey.value}
+            onChange={(e) => apiKey.set(e.target.value)}
+            placeholder={apiKey.placeholderFor("optional")}
           />
         )}
       </Field>
@@ -371,17 +278,19 @@ export function SettingsForm({
         <Button
           type="submit"
           variant="outline"
-          disabled={conn.kind === "testing" || llmBaseUrl.trim() === ""}
+          disabled={connProbe.state.kind === "testing" || llmBaseUrl.trim() === ""}
           leftIcon={<Plug className="h-4 w-4" />}
         >
-          {conn.kind === "testing" ? "Testing…" : "Test connection"}
+          {connProbe.state.kind === "testing" ? "Testing…" : "Test connection"}
         </Button>
-        {connected ? (
+        {connProbe.state.kind === "ok" ? (
           <Badge tone="success" dot>
-            Connected — {conn.count} models
+            Connected — {connProbe.state.result.models.length} models
           </Badge>
         ) : null}
-        {conn.kind === "error" ? <span className="text-sm text-danger">{conn.message}</span> : null}
+        {connProbe.state.kind === "error" ? (
+          <span className="text-sm text-danger">{connProbe.state.message}</span>
+        ) : null}
       </div>
 
       <Field
@@ -422,16 +331,9 @@ export function SettingsForm({
             aria-describedby={describedBy}
             type="password"
             autoComplete="off"
-            value={botToken}
-            onChange={(e) => {
-              setBotToken(e.target.value);
-              setBotTokenDirty(true);
-            }}
-            placeholder={
-              initial.telegramBotTokenConfigured && !botTokenDirty
-                ? "•••••••• (configured)"
-                : "123456:ABC-DEF…"
-            }
+            value={botToken.value}
+            onChange={(e) => botToken.set(e.target.value)}
+            placeholder={botToken.placeholderFor("123456:ABC-DEF…")}
           />
         )}
       </Field>
@@ -516,272 +418,69 @@ export function SettingsForm({
   );
 
   const embeddingsTab = (
-    <div className="space-y-5">
-      <p className="text-sm text-muted">
-        Embeddings power semantic recall over older conversations: the daily job turns each chat-day
-        into topic summaries and embeds them, so the bot can find what was discussed weeks ago even
-        when the wording differs. Without an embedding model the summaries are still written and
-        keyword-searchable — only the semantic half is off.
-      </p>
-
-      <Field
-        id="separateEmbeddingBackend"
-        label="Separate embedding backend"
-        hint="Off: embeddings are requested from the same backend as the LLM. On: they are served by a different host, which you give below."
-      >
-        {({ id, describedBy }) => (
-          <div className="flex items-center gap-3">
-            <Switch
-              id={id}
-              aria-describedby={describedBy}
-              checked={separateEmbeddingBackend}
-              onChange={(e) => {
-                setSeparateEmbeddingBackend(e.target.checked);
-                setEmbed({ kind: "idle" });
-              }}
-            />
-            <span className="text-sm text-muted">
-              {separateEmbeddingBackend ? "Own backend" : "Same backend as the LLM"}
-            </span>
-          </div>
-        )}
-      </Field>
-
-      {/* Only shown when the operator asked for a separate backend — otherwise there
-          is nothing to fill in, and an empty URL field would invite the question of
-          what a blank one means. */}
-      {separateEmbeddingBackend ? (
+    <ConnectionSection
+      idPrefix="embedding"
+      labels={{
+        intro:
+          "Embeddings power semantic recall over older conversations: the daily job turns each chat-day into topic summaries and embeds them, so the bot can find what was discussed weeks ago even when the wording differs. Without an embedding model the summaries are still written and keyword-searchable — only the semantic half is off.",
+        switchLabel: "Separate embedding backend",
+        switchHint:
+          "Off: embeddings are requested from the same backend as the LLM. On: they are served by a different host, which you give below.",
+        urlLabel: "Embedding API URL",
+        urlHint: "Required — the host serving /v1/embeddings.",
+        urlPlaceholder: "https://embeddings.example.com/v1",
+        urlMissingError: "An embedding API URL is required.",
+        keyLabel: "Embedding API key",
+        modelLabel: "Embedding model",
+        modelHint: `Must emit ${EMBEDDING_DIMENSIONS}-dimensional vectors (e.g. bge-m3) — the width this database stores. Test below to confirm.`,
+        modelEmptyOption: "No embedding model (semantic recall off)",
+        testLabel: "Test embeddings",
+        testingLabel: "Testing…",
+      }}
+      conn={emb}
+      secret={embKey}
+      models={embeddingModels}
+      probe={embedProbe.state}
+      renderOk={(r) => (
         <>
-          <Field
-            id="embeddingBaseUrl"
-            label="Embedding API URL"
-            hint="Required — the host serving /v1/embeddings."
-            error={embeddingUrlMissing ? "An embedding API URL is required." : undefined}
-          >
-            {({ id, describedBy }) => (
-              <Input
-                id={id}
-                aria-describedby={describedBy}
-                type="url"
-                inputMode="url"
-                required
-                value={embeddingBaseUrl}
-                onChange={(e) => {
-                  setEmbeddingBaseUrl(e.target.value);
-                  setEmbed({ kind: "idle" });
-                }}
-                placeholder="https://embeddings.example.com/v1"
-              />
-            )}
-          </Field>
-
-          <Field
-            id="embeddingApiKey"
-            label="Embedding API key"
-            hint="Optional — required only if that host needs one. Stored securely; never shown again."
-          >
-            {({ id, describedBy }) => (
-              <Input
-                id={id}
-                aria-describedby={describedBy}
-                type="password"
-                autoComplete="off"
-                value={embeddingKey}
-                onChange={(e) => {
-                  setEmbeddingKey(e.target.value);
-                  setEmbeddingKeyDirty(true);
-                }}
-                placeholder={
-                  initial.embeddingApiKeyConfigured && !embeddingKeyDirty
-                    ? "•••••••• (configured)"
-                    : "optional"
-                }
-              />
-            )}
-          </Field>
+          {r.model} — {r.dimensions} dimensions
         </>
-      ) : null}
-
-      <Field
-        id="embeddingModel"
-        label="Embedding model"
-        hint={`Must emit ${EMBEDDING_DIMENSIONS}-dimensional vectors (e.g. bge-m3) — the width this database stores. Test below to confirm.`}
-      >
-        {({ id, describedBy }) => (
-          <Select
-            id={id}
-            aria-describedby={describedBy}
-            value={embeddingModel}
-            disabled={embeddingModels.length === 0}
-            onChange={(e) => {
-              setEmbeddingModel(e.target.value);
-              setEmbed({ kind: "idle" });
-            }}
-          >
-            <option value="">No embedding model (semantic recall off)</option>
-            {embeddingModels.map((m) => (
-              <option key={m} value={m}>
-                {m}
-              </option>
-            ))}
-          </Select>
-        )}
-      </Field>
-
-      <div className="flex flex-wrap items-center gap-3">
-        <Button
-          type="button"
-          variant="outline"
-          onClick={onTestEmbeddings}
-          disabled={embed.kind === "testing" || embeddingModel.trim() === "" || embeddingUrlMissing}
-          leftIcon={<Plug className="h-4 w-4" />}
-        >
-          {embed.kind === "testing" ? "Testing…" : "Test embeddings"}
-        </Button>
-        {embed.kind === "ok" ? (
-          <Badge tone="success" dot>
-            {embed.model} — {embed.dimensions} dimensions
-          </Badge>
-        ) : null}
-        {embed.kind === "error" ? (
-          <span className="text-sm text-danger">{embed.message}</span>
-        ) : null}
-      </div>
-    </div>
+      )}
+      onTest={onTestEmbeddings}
+    />
   );
 
   const imagesTab = (
-    <div className="space-y-5">
-      <p className="text-sm text-muted">
-        Image generation lets the bot draw a picture when someone asks it to, and send it to the
-        chat. Each image it sends is then recognized like any received photo, so later replies know
-        what it drew. Without an image model the tool is simply not offered — the bot says it cannot
-        make images rather than pretending to.
-      </p>
-
-      <Field
-        id="separateImageBackend"
-        label="Separate image backend"
-        hint="Off: images are requested from the same backend as the LLM. On: they are served by a different host, which you give below."
-      >
-        {({ id, describedBy }) => (
-          <div className="flex items-center gap-3">
-            <Switch
-              id={id}
-              aria-describedby={describedBy}
-              checked={separateImageBackend}
-              onChange={(e) => {
-                setSeparateImageBackend(e.target.checked);
-                setImageProbe({ kind: "idle" });
-              }}
-            />
-            <span className="text-sm text-muted">
-              {separateImageBackend ? "Own backend" : "Same backend as the LLM"}
-            </span>
-          </div>
-        )}
-      </Field>
-
-      {separateImageBackend ? (
+    <ConnectionSection
+      idPrefix="image"
+      labels={{
+        intro:
+          "Image generation lets the bot draw a picture when someone asks it to, and send it to the chat. Each image it sends is then recognized like any received photo, so later replies know what it drew. Without an image model the tool is simply not offered — the bot says it cannot make images rather than pretending to.",
+        switchLabel: "Separate image backend",
+        switchHint:
+          "Off: images are requested from the same backend as the LLM. On: they are served by a different host, which you give below.",
+        urlLabel: "Image API URL",
+        urlHint: "Required — the host serving /v1/images/generations.",
+        urlPlaceholder: "https://images.example.com/v1",
+        urlMissingError: "An image API URL is required.",
+        keyLabel: "Image API key",
+        modelLabel: "Image model",
+        modelHint: "The model asked to draw. Test below to confirm the endpoint actually serves it.",
+        modelEmptyOption: "No image model (image generation off)",
+        testLabel: "Test image endpoint",
+        testingLabel: "Testing…",
+      }}
+      conn={img}
+      secret={imgKey}
+      models={imageModels}
+      probe={imageProbe.state}
+      renderOk={(r) => (
         <>
-          <Field
-            id="imageBaseUrl"
-            label="Image API URL"
-            hint="Required — the host serving /v1/images/generations."
-            error={imageUrlMissing ? "An image API URL is required." : undefined}
-          >
-            {({ id, describedBy }) => (
-              <Input
-                id={id}
-                aria-describedby={describedBy}
-                type="url"
-                inputMode="url"
-                required
-                value={imageBaseUrl}
-                onChange={(e) => {
-                  setImageBaseUrl(e.target.value);
-                  setImageProbe({ kind: "idle" });
-                }}
-                placeholder="https://images.example.com/v1"
-              />
-            )}
-          </Field>
-
-          <Field
-            id="imageApiKey"
-            label="Image API key"
-            hint="Optional — required only if that host needs one. Stored securely; never shown again."
-          >
-            {({ id, describedBy }) => (
-              <Input
-                id={id}
-                aria-describedby={describedBy}
-                type="password"
-                autoComplete="off"
-                value={imageKey}
-                onChange={(e) => {
-                  setImageKey(e.target.value);
-                  setImageKeyDirty(true);
-                }}
-                placeholder={
-                  initial.imageApiKeyConfigured && !imageKeyDirty
-                    ? "•••••••• (configured)"
-                    : "optional"
-                }
-              />
-            )}
-          </Field>
+          {r.model} — served ({r.modelCount} models)
         </>
-      ) : null}
-
-      <Field
-        id="imageModel"
-        label="Image model"
-        hint="The model asked to draw. Test below to confirm the endpoint actually serves it."
-      >
-        {({ id, describedBy }) => (
-          <Select
-            id={id}
-            aria-describedby={describedBy}
-            value={imageModel}
-            disabled={imageModels.length === 0}
-            onChange={(e) => {
-              setImageModel(e.target.value);
-              setImageProbe({ kind: "idle" });
-            }}
-          >
-            <option value="">No image model (image generation off)</option>
-            {imageModels.map((m) => (
-              <option key={m} value={m}>
-                {m}
-              </option>
-            ))}
-          </Select>
-        )}
-      </Field>
-
-      <div className="flex flex-wrap items-center gap-3">
-        <Button
-          type="button"
-          variant="outline"
-          onClick={onTestImages}
-          disabled={
-            imageProbe.kind === "testing" || imageModel.trim() === "" || imageUrlMissing
-          }
-          leftIcon={<Plug className="h-4 w-4" />}
-        >
-          {imageProbe.kind === "testing" ? "Testing…" : "Test image endpoint"}
-        </Button>
-        {imageProbe.kind === "ok" ? (
-          <Badge tone="success" dot>
-            {imageProbe.model} — served ({imageProbe.modelCount} models)
-          </Badge>
-        ) : null}
-        {imageProbe.kind === "error" ? (
-          <span className="text-sm text-danger">{imageProbe.message}</span>
-        ) : null}
-      </div>
-    </div>
+      )}
+      onTest={onTestImages}
+    />
   );
 
   const integrationsTab = (
@@ -801,16 +500,9 @@ export function SettingsForm({
             aria-describedby={describedBy}
             type="password"
             autoComplete="off"
-            value={tavilyKey}
-            onChange={(e) => {
-              setTavilyKey(e.target.value);
-              setTavilyKeyDirty(true);
-            }}
-            placeholder={
-              initial.webSearchConfigured && !tavilyKeyDirty
-                ? "•••••••• (configured)"
-                : "tvly-…"
-            }
+            value={tavilyKey.value}
+            onChange={(e) => tavilyKey.set(e.target.value)}
+            placeholder={tavilyKey.placeholderFor("tvly-…")}
           />
         )}
       </Field>

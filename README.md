@@ -79,6 +79,24 @@ migrations against Postgres.
 - Ids are generated in application code, so no Postgres extensions are required
   for the shared schema.
 
+### Backups
+
+The compose `db` service stores its data in a local bind mount, and nothing
+backs it up automatically. Dump and restore with the bundled container:
+
+```bash
+# Dump (run while the db service is up; credentials default to bot/bot/bot)
+docker compose exec -T db pg_dump -U bot -d bot > backup.sql
+
+# Restore into a fresh database
+docker compose exec -T db psql -U bot -d bot < backup.sql
+```
+
+The trace files under `data/traces/` (`TRACES_DIR`) are **not** in the database:
+they are append-only monthly NDJSON logs holding complete LLM request/response
+bodies — effectively a full chat-log archive. Back up and protect that directory
+with the same care as the database dump, and do not share it casually.
+
 ## Configuration
 
 All environment variables are documented in `.env.example`. Every variable also

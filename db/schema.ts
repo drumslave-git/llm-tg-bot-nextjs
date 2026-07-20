@@ -302,6 +302,7 @@ export const chatMessages = pgTable(
     // is a sequential scan over the chat's full mirror. Needs `pg_trgm` (enabled
     // in the migration by hand — drizzle-kit emits only the index).
     index("chat_messages_content_trgm_idx").using("gin", sql`${t.content} gin_trgm_ops`),
+    check("chat_messages_role_check", sql`${t.role} in ('user', 'assistant')`),
   ],
 );
 
@@ -437,6 +438,7 @@ export const messageMedia = pgTable(
     uniqueIndex("message_media_chat_msg_idx").on(t.chatId, t.telegramMessageId),
     // Backfill (priority 8) scans for pending rows oldest-first.
     index("message_media_status_idx").on(t.status, t.createdAt),
+    check("message_media_status_check", sql`${t.status} in ('pending', 'described', 'unavailable')`),
   ],
 );
 
@@ -495,6 +497,7 @@ export const scheduledTasks = pgTable(
     index("scheduled_tasks_chat_idx").on(t.chatId),
     // The poller scans enabled rows ordered by their due instant.
     index("scheduled_tasks_due_idx").on(t.enabled, t.nextRunAt),
+    check("scheduled_tasks_schedule_kind_check", sql`${t.scheduleKind} in ('once', 'daily', 'weekly')`),
   ],
 );
 
@@ -561,6 +564,11 @@ export const usersFeedbacks = pgTable(
     index("users_feedbacks_status_idx").on(t.status),
     // The daily job scans completed-but-unincorporated rows per user.
     index("users_feedbacks_prefs_idx").on(t.userId, t.prefsVersion),
+    check("users_feedbacks_reaction_check", sql`${t.reaction} in ('up', 'down')`),
+    check(
+      "users_feedbacks_status_check",
+      sql`${t.status} in ('pending', 'awaiting_text', 'completed')`,
+    ),
   ],
 );
 
@@ -870,7 +878,13 @@ export const periodInsights = pgTable(
     model: text("model").notNull(),
     computedAt: timestamp("computed_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [uniqueIndex("period_insights_key_idx").on(t.granularity, t.bucket, t.chatId)],
+  (t) => [
+    uniqueIndex("period_insights_key_idx").on(t.granularity, t.bucket, t.chatId),
+    check(
+      "period_insights_granularity_check",
+      sql`${t.granularity} in ('hour', 'day', 'week', 'month', 'year', 'all')`,
+    ),
+  ],
 );
 
 export type PeriodInsightRow = typeof periodInsights.$inferSelect;

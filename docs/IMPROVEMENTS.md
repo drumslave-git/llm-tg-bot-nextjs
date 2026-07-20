@@ -19,10 +19,18 @@ Status (see the session log in `NEXTJS_REWRITE_PROGRESS.md` for proof):
 - 2026-07-19, pass 3 ✅: 1.7 (`withTrace`), 4.3 (reply splitting), 5.1 (trgm
   index, migration 0030), and the small fixes 2.2, 2.4, 3.4, 4.6, 6.2, 7.2.
 
+- 2026-07-20, pass 4 ✅: 2.5 (CHECK constraints, migration 0031), 2.6 (trace
+  SSE throttling), 4.5 (`buildDeps` options object), 10.1 (SettingsForm split),
+  11.3 (backup + trace-dir privacy docs).
+
 Still open: the needs-decision items (1.1 auth, 1.3 concurrency, 1.9 notice
-language, 7.1 one-shot retry, trace retention 1.5/11.1) and the two large
-refactors 6.1 (bytea media) and 10.1 (SettingsForm split), plus 2.5, 2.6, 4.1,
-4.4, 4.5, 5.2, 9.1(1,3), 9.3, 10.2, 10.3, 11.2, 11.3, and the testing gaps.
+language, 7.1 one-shot retry, trace retention 1.5/11.1), the 6.1 bytea-media
+migration (a session of its own), 4.1 and 4.4 (both change when/how the bot
+answers — held for the user), and the deferred-by-design bits: 5.2 and 10.2
+(extract on second use / when a consumer appears), 9.1(3) and 9.3 (when data
+volume demands), 10.3 Debug paging, 11.2 Dockerfile lockfile, and the testing
+gaps (concurrency, trace-store scale — partly covered by the new multi-month
+corpus tests).
 
 ---
 
@@ -205,7 +213,7 @@ manifest (dependency list and versions) to the browser bundle. Harmless-ish, but
 it leaks stack details and bloats the bundle. Suggestion: inline only
 `name`/`version` via `next.config.ts` `env`, or a codegen'd constant.
 
-### 2.5 [L] schema — Missing CHECK constraints for enum-like columns
+### 2.5 ✅ [L] schema — Missing CHECK constraints for enum-like columns (done 2026-07-20, migration 0031)
 
 `chat_messages.role`, `message_media.status`, `scheduled_tasks.schedule_kind`,
 `users_feedbacks.status`/`reaction`, `period_insights.granularity` are free-text
@@ -213,7 +221,7 @@ columns whose valid values live only in app code, while `memory_entries` got
 proper CHECK constraints. Low risk (single writer), but cheap to add at the next
 migration and it documents the contract in the schema.
 
-### 2.6 [L] realtime — Per-event publishing is chatty
+### 2.6 ✅ [L] realtime — Per-event publishing is chatty (done 2026-07-20)
 
 `startTrace`'s recorder publishes a `traces` SSE event for **every appended
 trace event** ([recorder.ts](server/trace/recorder.ts:137)) — a single reply
@@ -310,7 +318,7 @@ render literally. When revisited, prefer converting model Markdown to Telegram
 HTML with escaping (the MVP had this) over `parse_mode: MarkdownV2`, whose
 escaping rules are notoriously fragile.
 
-### 4.5 [L] refactoring — `buildDeps` takes 10 positional parameters
+### 4.5 ✅ [L] refactoring — `buildDeps` takes 10 positional parameters (done 2026-07-20)
 
 [process-update.ts](server/telegram/process-update.ts:119) threads policy,
 persona, correction, time, language, image sink, vision, overrides positionally.
@@ -443,7 +451,7 @@ bare `sent_at`; neither is indexed (`chat_messages` only has
 
 ## 10. Settings & UI
 
-### 10.1 [M] refactoring — `SettingsForm.tsx` is an 849-line monolith
+### 10.1 ✅ [M] refactoring — `SettingsForm.tsx` is an 849-line monolith (done 2026-07-20)
 
 28 `useState` hooks, three connection-test state machines, and three
 near-identical "endpoint + key + model + Test" blocks (LLM, embeddings, image)
@@ -487,7 +495,7 @@ that keeps both: `npm ci` plus explicit `npm install --no-save` of the musl
 variants, or generate the lockfile in-container once. Low priority; the
 tradeoff is at least documented.
 
-### 11.3 [L] ops — No database backup story in compose
+### 11.3 ✅ [L] ops — No database backup story in compose (done 2026-07-20; README, incl. the trace-dir privacy note from 11.1)
 
 `db` data is a bind mount, but there's no documented dump/restore path, while
 the cutover plan (Phase 12) assumes backups exist. A `pg_dump` sidecar/cron or

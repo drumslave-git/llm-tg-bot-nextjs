@@ -115,17 +115,17 @@ function labelForTelegramUser(user: {
   });
 }
 
-/** Build the per-message collaborators the bot-messaging service needs. */
-function buildDeps(
-  update: IncomingUpdate,
-  transport: ReplyTransport,
-  policy: BotPolicy,
-  personalityPrompt: string | null,
-  selfCorrection: string | null,
-  timeContext: string | null,
-  requiredLanguage: string | null,
+/** Everything {@link buildDeps} needs to assemble the per-message collaborators. */
+interface BuildDepsInput {
+  update: IncomingUpdate;
+  transport: ReplyTransport;
+  policy: BotPolicy;
+  personalityPrompt: string | null;
+  selfCorrection: string | null;
+  timeContext: string | null;
+  requiredLanguage: string | null;
   /** Sink the `image_generate` tool fills; delivered after the reply. */
-  collectImage: (base64: string) => void,
+  collectImage: (base64: string) => void;
   visionAttachment: {
     imageParts: ChatContentPart[];
     note?: string;
@@ -137,9 +137,24 @@ function buildDeps(
     recognizeMessageId?: number;
     /** Whether to attach the images to the reply (pass 2 — only when the message has text). */
     attachToReply: boolean;
-  } | null,
-  overrides?: ProcessOverrides,
-): BotMessagingDeps {
+  } | null;
+  overrides?: ProcessOverrides;
+}
+
+/** Build the per-message collaborators the bot-messaging service needs. */
+function buildDeps(input: BuildDepsInput): BotMessagingDeps {
+  const {
+    update,
+    transport,
+    policy,
+    personalityPrompt,
+    selfCorrection,
+    timeContext,
+    requiredLanguage,
+    collectImage,
+    visionAttachment,
+    overrides,
+  } = input;
   const message = update.message;
   const bot = update.botInfo;
   const chatId = String(message.chat.id);
@@ -529,7 +544,7 @@ export async function processUpdate(
   const generatedImages: string[] = [];
   const outcome = await handleIncomingMessage(
     incoming,
-    buildDeps(
+    buildDeps({
       update,
       transport,
       policy,
@@ -537,10 +552,10 @@ export async function processUpdate(
       selfCorrection,
       timeContext,
       requiredLanguage,
-      (base64) => generatedImages.push(base64),
+      collectImage: (base64) => generatedImages.push(base64),
       visionAttachment,
       overrides,
-    ),
+    }),
   );
 
   if (generatedImages.length > 0) {

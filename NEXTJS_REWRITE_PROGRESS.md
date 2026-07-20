@@ -188,6 +188,43 @@ Next: **Priority 12 — Image generation** (Analytics landed 2026-07-15 as the n
 
 ### Session log
 
+- 2026-07-20 (Improvements pass 4, "continue"): **2.5 CHECK constraints, 2.6 SSE
+  throttling, 4.5 `buildDeps` object, 10.1 SettingsForm split, and 11.3 backup
+  docs are done.** This closes every no-decision item from `docs/IMPROVEMENTS.md`
+  that isn't deferred by design.
+  - **2.5 CHECKs (migration `0031_flowery_carlie_cooper`, applied to the dev DB
+    and clean against its data):** `chat_messages.role`, `message_media.status`,
+    `scheduled_tasks.schedule_kind`, `users_feedbacks.reaction`/`status`, and
+    `period_insights.granularity` now enforce their app-code value sets in the
+    schema, matching the `memory_entries` precedent.
+  - **2.6 SSE throttle:** the recorder coalesces per-event `traces` publishes to
+    one per second **per trace** (leading + trailing edge, `unref`'d timer);
+    open/settle still publish immediately, so status flips stay instant while a
+    tool-looping reply no longer triggers a dozen full Debug re-renders.
+  - **4.5:** `buildDeps` takes one typed `BuildDepsInput` object instead of 10
+    positional params.
+  - **10.1 SettingsForm:** the 849-line monolith became composition — new
+    `features/settings/ui/connection.ts` (`useProbe` POST-probe state machine,
+    `useSecretField` write-only secret input — was **five** hand-rolled copies —
+    and `useBackendConnection` for the separate-backend URL/switch/model
+    derivations) plus `ConnectionSection.tsx` (the shared embeddings/images
+    section shell — was two hand-kept copies). `SettingsForm.tsx` is down to
+    541 lines: the Core tab, the save patch, and two `ConnectionSection`
+    instantiations. The next connection type is one labels object.
+  - **11.3 README:** documented `pg_dump`/`psql` one-liners against the compose
+    `db` service, and the privacy weight of `data/traces/` (it is effectively a
+    full chat-log archive — protect like the DB dump). Covers 11.1's doc half.
+  - **Held for the user (unchanged):** 4.1 (analyzer pre-filter) and 4.4
+    (markdown rendering) both change when/how the bot answers; 6.1 (bytea) is a
+    data migration deserving its own session; deferred-by-design: 5.2/10.2
+    (extract on second use), 9.1(3)/9.3 (when volume demands), 10.3, 11.2.
+  - **Proof:** lint ✓, typecheck ✓, unit 542 ✓, integration 236 ✓ / 21 skipped,
+    build ✓, migration 0031 applied ✓. Live check of the rebuilt Settings form:
+    Core tab probes the real endpoint ("Connected — 7 models" fed the model
+    dropdowns), Embeddings tab probed a real embed ("…bge-m3… — 1024
+    dimensions"), Images tab renders via the same shared section, secrets show
+    masked "configured" placeholders, no console errors.
+
 - 2026-07-19 (Improvements pass 3, "continue"): **1.7 `withTrace`, 4.3 reply
   splitting, 5.1 trgm index, and the small fixes 2.2/2.4/3.4/4.6/6.2/7.2 are
   done.**
