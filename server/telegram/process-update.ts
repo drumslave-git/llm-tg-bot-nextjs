@@ -397,7 +397,10 @@ export async function processUpdate(
       });
     }
     // Mirror the message when it has text or media (a media-only message still
-    // belongs in the transcript — its image is described separately).
+    // belongs in the transcript — its image is described separately). The
+    // remember/mirror trio is best-effort: the capture services swallow their
+    // own failures, and the mirror is caught here — a DB hiccup degrades to a
+    // reply without this message in history rather than dropping the update.
     if (text.trim() || hasMedia) {
       await recordIncomingMessage({
         chatId,
@@ -407,6 +410,9 @@ export async function processUpdate(
         replyToMessageId: message.reply_to_message?.message_id ?? null,
         sentAt: new Date(message.date * 1000),
         hasMedia,
+      }).catch((err) => {
+        console.warn(`History mirror failed for ${chatId}:${message.message_id}:`, err);
+        return null;
       });
     }
   }

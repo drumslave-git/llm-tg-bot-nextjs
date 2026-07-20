@@ -298,6 +298,10 @@ export const chatMessages = pgTable(
   (t) => [
     uniqueIndex("chat_messages_chat_msg_idx").on(t.chatId, t.telegramMessageId),
     index("chat_messages_chat_sent_idx").on(t.chatId, t.sentAt),
+    // Serves history_search's arbitrary-substring ILIKE; without it every query
+    // is a sequential scan over the chat's full mirror. Needs `pg_trgm` (enabled
+    // in the migration by hand — drizzle-kit emits only the index).
+    index("chat_messages_content_trgm_idx").using("gin", sql`${t.content} gin_trgm_ops`),
   ],
 );
 

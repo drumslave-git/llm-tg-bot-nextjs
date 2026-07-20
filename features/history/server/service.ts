@@ -8,7 +8,7 @@ import type { ChatMessage } from "@/server/llm/client";
 import { FEATURES } from "@/lib/features";
 import type { TraceTrigger } from "@/lib/trace";
 import { publishEvent } from "@/server/realtime/hub";
-import { getLatestTraceIdsByCorrelation, startTrace } from "@/server/trace";
+import { getLatestTraceIdsByCorrelation, withTrace } from "@/server/trace";
 import {
   collectUserIds,
   fallbackSpeakerLabel,
@@ -146,48 +146,40 @@ export async function applyMessageEdit(
   trigger: TraceTrigger,
   db: DrizzleDb = getDb(),
 ): Promise<ChatMessageRecord | null> {
-  const trace = await startTrace(
-    {
-      feature: FEATURE.id,
-      action: "edit",
-      trigger,
-      inputSummary: input.content,
-    }
-  );
-  try {
-    const parsed = applyEditSchema.parse(input);
-    const before = await updateChatMessageContent(
-      db,
-      parsed.chatId,
-      parsed.telegramMessageId,
-      parsed.content,
-      parsed.editedAt,
-    );
-    if (!before) {
+  return withTrace(
+    { feature: FEATURE.id, action: "edit", trigger, inputSummary: input.content },
+    async (trace) => {
+      const parsed = applyEditSchema.parse(input);
+      const before = await updateChatMessageContent(
+        db,
+        parsed.chatId,
+        parsed.telegramMessageId,
+        parsed.content,
+        parsed.editedAt,
+      );
+      if (!before) {
+        await trace.event({
+          type: "db",
+          level: "warn",
+          message: "edit target not found",
+          data: { chatId: parsed.chatId, telegramMessageId: parsed.telegramMessageId },
+        });
+        await trace.skip("edit target not found");
+        return null;
+      }
       await trace.event({
         type: "db",
-        level: "warn",
-        message: "edit target not found",
-        data: { chatId: parsed.chatId, telegramMessageId: parsed.telegramMessageId },
+        message: "message edited",
+        data: { telegramMessageId: parsed.telegramMessageId, content: parsed.content },
       });
-      await trace.skip("edit target not found");
-      return null;
-    }
-    await trace.event({
-      type: "db",
-      message: "message edited",
-      data: { telegramMessageId: parsed.telegramMessageId, content: parsed.content },
-    });
-    publishEvent(FEATURE.realtimeTopic);
-    await trace.succeed({
-      outputSummary: parsed.content,
-      relatedIds: { [FEATURE.relatedIdsKey]: [String(before.id)] },
-    });
-    return before;
-  } catch (err) {
-    await trace.fail(err);
-    throw err;
-  }
+      publishEvent(FEATURE.realtimeTopic);
+      await trace.succeed({
+        outputSummary: parsed.content,
+        relatedIds: { [FEATURE.relatedIdsKey]: [String(before.id)] },
+      });
+      return before;
+    },
+  );
 }
 
 /**

@@ -16,7 +16,7 @@ import { probeImages, type ImageProbe, type ImageRuntime } from "@/server/llm/im
 
 /** Short timeout so opening the Settings page stays responsive against a dead endpoint. */
 const MODELS_PRELOAD_TIMEOUT_MS = 5_000;
-import { startTrace } from "@/server/trace";
+import { withTrace } from "@/server/trace";
 import {
   getSettingsRecord,
   SETTINGS_ID,
@@ -343,26 +343,23 @@ export async function updateSettings(
   db: DrizzleDb = getDb(),
 ): Promise<Settings> {
   const fields = Object.keys(input);
-  const trace = await startTrace(
-    { feature: FEATURE.id, action: "update", trigger, inputSummary: fields.join(", ") }
+  return withTrace(
+    { feature: FEATURE.id, action: "update", trigger, inputSummary: fields.join(", ") },
+    async (trace) => {
+      await trace.event({ type: "input", message: "settings update", data: redact(input) });
+      const patch = toPatch(input);
+      if (input.ownerUserId !== undefined) {
+        Object.assign(patch, await ownerPatch(db, input.ownerUserId));
+      }
+      const record = await upsertSettings(db, patch);
+      await trace.event({ type: "db", message: "settings row upserted" });
+      await trace.succeed({
+        outputSummary: `Updated ${fields.join(", ")}`,
+        relatedIds: { [FEATURE.relatedIdsKey]: [SETTINGS_ID] },
+      });
+      return toClientSettings(record);
+    },
   );
-  try {
-    await trace.event({ type: "input", message: "settings update", data: redact(input) });
-    const patch = toPatch(input);
-    if (input.ownerUserId !== undefined) {
-      Object.assign(patch, await ownerPatch(db, input.ownerUserId));
-    }
-    const record = await upsertSettings(db, patch);
-    await trace.event({ type: "db", message: "settings row upserted" });
-    await trace.succeed({
-      outputSummary: `Updated ${fields.join(", ")}`,
-      relatedIds: { [FEATURE.relatedIdsKey]: [SETTINGS_ID] },
-    });
-    return toClientSettings(record);
-  } catch (err) {
-    await trace.fail(err);
-    throw err;
-  }
 }
 
 /**
@@ -375,21 +372,18 @@ export async function testConnection(
   trigger: TraceTrigger,
   db: DrizzleDb = getDb(),
 ): Promise<{ models: string[] }> {
-  const trace = await startTrace(
-    { feature: FEATURE.id, action: "test-connection", trigger, inputSummary: input.llmBaseUrl }
+  return withTrace(
+    { feature: FEATURE.id, action: "test-connection", trigger, inputSummary: input.llmBaseUrl },
+    async (trace) => {
+      const apiKey =
+        input.apiKey !== undefined ? input.apiKey : (await getSettingsRecord(db))?.llmApiKey ?? null;
+      await trace.event({ type: "external_call", message: `GET ${input.llmBaseUrl} /models` });
+      const models = await listModels({ baseUrl: input.llmBaseUrl, apiKey });
+      await trace.event({ type: "output", message: `${models.length} models returned` });
+      await trace.succeed({ outputSummary: `${models.length} models` });
+      return { models };
+    },
   );
-  try {
-    const apiKey =
-      input.apiKey !== undefined ? input.apiKey : (await getSettingsRecord(db))?.llmApiKey ?? null;
-    await trace.event({ type: "external_call", message: `GET ${input.llmBaseUrl} /models` });
-    const models = await listModels({ baseUrl: input.llmBaseUrl, apiKey });
-    await trace.event({ type: "output", message: `${models.length} models returned` });
-    await trace.succeed({ outputSummary: `${models.length} models` });
-    return { models };
-  } catch (err) {
-    await trace.fail(err);
-    throw err;
-  }
 }
 
 /**
@@ -428,37 +422,34 @@ export async function testEmbeddings(
         : (record?.embeddingModel ?? null),
   });
 
-  const trace = await startTrace(
+  return withTrace(
     {
       feature: FEATURE.id,
       action: "test-embeddings",
       trigger,
       inputSummary: input.embeddingModel ?? record?.embeddingModel ?? "(no model)",
-    }
+    },
+    async (trace) => {
+      if (!runtime) {
+        throw ApiError.badRequest(
+          "Choose an embedding model (and a base URL, unless the LLM connection serves embeddings).",
+        );
+      }
+      await trace.event({
+        type: "external_call",
+        message: `POST ${runtime.baseUrl} /embeddings`,
+        data: { model: runtime.model },
+      });
+      const probe = await probeEmbeddings(runtime);
+      await trace.event({
+        type: "output",
+        message: `${probe.dimensions}-dimensional vector returned`,
+        data: probe,
+      });
+      await trace.succeed({ outputSummary: `${probe.model} → ${probe.dimensions} dimensions` });
+      return probe;
+    },
   );
-  try {
-    if (!runtime) {
-      throw ApiError.badRequest(
-        "Choose an embedding model (and a base URL, unless the LLM connection serves embeddings).",
-      );
-    }
-    await trace.event({
-      type: "external_call",
-      message: `POST ${runtime.baseUrl} /embeddings`,
-      data: { model: runtime.model },
-    });
-    const probe = await probeEmbeddings(runtime);
-    await trace.event({
-      type: "output",
-      message: `${probe.dimensions}-dimensional vector returned`,
-      data: probe,
-    });
-    await trace.succeed({ outputSummary: `${probe.model} → ${probe.dimensions} dimensions` });
-    return probe;
-  } catch (err) {
-    await trace.fail(err);
-    throw err;
-  }
 }
 
 /**
@@ -484,37 +475,34 @@ export async function testImages(
     imageModel: input.imageModel !== undefined ? input.imageModel : (record?.imageModel ?? null),
   });
 
-  const trace = await startTrace(
+  return withTrace(
     {
       feature: FEATURE.id,
       action: "test-images",
       trigger,
       inputSummary: input.imageModel ?? record?.imageModel ?? "(no model)",
-    }
+    },
+    async (trace) => {
+      if (!runtime) {
+        throw ApiError.badRequest(
+          "Choose an image model (and a base URL, unless the LLM connection serves images).",
+        );
+      }
+      await trace.event({
+        type: "external_call",
+        message: `GET ${runtime.baseUrl} /models`,
+        data: { model: runtime.model },
+      });
+      const probe = await probeImages(runtime);
+      await trace.event({
+        type: "output",
+        message: `image model "${probe.model}" is served by the endpoint`,
+        data: probe,
+      });
+      await trace.succeed({ outputSummary: `${probe.model} served (${probe.modelCount} models)` });
+      return probe;
+    },
   );
-  try {
-    if (!runtime) {
-      throw ApiError.badRequest(
-        "Choose an image model (and a base URL, unless the LLM connection serves images).",
-      );
-    }
-    await trace.event({
-      type: "external_call",
-      message: `GET ${runtime.baseUrl} /models`,
-      data: { model: runtime.model },
-    });
-    const probe = await probeImages(runtime);
-    await trace.event({
-      type: "output",
-      message: `image model "${probe.model}" is served by the endpoint`,
-      data: probe,
-    });
-    await trace.succeed({ outputSummary: `${probe.model} served (${probe.modelCount} models)` });
-    return probe;
-  } catch (err) {
-    await trace.fail(err);
-    throw err;
-  }
 }
 
 /** Field defaults for merging a partial probe input onto a never-written settings row. */

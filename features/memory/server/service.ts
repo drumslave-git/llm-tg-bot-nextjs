@@ -11,7 +11,7 @@ import { FEATURES } from "@/lib/features";
 import type { TraceTrigger } from "@/lib/trace";
 import { embedOne } from "@/server/llm/embeddings";
 import { publishEvent } from "@/server/realtime/hub";
-import { startTrace } from "@/server/trace";
+import { withTrace, type TraceRecorder } from "@/server/trace";
 
 import { formatMemoryContext, splitMemoryFacts } from "../format";
 import type { GeneralMemory, MemoryEntry, MemoryMatch, MemoryScope, UserMemory } from "../types";
@@ -322,20 +322,17 @@ const operatorTrigger: TraceTrigger = { kind: "dashboard", actor: "operator" };
 async function traced<T>(
   action: string,
   inputSummary: string,
-  run: (trace: Awaited<ReturnType<typeof startTrace>>) => Promise<T>,
+  run: (trace: TraceRecorder) => Promise<T>,
 ): Promise<T> {
-  const trace = await startTrace(
-    { feature: FEATURE.id, action, trigger: operatorTrigger, inputSummary }
+  return withTrace(
+    { feature: FEATURE.id, action, trigger: operatorTrigger, inputSummary },
+    async (trace) => {
+      const result = await run(trace);
+      await trace.succeed({ outputSummary: "ok" });
+      publishEvent(FEATURE.realtimeTopic, { feature: FEATURE.id });
+      return result;
+    },
   );
-  try {
-    const result = await run(trace);
-    await trace.succeed({ outputSummary: "ok" });
-    publishEvent(FEATURE.realtimeTopic, { feature: FEATURE.id });
-    return result;
-  } catch (err) {
-    await trace.fail(err);
-    throw err;
-  }
 }
 
 /** Rewrite one person's memory document by hand. Re-embeds so search stays honest. */

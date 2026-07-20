@@ -7,7 +7,7 @@ import { ApiError } from "@/lib/api-error";
 import { FEATURES } from "@/lib/features";
 import type { TraceTrigger } from "@/lib/trace";
 import { publishEvent } from "@/server/realtime/hub";
-import { startTrace } from "@/server/trace";
+import { startTrace, withTrace } from "@/server/trace";
 import { formatKnownUserLabel, formatUserContext } from "../format";
 import { matchUsersByReference } from "../match";
 import {
@@ -201,63 +201,60 @@ export async function addAliasByReference(
   trigger: TraceTrigger,
   db: DrizzleDb = getDb(),
 ): Promise<AddAliasByReferenceResult> {
-  const trace = await startTrace(
-    { feature: FEATURE.id, action: "add-aliases", trigger, inputSummary: params.reference }
+  return withTrace(
+    { feature: FEATURE.id, action: "add-aliases", trigger, inputSummary: params.reference },
+    async (trace) => {
+      await trace.event({
+        type: "input",
+        message: "alias from tool",
+        data: { reference: params.reference, aliases: params.aliases },
+      });
+
+      const resolved = await resolveChatUserByReference(params.chatId, params.reference, db);
+      if (resolved.status === "not_found") {
+        await trace.skip(`no participant matches "${params.reference}"`);
+        return { status: "not_found" };
+      }
+      if (resolved.status === "ambiguous") {
+        await trace.skip(`"${params.reference}" is ambiguous — ${resolved.count} matches`);
+        return { status: "ambiguous", count: resolved.count };
+      }
+
+      const user = resolved.user;
+      const known = ownNames(user);
+      // Aliases are plain names — strip a leading `@` so "@alice" is recognized as
+      // the (already-known) username rather than stored as a distinct nickname.
+      const toAdd = params.aliases
+        .map((a) => a.trim().replace(/^@+/, "").trim())
+        .filter((a) => a && !known.has(a.toLowerCase()));
+
+      if (toAdd.length === 0) {
+        await trace.skip("nothing new to add", {
+          relatedIds: { [FEATURE.relatedIdsKey]: [user.userId] },
+        });
+        return { status: "noop", user: toClient(user) };
+      }
+
+      const parsed = updateAliasesSchema.safeParse({ aliases: [...user.aliases, ...toAdd] });
+      if (!parsed.success) {
+        const reason = parsed.error.issues[0]?.message ?? "Invalid aliases";
+        await trace.skip(`rejected: ${reason}`, {
+          relatedIds: { [FEATURE.relatedIdsKey]: [user.userId] },
+        });
+        return { status: "invalid", reason };
+      }
+
+      const record = await setKnownUserAliases(db, user.userId, parsed.data.aliases);
+      if (!record) throw ApiError.notFound("Unknown user");
+      await trace.event({ type: "db", message: "aliases updated", data: { aliases: parsed.data.aliases } });
+      publishEvent(FEATURE.realtimeTopic);
+      await trace.succeed({
+        outputSummary: `+${toAdd.length} alias(es) for ${user.userId}`,
+        relatedIds: { [FEATURE.relatedIdsKey]: [user.userId] },
+      });
+      return { status: "updated", user: toClient(record), added: toAdd };
+    },
   );
-  try {
-    await trace.event({
-      type: "input",
-      message: "alias from tool",
-      data: { reference: params.reference, aliases: params.aliases },
-    });
-
-    const resolved = await resolveChatUserByReference(params.chatId, params.reference, db);
-    if (resolved.status === "not_found") {
-      await trace.skip(`no participant matches "${params.reference}"`);
-      return { status: "not_found" };
-    }
-    if (resolved.status === "ambiguous") {
-      await trace.skip(`"${params.reference}" is ambiguous — ${resolved.count} matches`);
-      return { status: "ambiguous", count: resolved.count };
-    }
-
-    const user = resolved.user;
-    const known = ownNames(user);
-    // Aliases are plain names — strip a leading `@` so "@alice" is recognized as
-    // the (already-known) username rather than stored as a distinct nickname.
-    const toAdd = params.aliases
-      .map((a) => a.trim().replace(/^@+/, "").trim())
-      .filter((a) => a && !known.has(a.toLowerCase()));
-
-    if (toAdd.length === 0) {
-      await trace.skip("nothing new to add", {
-        relatedIds: { [FEATURE.relatedIdsKey]: [user.userId] },
-      });
-      return { status: "noop", user: toClient(user) };
-    }
-
-    const parsed = updateAliasesSchema.safeParse({ aliases: [...user.aliases, ...toAdd] });
-    if (!parsed.success) {
-      const reason = parsed.error.issues[0]?.message ?? "Invalid aliases";
-      await trace.skip(`rejected: ${reason}`, {
-        relatedIds: { [FEATURE.relatedIdsKey]: [user.userId] },
-      });
-      return { status: "invalid", reason };
-    }
-
-    const record = await setKnownUserAliases(db, user.userId, parsed.data.aliases);
-    if (!record) throw ApiError.notFound("Unknown user");
-    await trace.event({ type: "db", message: "aliases updated", data: { aliases: parsed.data.aliases } });
-    publishEvent(FEATURE.realtimeTopic);
-    await trace.succeed({
-      outputSummary: `+${toAdd.length} alias(es) for ${user.userId}`,
-      relatedIds: { [FEATURE.relatedIdsKey]: [user.userId] },
-    });
-    return { status: "updated", user: toClient(record), added: toAdd };
-  } catch (err) {
-    await trace.fail(err);
-    throw err;
-  }
 }
 
 /** Replace a user's operator-configured DM reply language, recorded as a trace. */
@@ -267,28 +264,25 @@ export async function updateLanguage(
   trigger: TraceTrigger,
   db: DrizzleDb = getDb(),
 ): Promise<KnownUser> {
-  const trace = await startTrace(
-    { feature: FEATURE.id, action: "update-language", trigger, inputSummary: `user ${userId}` }
+  return withTrace(
+    { feature: FEATURE.id, action: "update-language", trigger, inputSummary: `user ${userId}` },
+    async (trace) => {
+      await trace.event({
+        type: "input",
+        message: "language update",
+        data: { userId, language: input.language },
+      });
+      const record = await setKnownUserLanguage(db, userId, input.language);
+      if (!record) throw ApiError.notFound("Unknown user");
+      await trace.event({ type: "db", message: "language updated" });
+      publishEvent(FEATURE.realtimeTopic);
+      await trace.succeed({
+        outputSummary: input.language ? `language set to ${input.language}` : "language cleared",
+        relatedIds: { [FEATURE.relatedIdsKey]: [userId] },
+      });
+      return toClient(record);
+    },
   );
-  try {
-    await trace.event({
-      type: "input",
-      message: "language update",
-      data: { userId, language: input.language },
-    });
-    const record = await setKnownUserLanguage(db, userId, input.language);
-    if (!record) throw ApiError.notFound("Unknown user");
-    await trace.event({ type: "db", message: "language updated" });
-    publishEvent(FEATURE.realtimeTopic);
-    await trace.succeed({
-      outputSummary: input.language ? `language set to ${input.language}` : "language cleared",
-      relatedIds: { [FEATURE.relatedIdsKey]: [userId] },
-    });
-    return toClient(record);
-  } catch (err) {
-    await trace.fail(err);
-    throw err;
-  }
 }
 
 /**
@@ -311,22 +305,19 @@ export async function updateAliases(
   trigger: TraceTrigger,
   db: DrizzleDb = getDb(),
 ): Promise<KnownUser> {
-  const trace = await startTrace(
-    { feature: FEATURE.id, action: "update-aliases", trigger, inputSummary: `user ${userId}` }
+  return withTrace(
+    { feature: FEATURE.id, action: "update-aliases", trigger, inputSummary: `user ${userId}` },
+    async (trace) => {
+      await trace.event({ type: "input", message: "aliases update", data: { userId, aliases: input.aliases } });
+      const record = await setKnownUserAliases(db, userId, input.aliases);
+      if (!record) throw ApiError.notFound("Unknown user");
+      await trace.event({ type: "db", message: "aliases updated" });
+      publishEvent(FEATURE.realtimeTopic);
+      await trace.succeed({
+        outputSummary: `${input.aliases.length} alias(es)`,
+        relatedIds: { [FEATURE.relatedIdsKey]: [userId] },
+      });
+      return toClient(record);
+    },
   );
-  try {
-    await trace.event({ type: "input", message: "aliases update", data: { userId, aliases: input.aliases } });
-    const record = await setKnownUserAliases(db, userId, input.aliases);
-    if (!record) throw ApiError.notFound("Unknown user");
-    await trace.event({ type: "db", message: "aliases updated" });
-    publishEvent(FEATURE.realtimeTopic);
-    await trace.succeed({
-      outputSummary: `${input.aliases.length} alias(es)`,
-      relatedIds: { [FEATURE.relatedIdsKey]: [userId] },
-    });
-    return toClient(record);
-  } catch (err) {
-    await trace.fail(err);
-    throw err;
-  }
 }

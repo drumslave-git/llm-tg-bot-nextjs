@@ -115,6 +115,15 @@ export interface ToolLoopResult {
  */
 const MAX_STALL_ROUNDS = 3;
 
+/**
+ * Default hard cap on model rounds in {@link chatCompletionWithTools} when the
+ * caller sets none. The stall guard never trips a model that keeps inventing
+ * *novel* calls (each new argument string resets the streak), so without a cap
+ * such a model could loop indefinitely. Generous — a legitimate reply with
+ * research rarely needs more than a handful of rounds.
+ */
+const DEFAULT_MAX_ROUNDS = 16;
+
 function toolCallSignature(call: ChatCompletionMessageToolCall): string {
   if (call.type !== "function" || !call.function?.name) return "";
   return `${call.function.name}:${call.function.arguments ?? ""}`;
@@ -319,7 +328,7 @@ export async function chatCompletionWithTools(
     callTool: input.callTool,
     onToolCall: input.onToolCall,
     onRound: input.onRound,
-    maxRounds: input.maxRounds,
+    maxRounds: input.maxRounds ?? DEFAULT_MAX_ROUNDS,
   });
 
   // A stall that still produced a forced final answer is a degraded success —

@@ -8,7 +8,7 @@ import { getSettingsRecord, upsertSettings } from "@/features/settings/server/re
 import { ApiError } from "@/lib/api-error";
 import { FEATURES } from "@/lib/features";
 import type { TraceTrigger } from "@/lib/trace";
-import { startTrace } from "@/server/trace";
+import { withTrace } from "@/server/trace";
 import {
   countPersonalities,
   deletePersonality,
@@ -70,32 +70,29 @@ export async function createPersonality(
   trigger: TraceTrigger,
   db: DrizzleDb = getDb(),
 ): Promise<Personality> {
-  const trace = await startTrace(
-    { feature: FEATURE.id, action: "create", trigger, inputSummary: input.name }
+  return withTrace(
+    { feature: FEATURE.id, action: "create", trigger, inputSummary: input.name },
+    async (trace) => {
+      await trace.event({
+        type: "input",
+        message: "create personality",
+        data: { name: input.name, prompt: input.prompt },
+      });
+      if ((await countPersonalities(db)) >= MAX_PERSONALITIES) {
+        throw ApiError.conflict(`At most ${MAX_PERSONALITIES} personalities are allowed`);
+      }
+      if (await isNameTaken(db, input.name)) {
+        throw ApiError.conflict(`A personality named "${input.name}" already exists`);
+      }
+      const record = await insertPersonality(db, randomUUID(), {
+        name: input.name,
+        prompt: input.prompt,
+      });
+      await trace.event({ type: "db", message: "personality created" });
+      await trace.succeed({ outputSummary: record.name, relatedIds: { [FEATURE.relatedIdsKey]: [record.id] } });
+      return toClient(record);
+    },
   );
-  try {
-    await trace.event({
-      type: "input",
-      message: "create personality",
-      data: { name: input.name, prompt: input.prompt },
-    });
-    if ((await countPersonalities(db)) >= MAX_PERSONALITIES) {
-      throw ApiError.conflict(`At most ${MAX_PERSONALITIES} personalities are allowed`);
-    }
-    if (await isNameTaken(db, input.name)) {
-      throw ApiError.conflict(`A personality named "${input.name}" already exists`);
-    }
-    const record = await insertPersonality(db, randomUUID(), {
-      name: input.name,
-      prompt: input.prompt,
-    });
-    await trace.event({ type: "db", message: "personality created" });
-    await trace.succeed({ outputSummary: record.name, relatedIds: { [FEATURE.relatedIdsKey]: [record.id] } });
-    return toClient(record);
-  } catch (err) {
-    await trace.fail(err);
-    throw err;
-  }
 }
 
 /** Apply a validated update to a personality, recorded as a trace. */
@@ -105,25 +102,22 @@ export async function editPersonality(
   trigger: TraceTrigger,
   db: DrizzleDb = getDb(),
 ): Promise<Personality> {
-  const trace = await startTrace(
-    { feature: FEATURE.id, action: "update", trigger, inputSummary: `personality ${id}` }
+  return withTrace(
+    { feature: FEATURE.id, action: "update", trigger, inputSummary: `personality ${id}` },
+    async (trace) => {
+      await trace.event({ type: "input", message: "update personality", data: { id, ...input } });
+      const existing = await getPersonalityById(db, id);
+      if (!existing) throw ApiError.notFound("Unknown personality");
+      if (input.name !== undefined && (await isNameTaken(db, input.name, id))) {
+        throw ApiError.conflict(`A personality named "${input.name}" already exists`);
+      }
+      const record = await updatePersonality(db, id, input);
+      if (!record) throw ApiError.notFound("Unknown personality");
+      await trace.event({ type: "db", message: "personality updated" });
+      await trace.succeed({ outputSummary: record.name, relatedIds: { [FEATURE.relatedIdsKey]: [record.id] } });
+      return toClient(record);
+    },
   );
-  try {
-    await trace.event({ type: "input", message: "update personality", data: { id, ...input } });
-    const existing = await getPersonalityById(db, id);
-    if (!existing) throw ApiError.notFound("Unknown personality");
-    if (input.name !== undefined && (await isNameTaken(db, input.name, id))) {
-      throw ApiError.conflict(`A personality named "${input.name}" already exists`);
-    }
-    const record = await updatePersonality(db, id, input);
-    if (!record) throw ApiError.notFound("Unknown personality");
-    await trace.event({ type: "db", message: "personality updated" });
-    await trace.succeed({ outputSummary: record.name, relatedIds: { [FEATURE.relatedIdsKey]: [record.id] } });
-    return toClient(record);
-  } catch (err) {
-    await trace.fail(err);
-    throw err;
-  }
 }
 
 /**
@@ -135,18 +129,15 @@ export async function removePersonality(
   trigger: TraceTrigger,
   db: DrizzleDb = getDb(),
 ): Promise<void> {
-  const trace = await startTrace(
-    { feature: FEATURE.id, action: "delete", trigger, inputSummary: `personality ${id}` }
+  return withTrace(
+    { feature: FEATURE.id, action: "delete", trigger, inputSummary: `personality ${id}` },
+    async (trace) => {
+      const deleted = await deletePersonality(db, id);
+      if (!deleted) throw ApiError.notFound("Unknown personality");
+      await trace.event({ type: "db", message: "personality deleted" });
+      await trace.succeed({ outputSummary: `deleted ${id}`, relatedIds: { [FEATURE.relatedIdsKey]: [id] } });
+    },
   );
-  try {
-    const deleted = await deletePersonality(db, id);
-    if (!deleted) throw ApiError.notFound("Unknown personality");
-    await trace.event({ type: "db", message: "personality deleted" });
-    await trace.succeed({ outputSummary: `deleted ${id}`, relatedIds: { [FEATURE.relatedIdsKey]: [id] } });
-  } catch (err) {
-    await trace.fail(err);
-    throw err;
-  }
 }
 
 /**
@@ -158,31 +149,23 @@ export async function setActivePersonality(
   trigger: TraceTrigger,
   db: DrizzleDb = getDb(),
 ): Promise<PersonalitiesView> {
-  const trace = await startTrace(
-    {
-      feature: FEATURE.id,
-      action: "set-active",
-      trigger,
-      inputSummary: personalityId ?? "(none)",
-    }
+  return withTrace(
+    { feature: FEATURE.id, action: "set-active", trigger, inputSummary: personalityId ?? "(none)" },
+    async (trace) => {
+      await trace.event({ type: "input", message: "set active personality", data: { personalityId } });
+      if (personalityId) {
+        const exists = await getPersonalityById(db, personalityId);
+        if (!exists) throw ApiError.badRequest("Selected personality does not exist");
+      }
+      await upsertSettings(db, { activePersonalityId: personalityId });
+      await trace.event({ type: "db", message: "active personality set" });
+      await trace.succeed({
+        outputSummary: personalityId ? `active ${personalityId}` : "cleared",
+        relatedIds: personalityId ? { [FEATURE.relatedIdsKey]: [personalityId] } : undefined,
+      });
+      return getPersonalitiesView(db);
+    },
   );
-  try {
-    await trace.event({ type: "input", message: "set active personality", data: { personalityId } });
-    if (personalityId) {
-      const exists = await getPersonalityById(db, personalityId);
-      if (!exists) throw ApiError.badRequest("Selected personality does not exist");
-    }
-    await upsertSettings(db, { activePersonalityId: personalityId });
-    await trace.event({ type: "db", message: "active personality set" });
-    await trace.succeed({
-      outputSummary: personalityId ? `active ${personalityId}` : "cleared",
-      relatedIds: personalityId ? { [FEATURE.relatedIdsKey]: [personalityId] } : undefined,
-    });
-    return getPersonalitiesView(db);
-  } catch (err) {
-    await trace.fail(err);
-    throw err;
-  }
 }
 
 /**

@@ -72,7 +72,7 @@ export function toApiError(err: unknown): ApiError {
   if (isApiError(err)) return err;
   if (err instanceof z.ZodError) {
     return new ApiError("validation_error", "Request validation failed", {
-      details: err.flatten(),
+      details: z.flattenError(err),
       cause: err,
     });
   }

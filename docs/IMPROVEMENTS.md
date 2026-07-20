@@ -9,12 +9,20 @@ changes).
 Legend: **[H]** high value · **[M]** medium · **[L]** low / polish.
 Categories: security, correctness, performance, scalability, refactoring, DX/UX.
 
-Status 2026-07-18: the no-decision quick wins are **done** (marked ✅ below —
-1.4, 1.8, 2.1, 2.3, 3.1, 3.3, 4.2, 8.1, 9.1(2), 9.2's `getHourMessages` half);
-and a second pass landed 1.2 (SSRF DNS + redirect checks), 1.5's windowing
-(retention still open — it deletes data, so it needs a decision), and 1.6 (the
-daily-scheduler factory); see the session log in `NEXTJS_REWRITE_PROGRESS.md`
-for proof. Everything else is still open.
+Status (see the session log in `NEXTJS_REWRITE_PROGRESS.md` for proof):
+
+- 2026-07-18, pass 1 — the no-decision quick wins ✅: 1.4, 1.8, 2.1, 2.3, 3.1,
+  3.3, 4.2, 8.1, 9.1(2), 9.2's `getHourMessages` half.
+- 2026-07-18, pass 2 ✅: 1.2 (SSRF DNS + redirect checks), 1.5's windowing
+  (retention still open — it deletes data, so it needs a decision), 1.6 (the
+  daily-scheduler factory).
+- 2026-07-19, pass 3 ✅: 1.7 (`withTrace`), 4.3 (reply splitting), 5.1 (trgm
+  index, migration 0030), and the small fixes 2.2, 2.4, 3.4, 4.6, 6.2, 7.2.
+
+Still open: the needs-decision items (1.1 auth, 1.3 concurrency, 1.9 notice
+language, 7.1 one-shot retry, trace retention 1.5/11.1) and the two large
+refactors 6.1 (bytea media) and 10.1 (SettingsForm split), plus 2.5, 2.6, 4.1,
+4.4, 4.5, 5.2, 9.1(1,3), 9.3, 10.2, 10.3, 11.2, 11.3, and the testing gaps.
 
 ---
 
@@ -129,7 +137,7 @@ Suggestion: a `createDailyScheduler({ name, feature, runJob })` factory in
 `getJobInfo` (next-run instant, last result); each feature keeps only its
 `runJob` body and its extra info fields (backlog counts, config flags).
 
-### 1.7 [M] refactoring — Repeated trace-wrapping boilerplate in services
+### 1.7 ✅ [M] refactoring — Repeated trace-wrapping boilerplate in services (done 2026-07-19; mechanical sites converted, job runners keep bespoke fail-without-rethrow handling)
 
 Nearly every traced mutation repeats the same shape (`startTrace` → `try` →
 `trace.event(input)` → work → `trace.succeed` → `catch` → `trace.fail` →
@@ -177,7 +185,7 @@ bundle duplication. Each re-evaluation of this module in dev can create a new
 pool and leak connections. Suggestion: adopt the same `Symbol.for` +
 `globalThis` pattern for consistency and safety.
 
-### 2.2 [L] api-error — Zod v4 deprecations
+### 2.2 ✅ [L] api-error — Zod v4 deprecations (done 2026-07-19)
 
 `err.flatten()` ([http.ts](server/http.ts:75),
 [env.ts](server/env.ts)) is deprecated in Zod 4 in favor of
@@ -190,7 +198,7 @@ it.
 the template string (`` `﻿${csv}` ``). It works, but any editor/formatter that
 normalizes the file can silently strip it. Use the escape: `"﻿" + csv`.
 
-### 2.4 [L] lib — `build-info.ts` imports all of `package.json` into the client
+### 2.4 ✅ [L] lib — `build-info.ts` imports all of `package.json` into the client (done 2026-07-19)
 
 Importing `pkg from "@/package.json"` in a client-safe module ships the whole
 manifest (dependency list and versions) to the browser bundle. Harmless-ish, but
@@ -247,7 +255,7 @@ plus schema conversion on **every reply**. The registry is append-only after
 boot. Suggestion: cache the OpenAI-shaped list in `BotMcpRegistry` after
 `finishRegistration()`.
 
-### 3.4 [L] API — `maxRounds` is unbounded by default
+### 3.4 ✅ [L] API — `maxRounds` is unbounded by default (done 2026-07-19)
 
 `runToolLoop` treats unset `maxRounds` as infinite, protected only by the stall
 guard — which a model that keeps inventing *novel* tool calls never trips
@@ -287,7 +295,7 @@ vision-LLM) reads. Parallelize with `Promise.all` and emit the trace steps
 after resolution, in the fixed order. Saves several round trips per reply on
 the hottest path.
 
-### 4.3 [M] UX — Long replies are truncated, not split
+### 4.3 ✅ [M] UX — Long replies are truncated, not split (done 2026-07-19; scheduled-task fires still truncate — their trace correlates on one message id)
 
 [reply.ts](features/bot-messaging/server/reply.ts) cuts at 4096 chars with an
 ellipsis, silently losing content. Telegram allows multiple messages;
@@ -309,7 +317,7 @@ persona, correction, time, language, image sink, vision, overrides positionally.
 An options object would make call sites readable and future additions
 non-breaking.
 
-### 4.6 [L] correctness/doc — "Best-effort" capture actually blocks and can fail handling
+### 4.6 ✅ [L] correctness/doc — "Best-effort" capture actually blocks and can fail handling (done 2026-07-19)
 
 The comment above the passive capture in
 [process-update.ts](server/telegram/process-update.ts:374) says remember/mirror
@@ -322,7 +330,7 @@ history. Wrap them in a `.catch` (with a trace/warn) or make the comment honest.
 
 ## 5. History
 
-### 5.1 [M] performance — `history_search` is an un-indexed ILIKE scan
+### 5.1 ✅ [M] performance — `history_search` is an un-indexed ILIKE scan (done 2026-07-19, migration 0030)
 
 [repository.ts](features/history/server/repository.ts) `searchChatMessages`
 does `content ILIKE '%…%'` — a sequential scan over the chat's full mirror per
@@ -354,7 +362,7 @@ keyed by media id, so listing rows never touches bytes). The bytes are dropped
 after describe, which bounds the damage — but a backlog of pending videos is
 exactly when the table is hottest.
 
-### 6.2 [L] performance — Pending-media dashboard list loads bytes it may not render
+### 6.2 ✅ [L] performance — Pending-media dashboard list loads bytes it may not render (done 2026-07-19)
 
 `listRecentMedia` returns full rows including `data_base64`/`frames` for up to
 100 rows; `toView` then throws away bytes for described rows. Project the
@@ -375,7 +383,7 @@ one-shot for a bounded window (e.g. keep `next_run_at`, add an `attempts`
 column, give up and disable after N tries) so a transient outage doesn't eat
 reminders.
 
-### 7.2 [L] robustness — Chat-kind detection by id sign
+### 7.2 ✅ [L] robustness — Chat-kind detection by id sign (done 2026-07-19)
 
 `task.chatId.startsWith("-")` selects group vs. DM language lookup. It's
 correct for Telegram today, but the same fact is already modeled properly

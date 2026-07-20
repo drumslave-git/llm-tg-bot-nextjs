@@ -188,6 +188,50 @@ Next: **Priority 12 — Image generation** (Analytics landed 2026-07-15 as the n
 
 ### Session log
 
+- 2026-07-19 (Improvements pass 3, "continue"): **1.7 `withTrace`, 4.3 reply
+  splitting, 5.1 trgm index, and the small fixes 2.2/2.4/3.4/4.6/6.2/7.2 are
+  done.**
+  - **1.7 `withTrace`:** new `server/trace/with-trace.ts` owns the
+    open→run→settle-exactly-once contract (fail-on-throw + rethrow; a body that
+    returns without settling succeeds with defaults; bodies still call
+    `trace.succeed/skip` for custom summaries — double-settle impossible by
+    construction). Converted the mechanical sites: personalities ×4, settings ×4
+    (update + the three probes), known-users ×3, known-groups ×2, history edit,
+    memory's local `traced` helper, scheduled-tasks ×3. The **job runners**
+    (summarize, extract/consolidate, insights, analyze, reflect, backfill, fire,
+    bot-messaging) intentionally keep bespoke handling — several fail *without*
+    rethrowing, which is not the wrapper's contract.
+  - **4.3 reply splitting:** `splitReply` in
+    `features/bot-messaging/server/reply.ts` splits a long answer at paragraph →
+    line → sentence → word boundaries into ≤4096-char messages; the reply path
+    sends them sequentially (each chunk a Telegram reply to the incoming
+    message), traces each as `send message (part i/n)`, and mirrors each chunk
+    under its own delivered message id. `formatReply` (truncate) remains **only**
+    for scheduled-task fires, whose trace correlates on a single delivered id —
+    documented at both sites. 6 new unit tests (boundaries, no content loss,
+    hard-cut, mixed content).
+  - **5.1 trgm index:** `chat_messages_content_trgm_idx` (GIN,
+    `gin_trgm_ops`) modeled in `db/schema.ts` and generated as migration
+    `0030_classy_adam_warlock`, with `CREATE EXTENSION IF NOT EXISTS pg_trgm`
+    prepended by hand (the 0014/pgvector precedent — drizzle-kit emits only the
+    index). Serves `history_search`'s substring ILIKE.
+  - **Small fixes:** 2.2 `err.flatten()` → `z.flattenError()` (http.ts, env.ts);
+    2.4 `lib/build-info.ts` no longer imports package.json into the client
+    bundle — name/version are inlined via `next.config.ts` `env`; 3.4
+    `chatCompletionWithTools` defaults `maxRounds` to 16 (the stall guard never
+    trips a model inventing novel calls); 4.6 the history mirror in
+    `process-update.ts` is now genuinely best-effort (`.catch` + warn — the two
+    remember services already swallowed internally); 6.2 `listRecentMedia`
+    projects byte columns conditionally in SQL (`case when status='pending'`);
+    7.2 `lib/telegram.ts` `isGroupChatId()` single-sources the id-sign fact.
+  - **Proof:** lint ✓, typecheck ✓, unit 542 ✓ (62 files), build ✓, integration
+    236 ✓ / 21 skipped (no failures). Migration `0030` **has been applied** to
+    the operator's dev DB and verified live (`pg_trgm` extension enabled,
+    `chat_messages_content_trgm_idx` present in `pg_indexes`). Docker Desktop
+    and the dev Postgres container were found down mid-session; both were
+    started (`docker compose up -d db`) to apply the migration and run the
+    integration suite.
+
 - 2026-07-18 (Improvements pass 2, "continue"): **1.2 SSRF DNS checks, 1.5 trace-store
   windowing, and 1.6 the daily-scheduler factory are done.**
   - **1.2 SSRF:** `isPrivateIp` is now exported from

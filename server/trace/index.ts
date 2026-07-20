@@ -7,6 +7,7 @@ export {
   type EventInput,
   type FinishInput,
 } from "./recorder";
+export { withTrace } from "./with-trace";
 export {
   getTrace,
   listTraces,

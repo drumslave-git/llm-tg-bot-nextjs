@@ -8,7 +8,7 @@ import { getTimezone } from "@/features/settings/server/service";
 import { ApiError } from "@/lib/api-error";
 import { FEATURES } from "@/lib/features";
 import type { TraceTrigger } from "@/lib/trace";
-import { startTrace } from "@/server/trace";
+import { withTrace } from "@/server/trace";
 
 import { computeNextRun, describeSchedule, normalizeSchedule } from "../schedule";
 import type { ScheduledTask, ScheduleKind } from "../types";
@@ -112,46 +112,43 @@ export async function createScheduledTaskService(
   trigger: TraceTrigger,
   db: DrizzleDb = getDb(),
 ): Promise<ScheduledTask> {
-  const trace = await startTrace(
-    { feature: FEATURE.id, action: "create", trigger, inputSummary: input.instruction }
+  return withTrace(
+    { feature: FEATURE.id, action: "create", trigger, inputSummary: input.instruction },
+    async (trace) => {
+      const instruction = validateInstruction(input.instruction);
+      const schedule = normalizeOrThrow(input);
+      const timezone = await getTimezone(db);
+      await trace.event({
+        type: "input",
+        message: "create scheduled task",
+        data: { chatId: input.chatId, instruction, ...schedule, timezone },
+      });
+
+      const nextRunAt = computeNextRun(schedule, new Date(), timezone);
+      if (schedule.scheduleKind === "once" && !nextRunAt) {
+        throw ApiError.badRequest("that date and time is already in the past");
+      }
+
+      const record = await insertScheduledTask(db, randomUUID(), {
+        chatId: input.chatId,
+        threadId: input.threadId ?? null,
+        createdByUserId: input.createdByUserId ?? null,
+        instruction,
+        scheduleKind: schedule.scheduleKind,
+        timeOfDay: schedule.timeOfDay,
+        weekdays: schedule.weekdays,
+        runDate: schedule.runDate,
+        enabled: input.enabled ?? true,
+        nextRunAt,
+      });
+      await trace.event({ type: "db", message: "task created", data: { nextRunAt: record.nextRunAt } });
+      await trace.succeed({
+        outputSummary: summarizeTask(record),
+        relatedIds: { [FEATURE.relatedIdsKey]: [record.id] },
+      });
+      return record;
+    },
   );
-  try {
-    const instruction = validateInstruction(input.instruction);
-    const schedule = normalizeOrThrow(input);
-    const timezone = await getTimezone(db);
-    await trace.event({
-      type: "input",
-      message: "create scheduled task",
-      data: { chatId: input.chatId, instruction, ...schedule, timezone },
-    });
-
-    const nextRunAt = computeNextRun(schedule, new Date(), timezone);
-    if (schedule.scheduleKind === "once" && !nextRunAt) {
-      throw ApiError.badRequest("that date and time is already in the past");
-    }
-
-    const record = await insertScheduledTask(db, randomUUID(), {
-      chatId: input.chatId,
-      threadId: input.threadId ?? null,
-      createdByUserId: input.createdByUserId ?? null,
-      instruction,
-      scheduleKind: schedule.scheduleKind,
-      timeOfDay: schedule.timeOfDay,
-      weekdays: schedule.weekdays,
-      runDate: schedule.runDate,
-      enabled: input.enabled ?? true,
-      nextRunAt,
-    });
-    await trace.event({ type: "db", message: "task created", data: { nextRunAt: record.nextRunAt } });
-    await trace.succeed({
-      outputSummary: summarizeTask(record),
-      relatedIds: { [FEATURE.relatedIdsKey]: [record.id] },
-    });
-    return record;
-  } catch (err) {
-    await trace.fail(err);
-    throw err;
-  }
 }
 
 /** Apply a validated update to a task, recomputing the next run. Traced. */
@@ -161,52 +158,49 @@ export async function editScheduledTaskService(
   trigger: TraceTrigger,
   db: DrizzleDb = getDb(),
 ): Promise<ScheduledTask> {
-  const trace = await startTrace(
-    { feature: FEATURE.id, action: "update", trigger, inputSummary: `task ${id}` }
+  return withTrace(
+    { feature: FEATURE.id, action: "update", trigger, inputSummary: `task ${id}` },
+    async (trace) => {
+      await trace.event({ type: "input", message: "update scheduled task", data: { id, ...patch } });
+      const current = await getScheduledTask(db, id);
+      if (!current) throw ApiError.notFound("Unknown task");
+
+      const schedule = normalizeOrThrow({
+        scheduleKind: patch.scheduleKind ?? current.scheduleKind,
+        timeOfDay: patch.timeOfDay ?? current.timeOfDay,
+        weekdays: patch.weekdays !== undefined ? patch.weekdays : current.weekdays,
+        runDate: patch.runDate !== undefined ? patch.runDate : current.runDate,
+      });
+      const enabled = patch.enabled !== undefined ? patch.enabled : current.enabled;
+      // Interpret the schedule against the current operator timezone (not one stored
+      // on the row), so a timezone change re-times existing tasks on their next edit
+      // or fire.
+      const timezone = await getTimezone(db);
+      const nextRunAt = enabled ? computeNextRun(schedule, new Date(), timezone) : null;
+      if (enabled && schedule.scheduleKind === "once" && !nextRunAt) {
+        throw ApiError.badRequest("that date and time is already in the past");
+      }
+      const instruction =
+        patch.instruction !== undefined ? validateInstruction(patch.instruction) : current.instruction;
+
+      const record = await updateScheduledTask(db, id, {
+        instruction,
+        scheduleKind: schedule.scheduleKind,
+        timeOfDay: schedule.timeOfDay,
+        weekdays: schedule.weekdays,
+        runDate: schedule.runDate,
+        enabled,
+        nextRunAt,
+      });
+      if (!record) throw ApiError.notFound("Unknown task");
+      await trace.event({ type: "db", message: "task updated", data: { nextRunAt: record.nextRunAt } });
+      await trace.succeed({
+        outputSummary: summarizeTask(record),
+        relatedIds: { [FEATURE.relatedIdsKey]: [record.id] },
+      });
+      return record;
+    },
   );
-  try {
-    await trace.event({ type: "input", message: "update scheduled task", data: { id, ...patch } });
-    const current = await getScheduledTask(db, id);
-    if (!current) throw ApiError.notFound("Unknown task");
-
-    const schedule = normalizeOrThrow({
-      scheduleKind: patch.scheduleKind ?? current.scheduleKind,
-      timeOfDay: patch.timeOfDay ?? current.timeOfDay,
-      weekdays: patch.weekdays !== undefined ? patch.weekdays : current.weekdays,
-      runDate: patch.runDate !== undefined ? patch.runDate : current.runDate,
-    });
-    const enabled = patch.enabled !== undefined ? patch.enabled : current.enabled;
-    // Interpret the schedule against the current operator timezone (not one stored
-    // on the row), so a timezone change re-times existing tasks on their next edit
-    // or fire.
-    const timezone = await getTimezone(db);
-    const nextRunAt = enabled ? computeNextRun(schedule, new Date(), timezone) : null;
-    if (enabled && schedule.scheduleKind === "once" && !nextRunAt) {
-      throw ApiError.badRequest("that date and time is already in the past");
-    }
-    const instruction =
-      patch.instruction !== undefined ? validateInstruction(patch.instruction) : current.instruction;
-
-    const record = await updateScheduledTask(db, id, {
-      instruction,
-      scheduleKind: schedule.scheduleKind,
-      timeOfDay: schedule.timeOfDay,
-      weekdays: schedule.weekdays,
-      runDate: schedule.runDate,
-      enabled,
-      nextRunAt,
-    });
-    if (!record) throw ApiError.notFound("Unknown task");
-    await trace.event({ type: "db", message: "task updated", data: { nextRunAt: record.nextRunAt } });
-    await trace.succeed({
-      outputSummary: summarizeTask(record),
-      relatedIds: { [FEATURE.relatedIdsKey]: [record.id] },
-    });
-    return record;
-  } catch (err) {
-    await trace.fail(err);
-    throw err;
-  }
 }
 
 /** Delete a task, recorded as a trace. */
@@ -215,16 +209,13 @@ export async function removeScheduledTaskService(
   trigger: TraceTrigger,
   db: DrizzleDb = getDb(),
 ): Promise<void> {
-  const trace = await startTrace(
-    { feature: FEATURE.id, action: "delete", trigger, inputSummary: `task ${id}` }
+  return withTrace(
+    { feature: FEATURE.id, action: "delete", trigger, inputSummary: `task ${id}` },
+    async (trace) => {
+      const deleted = await deleteScheduledTask(db, id);
+      if (!deleted) throw ApiError.notFound("Unknown task");
+      await trace.event({ type: "db", message: "task deleted" });
+      await trace.succeed({ outputSummary: `deleted ${id}`, relatedIds: { [FEATURE.relatedIdsKey]: [id] } });
+    },
   );
-  try {
-    const deleted = await deleteScheduledTask(db, id);
-    if (!deleted) throw ApiError.notFound("Unknown task");
-    await trace.event({ type: "db", message: "task deleted" });
-    await trace.succeed({ outputSummary: `deleted ${id}`, relatedIds: { [FEATURE.relatedIdsKey]: [id] } });
-  } catch (err) {
-    await trace.fail(err);
-    throw err;
-  }
 }

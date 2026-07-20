@@ -12,7 +12,7 @@ import { buildAnalyzerMessages, parseAnalyzerVerdict } from "./address-analyzer"
 import { checkAddressed, type AddressResult, type AddressSource, type BotIdentity } from "./addressing";
 import { checkMaintenance, isOwner, type BotPolicy } from "./policy";
 import { buildAddressingHint, buildSystemPrompt, hasPersonality } from "./prompt";
-import { formatReply } from "./reply";
+import { splitReply } from "./reply";
 
 /**
  * Bot-messaging domain service — the boundary the Telegram runtime calls for
@@ -585,25 +585,36 @@ export async function handleIncomingMessage(
         },
       );
 
-      const outgoing = formatReply(reply.content);
-      const sent = await deps.sendReply(outgoing);
-      // 5. Delivered message — full content.
-      await trace.event({
-        type: "output",
-        level: "success",
-        message: "send message",
-        data: { content: outgoing, messageId: sent.messageId },
-      });
-      // Mirror the reply into history (best-effort — never fail a delivered
-      // reply because persistence hiccupped).
-      try {
-        await deps.recordReply({
-          content: outgoing,
-          telegramMessageId: sent.messageId,
-          replyToMessageId: incoming.messageId,
+      // A long answer is split at natural boundaries and delivered as several
+      // messages — Telegram caps one message at 4096 chars, and truncating
+      // silently lost content.
+      const chunks = splitReply(reply.content);
+      if (chunks.length === 0) chunks.push("");
+      const outgoing = chunks.join("\n\n");
+      for (const [index, chunk] of chunks.entries()) {
+        const sent = await deps.sendReply(chunk);
+        // 5. Delivered message(s) — full content.
+        await trace.event({
+          type: "output",
+          level: "success",
+          message:
+            chunks.length > 1
+              ? `send message (part ${index + 1}/${chunks.length})`
+              : "send message",
+          data: { content: chunk, messageId: sent.messageId },
         });
-      } catch {
-        // swallow — the reply was delivered; the mirror is a side record
+        // Mirror each delivered chunk into history under its own message id
+        // (best-effort — never fail a delivered reply because persistence
+        // hiccupped).
+        try {
+          await deps.recordReply({
+            content: chunk,
+            telegramMessageId: sent.messageId,
+            replyToMessageId: incoming.messageId,
+          });
+        } catch {
+          // swallow — the reply was delivered; the mirror is a side record
+        }
       }
       await trace.succeed({ outputSummary: outgoing });
       return { status: "replied", text: outgoing };

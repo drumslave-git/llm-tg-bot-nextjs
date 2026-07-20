@@ -1,6 +1,6 @@
 import "server-only";
 
-import { and, asc, count, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, count, desc, eq, getTableColumns, inArray, sql } from "drizzle-orm";
 
 import type { DrizzleDb } from "@/db/drizzle";
 import { messageMedia, type MessageMediaRow } from "@/db/schema";
@@ -198,10 +198,25 @@ export async function getMediaAnnotations(
   );
 }
 
-/** Recent media rows for the dashboard, newest first. */
+/**
+ * Recent media rows for the dashboard, newest first. Byte payloads are
+ * projected conditionally in SQL: only a pending row's bytes are ever rendered
+ * (the preview), so the list never loads them for described/unavailable rows.
+ */
 export async function listRecentMedia(db: DrizzleDb, limit = 100): Promise<MediaRecord[]> {
+  const { dataBase64: _data, framesBase64: _frames, ...rest } = getTableColumns(messageMedia);
+  void _data;
+  void _frames;
   const rows = await db
-    .select()
+    .select({
+      ...rest,
+      dataBase64: sql<
+        string | null
+      >`case when ${messageMedia.status} = 'pending' then ${messageMedia.dataBase64} end`,
+      framesBase64: sql<
+        string[] | null
+      >`case when ${messageMedia.status} = 'pending' then ${messageMedia.framesBase64} end`,
+    })
     .from(messageMedia)
     .orderBy(desc(messageMedia.createdAt))
     .limit(limit);

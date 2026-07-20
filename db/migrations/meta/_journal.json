@@ -211,6 +211,13 @@
       "when": 1784376439934,
       "tag": "0029_lovely_wind_dancer",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1784476974184,
+      "tag": "0030_classy_adam_warlock",
+      "breakpoints": true
     }
   ]
 }

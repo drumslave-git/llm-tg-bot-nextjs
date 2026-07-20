@@ -7,7 +7,7 @@ import { ApiError } from "@/lib/api-error";
 import { FEATURES } from "@/lib/features";
 import type { TraceTrigger } from "@/lib/trace";
 import { publishEvent } from "@/server/realtime/hub";
-import { startTrace } from "@/server/trace";
+import { startTrace, withTrace } from "@/server/trace";
 import { formatGroupContext } from "../format";
 import {
   getGroupMembers,
@@ -179,24 +179,21 @@ export async function updateNotes(
   trigger: TraceTrigger,
   db: DrizzleDb = getDb(),
 ): Promise<KnownGroup> {
-  const trace = await startTrace(
-    { feature: FEATURE.id, action: "update-notes", trigger, inputSummary: `group ${chatId}` }
+  return withTrace(
+    { feature: FEATURE.id, action: "update-notes", trigger, inputSummary: `group ${chatId}` },
+    async (trace) => {
+      await trace.event({ type: "input", message: "notes update", data: { chatId, notes: input.notes } });
+      const record = await setKnownGroupNotes(db, chatId, input.notes);
+      if (!record) throw ApiError.notFound("Unknown group");
+      await trace.event({ type: "db", message: "notes updated" });
+      publishEvent(FEATURE.realtimeTopic);
+      await trace.succeed({
+        outputSummary: input.notes ? "notes set" : "notes cleared",
+        relatedIds: { [FEATURE.relatedIdsKey]: [chatId] },
+      });
+      return toClientGroup(record);
+    },
   );
-  try {
-    await trace.event({ type: "input", message: "notes update", data: { chatId, notes: input.notes } });
-    const record = await setKnownGroupNotes(db, chatId, input.notes);
-    if (!record) throw ApiError.notFound("Unknown group");
-    await trace.event({ type: "db", message: "notes updated" });
-    publishEvent(FEATURE.realtimeTopic);
-    await trace.succeed({
-      outputSummary: input.notes ? "notes set" : "notes cleared",
-      relatedIds: { [FEATURE.relatedIdsKey]: [chatId] },
-    });
-    return toClientGroup(record);
-  } catch (err) {
-    await trace.fail(err);
-    throw err;
-  }
 }
 
 /** Replace a group's operator-configured reply language, recorded as a trace. */
@@ -206,28 +203,25 @@ export async function updateLanguage(
   trigger: TraceTrigger,
   db: DrizzleDb = getDb(),
 ): Promise<KnownGroup> {
-  const trace = await startTrace(
-    { feature: FEATURE.id, action: "update-language", trigger, inputSummary: `group ${chatId}` }
+  return withTrace(
+    { feature: FEATURE.id, action: "update-language", trigger, inputSummary: `group ${chatId}` },
+    async (trace) => {
+      await trace.event({
+        type: "input",
+        message: "language update",
+        data: { chatId, language: input.language },
+      });
+      const record = await setKnownGroupLanguage(db, chatId, input.language);
+      if (!record) throw ApiError.notFound("Unknown group");
+      await trace.event({ type: "db", message: "language updated" });
+      publishEvent(FEATURE.realtimeTopic);
+      await trace.succeed({
+        outputSummary: input.language ? `language set to ${input.language}` : "language cleared",
+        relatedIds: { [FEATURE.relatedIdsKey]: [chatId] },
+      });
+      return toClientGroup(record);
+    },
   );
-  try {
-    await trace.event({
-      type: "input",
-      message: "language update",
-      data: { chatId, language: input.language },
-    });
-    const record = await setKnownGroupLanguage(db, chatId, input.language);
-    if (!record) throw ApiError.notFound("Unknown group");
-    await trace.event({ type: "db", message: "language updated" });
-    publishEvent(FEATURE.realtimeTopic);
-    await trace.succeed({
-      outputSummary: input.language ? `language set to ${input.language}` : "language cleared",
-      relatedIds: { [FEATURE.relatedIdsKey]: [chatId] },
-    });
-    return toClientGroup(record);
-  } catch (err) {
-    await trace.fail(err);
-    throw err;
-  }
 }
 
 /**

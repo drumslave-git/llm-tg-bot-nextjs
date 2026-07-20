@@ -9,6 +9,7 @@ import { getActivePersonalityPrompt } from "@/features/personalities/server/serv
 import { getBotPolicy, getLlmRuntime, getTimezone } from "@/features/settings/server/service";
 import { FEATURES } from "@/lib/features";
 import { resolveRequiredLanguage } from "@/lib/language";
+import { isGroupChatId } from "@/lib/telegram";
 import { chatCompletion, type ChatCompletionResult, type ChatMessage } from "@/server/llm/client";
 import {
   createIntervalScheduler,
@@ -97,10 +98,10 @@ export async function runDueScheduledTasks(deps: DueRunDeps): Promise<{ fired: n
       total: due.length,
     });
     // The fired message must be in the chat's configured language, like a normal
-    // reply. A private chat's id is the user id (positive); a group's is negative,
-    // so the sign selects which registry to read. Unset → the default language.
+    // reply. A private chat's id is the user id; a group's names the group — the
+    // kind selects which registry to read. Unset → the default language.
     const storedLanguage = await (
-      task.chatId.startsWith("-") ? getGroupLanguage(task.chatId) : getUserLanguage(task.chatId)
+      isGroupChatId(task.chatId) ? getGroupLanguage(task.chatId) : getUserLanguage(task.chatId)
     ).catch(() => null);
     const result = await fireScheduledTask(task, {
       personalityPrompt: deps.personalityPrompt,

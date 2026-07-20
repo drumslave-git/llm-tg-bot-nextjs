@@ -81,7 +81,7 @@ export function getEnv(): Env {
   const parsed = envSchema.safeParse(resolved);
   if (!parsed.success) {
     throw ApiError.internal("Invalid environment configuration", {
-      details: parsed.error.flatten().fieldErrors,
+      details: z.flattenError(parsed.error).fieldErrors,
       cause: parsed.error,
     });
   }
