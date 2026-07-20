@@ -13,6 +13,7 @@ import { bucketKeyOfInstant, weekBucketOf } from "../period";
 import { GRANULARITIES, type AnalyticsJobInfo, type Granularity } from "../types";
 import { regenerateAnalyticsInsights, runAnalyticsInsights } from "./insights";
 import { countHoursNeedingInsight, listInsightHours } from "./repository";
+import { getInsightScanFloor } from "./watermark";
 
 /**
  * Daily scheduler for the analytics insight job — the shared daily-job model
@@ -147,7 +148,13 @@ export async function getAnalyticsJobInfo(): Promise<AnalyticsJobInfo> {
   ]);
   const currentHour = bucketKeyOfInstant(new Date(), "hour", base.timezone);
   const [pendingUnits, regenerateBuckets] = await Promise.all([
-    countHoursNeedingInsight(getDb(), { timeZone: base.timezone, currentHour }).catch(() => 0),
+    countHoursNeedingInsight(getDb(), {
+      timeZone: base.timezone,
+      currentHour,
+      // Read-only use of the due-scan floor: the count answers the same
+      // question the scan does, so it may skip the same proven-scored span.
+      floorHour: getInsightScanFloor(base.timezone) ?? undefined,
+    }).catch(() => 0),
     getRegenerateBuckets(),
   ]);
 

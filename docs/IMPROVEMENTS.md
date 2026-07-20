@@ -23,6 +23,11 @@ Status (see the session log in `NEXTJS_REWRITE_PROGRESS.md` for proof):
   SSE throttling), 4.5 (`buildDeps` options object), 10.1 (SettingsForm split),
   11.3 (backup + trace-dir privacy docs).
 
+- 2026-07-20, pass 5 ✅: 3.2 (a round's tool calls run concurrently, capped)
+  and 9.2's remaining due-scan half (the insight scan floor). Also a status
+  correction: 9.1(1) — range-aware `scanTraces` — had in fact already landed
+  with 1.5's windowing in pass 2; the 9.1 header was stale.
+
 Still open: the needs-decision items (1.1 auth, 1.3 concurrency, 1.9 notice
 language, 7.1 one-shot retry, trace retention 1.5/11.1), the 6.1 bytea-media
 migration (a session of its own), 4.1 and 4.4 (both change when/how the bot
@@ -247,7 +252,7 @@ already argues for) implement it: on stall, re-send the conversation once with
 `tools` omitted and an instruction to answer from what it has. That converts a
 hard failure into a degraded answer.
 
-### 3.2 [M] performance — Tool calls within a round run sequentially
+### 3.2 ✅ [M] performance — Tool calls within a round run sequentially (done 2026-07-20; concurrent, capped at 4, results reported in call order)
 
 [tool-loop.ts](server/llm/tool-loop.ts:181) awaits each tool call in order. A
 model that emits three independent lookups (three `history_search` calls, a
@@ -411,7 +416,7 @@ One `tryEmbed(text)` with the two call sites keeps the intent without the copy.
 
 ## 9. Analytics
 
-### 9.1 [H] performance — Every dashboard read re-scans all trace history (2. scan-once ✅ done 2026-07-18; 1. and 3. open)
+### 9.1 [H] performance — Every dashboard read re-scans all trace history (1. range-aware `scanTraces` ✅ landed with 1.5's windowing, pass 2; 2. scan-once ✅ done 2026-07-18; 3. deferred until volume demands)
 
 [trace-source.ts](features/analytics/server/trace-source.ts): `readUsageRows`,
 `readTrafficTotals`, and `readTraceAvailability` each call `scanTraces`
@@ -427,7 +432,7 @@ active. Suggestions, in order of leverage:
    aggregate per (month, model, callKind) built at flush time — but only after
    1 and 2, which are nearly free.
 
-### 9.2 [M] performance — Hour queries filter on computed expressions (`getHourMessages` ✅ done 2026-07-18; due-scan watermark open)
+### 9.2 ✅ [M] performance — Hour queries filter on computed expressions (`getHourMessages` done 2026-07-18; due-scan floor done 2026-07-20)
 
 `getHourMessages` and `listHoursNeedingInsight`
 ([repository.ts](features/analytics/server/repository.ts:357)) filter/group by

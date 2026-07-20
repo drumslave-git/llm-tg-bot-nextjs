@@ -106,6 +106,67 @@ describe("runToolLoop", () => {
     expect(recorded[0].ok).toBe(false);
   });
 
+  it("runs a round's tool calls concurrently, recording results in call order", async () => {
+    const complete = vi
+      .fn()
+      .mockResolvedValueOnce(
+        calls([toolCall("c1", "a", { n: 1 }), toolCall("c2", "b", { n: 2 }), toolCall("c3", "c", { n: 3 })]),
+      )
+      .mockResolvedValueOnce(answer("done"));
+    const gates = new Map<string, (result: McpToolCallResult) => void>();
+    const started: string[] = [];
+    const callTool = vi.fn().mockImplementation(
+      (name: string) =>
+        new Promise<McpToolCallResult>((resolve) => {
+          started.push(name);
+          gates.set(name, resolve);
+        }),
+    );
+    const recorded: ToolCallRecord[] = [];
+    const resultPromise = runToolLoop({
+      seed: [],
+      complete,
+      callTool,
+      onToolCall: (rec) => void recorded.push(rec),
+    });
+
+    // All three calls are dispatched before any result resolves — concurrent.
+    await vi.waitFor(() => expect(started).toEqual(["a", "b", "c"]));
+    // Resolve in reverse order; reporting and the conversation stay in call order.
+    gates.get("c")!(okResult("third"));
+    gates.get("b")!(okResult("second"));
+    gates.get("a")!(okResult("first"));
+
+    const result = await resultPromise;
+    expect(result.content).toBe("done");
+    expect(recorded.map((r) => r.name)).toEqual(["a", "b", "c"]);
+    const secondConversation = complete.mock.calls[1][0];
+    expect(secondConversation.slice(-3)).toEqual([
+      { role: "tool", tool_call_id: "c1", content: "first" },
+      { role: "tool", tool_call_id: "c2", content: "second" },
+      { role: "tool", tool_call_id: "c3", content: "third" },
+    ]);
+  });
+
+  it("caps how many of a round's tool calls run at once", async () => {
+    const six = Array.from({ length: 6 }, (_, i) => toolCall(`c${i}`, "t", { i }));
+    const complete = vi.fn().mockResolvedValueOnce(calls(six)).mockResolvedValueOnce(answer("done"));
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const callTool = vi.fn().mockImplementation(async () => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      inFlight -= 1;
+      return okResult("x");
+    });
+    const result = await runToolLoop({ seed: [], complete, callTool });
+    expect(result.content).toBe("done");
+    expect(callTool).toHaveBeenCalledTimes(6);
+    // MAX_PARALLEL_TOOL_CALLS in tool-loop.ts.
+    expect(maxInFlight).toBe(4);
+  });
+
   it("stops and flags a loop when the model repeats the same call with no progress", async () => {
     // Always the same call signature → no new action → stall guard trips.
     const complete = vi.fn().mockResolvedValue(calls([toolCall("c1", "spin", { n: 1 })]));

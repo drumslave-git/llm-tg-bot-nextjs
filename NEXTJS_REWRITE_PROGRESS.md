@@ -188,6 +188,51 @@ Next: **Priority 12 — Image generation** (Analytics landed 2026-07-15 as the n
 
 ### Session log
 
+- 2026-07-20 (Improvements pass 5, "work on improvements"): **3.2 parallel tool
+  calls and 9.2's due-scan floor are done** — the two items every earlier pass
+  log had skipped over (pass 4's "closes every no-decision item" claim was
+  slightly ahead of the doc: 3.2 and 9.2's watermark half were still open).
+  - **3.2 (`server/llm/tool-loop.ts`):** a round's tool calls now run
+    **concurrently**, capped at 4 in flight (`MAX_PARALLEL_TOOL_CALLS` — a
+    model that emits a large batch must not stampede the DB pool or
+    Playwright). Safe by construction: the model asked for all of a round's
+    calls before seeing any result, so they are independent. `onToolCall`
+    reporting and the `role:"tool"` conversation appends stay in **call-list
+    order** regardless of completion order, so traces and the conversation the
+    model re-reads are deterministic; the per-tool `mcp-tools-*` traces carry
+    the real timings. Two new unit tests: all calls dispatched before any
+    resolves + reverse-order resolution still appends in call order, and the
+    in-flight cap is exactly 4 for a 6-call round.
+  - **9.2 due-scan floor (`features/analytics/server/watermark.ts`):** the
+    insight due-scan (`listHoursNeedingInsight` / `countHoursNeedingInsight` —
+    run nightly *and* on every `/jobs` read) no longer re-groups the whole
+    mirror through the per-row timezone expression. A process-local floor
+    (`globalThis`, like the schedulers) remembers what a completed scan proved
+    — every hour below its oldest pending find is scored — and the next scan
+    filters `sent_at >=` that hour's UTC start **before** grouping. Correctness
+    preserved exactly, not probabilistically: the bound is **inclusive** (the
+    floor hour itself may have failed scoring), it never advances closer than
+    **25 h behind now** (Telegram can deliver a backlogged update up to ~24 h
+    old), and the two paths that create work below it both reset it —
+    `regenerateAnalyticsInsights` (drops rows) and `importHistoryCsv` (writes
+    old rows; the same cross-feature poke pattern as bot-manager →
+    vision-backfill). A boot starts cold with one unbounded scan — the old
+    behavior. Four new integration tests: floor hides a below-floor direct DB
+    write until reset; a 16 h-late message inside the safety margin is still
+    found; a CSV import resets it (imported 2026-07-10 hour gets scored);
+    regenerate resets it (dropped hour re-scored after the floor had advanced
+    past it). The analytics test file's `beforeEach` also resets the floor —
+    it lives on `globalThis` and would otherwise leak proof across truncates.
+  - **Doc correction:** `docs/IMPROVEMENTS.md` 9.1's header claimed range-aware
+    `scanTraces` (9.1(1)) was open; it landed with 1.5's windowing in pass 2
+    (`scanTraces` skips non-intersecting month files). Header fixed.
+  - **Proof:** lint ✓, typecheck ✓, unit **544** ✓ (13 tool-loop), integration
+    **240 ✓ / 21 skipped** (28 analytics, 12 transfer), build ✓ (no dev server
+    was running on 3200). No schema change — the 9.3 `(sent_at)` index stays
+    deferred until volume demands; the floor already skips the per-row
+    timezone math and the grouping, and the filter is shaped to use that index
+    when it arrives.
+
 - 2026-07-20 (Improvements pass 4, "continue"): **2.5 CHECK constraints, 2.6 SSE
   throttling, 4.5 `buildDeps` object, 10.1 SettingsForm split, and 11.3 backup
   docs are done.** This closes every no-decision item from `docs/IMPROVEMENTS.md`

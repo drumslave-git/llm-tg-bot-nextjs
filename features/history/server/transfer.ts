@@ -2,6 +2,7 @@ import "server-only";
 
 import type { DrizzleDb } from "@/db/drizzle";
 import { getDb } from "@/db/drizzle";
+import { resetInsightScanFloor } from "@/features/analytics/server/watermark";
 import { ApiError } from "@/lib/api-error";
 import { FEATURES } from "@/lib/features";
 import type { TraceTrigger } from "@/lib/trace";
@@ -143,7 +144,13 @@ export async function importHistoryCsv(
       },
     });
 
-    if (result.imported > 0) publishEvent(FEATURE.realtimeTopic);
+    if (result.imported > 0) {
+      publishEvent(FEATURE.realtimeTopic);
+      // Imported rows can land in hours the analytics due-scan has already
+      // proven scored — drop its floor so those hours become owed work again
+      // (the same poke pattern as the bot manager arming the vision backfill).
+      resetInsightScanFloor();
+    }
     await trace.succeed({
       outputSummary: `imported ${result.imported}, skipped ${result.skippedDuplicates}, invalid ${errors.length}`,
       relatedIds: { [FEATURE.relatedIdsKey]: inserted.map((r) => String(r.id)) },

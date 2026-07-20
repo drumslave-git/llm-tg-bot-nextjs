@@ -33,6 +33,11 @@ import {
   upsertChatHourInsight,
   upsertPeriodInsight,
 } from "./repository";
+import {
+  advanceInsightScanFloor,
+  getInsightScanFloor,
+  resetInsightScanFloor,
+} from "./watermark";
 
 /**
  * The analytics insight job.
@@ -159,13 +164,26 @@ async function pendingHours(
   deps: AnalyticsInsightsDeps,
 ): Promise<PendingInsightHour[]> {
   const now = deps.now ?? new Date();
-  return listHoursNeedingInsight(db, {
+  const currentHour = bucketKeyOfInstant(now, "hour", deps.timeZone);
+  const pending = await listHoursNeedingInsight(db, {
     timeZone: deps.timeZone,
     // The in-progress hour is excluded: scoring it would freeze a partial
     // conversation, and a scored hour is never re-read.
-    currentHour: bucketKeyOfInstant(now, "hour", deps.timeZone),
+    currentHour,
     limit: MAX_HOURS_PER_RUN,
+    floorHour: getInsightScanFloor(deps.timeZone) ?? undefined,
   });
+  // The scan orders ascending, so its first find is the oldest owed hour
+  // anywhere above the floor — everything below that (or below currentHour,
+  // when nothing is owed) is proven scored. Remember it so the next scan does
+  // not re-group the whole mirror.
+  advanceInsightScanFloor({
+    oldestPendingHour: pending[0]?.insightHour ?? null,
+    currentHour,
+    now,
+    timeZone: deps.timeZone,
+  });
+  return pending;
 }
 
 /**
@@ -199,6 +217,9 @@ export async function regenerateAnalyticsInsights(
 ): Promise<AnalyticsInsightsResult> {
   const db = deps.db ?? getDb();
   const dropped = await deleteInsightsForPeriod(db, params);
+  // The drop just un-scored hours that may lie below the due-scan's floor — the
+  // next scan must be unbounded so it sees them owed again.
+  resetInsightScanFloor();
   const pending = await pendingHours(db, deps);
   if (pending.length === 0) {
     return {

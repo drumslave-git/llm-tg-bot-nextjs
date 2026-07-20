@@ -5,9 +5,13 @@ import type { ChatCompletionResult, ChatMessage } from "@/server/llm/client";
 import { listTraces, startTrace } from "@/server/trace";
 import { startTestDb, type TestDb } from "@/test/db";
 
+import { guessMapping } from "@/features/history/csv";
+import { importHistoryCsv } from "@/features/history/server/transfer";
+
 import { getMetricTotals, getModels, getMoodForPeriod, getSeries } from "./metrics";
 import { regenerateAnalyticsInsights, runAnalyticsInsights } from "./insights";
 import { getPeriodInsight } from "./repository";
+import { resetInsightScanFloor } from "./watermark";
 
 let ctx: TestDb;
 
@@ -21,6 +25,9 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await ctx.truncate();
+  // The due-scan floor lives on globalThis and would otherwise carry proof from
+  // one test's data into the next test's freshly-truncated database.
+  resetInsightScanFloor();
 });
 
 afterEach(() => {
@@ -717,5 +724,102 @@ describe("regenerateAnalyticsInsights", () => {
       { granularity: "all", bucket: "all" },
     );
     expect(result.unitsComputed).toBe(2);
+  });
+});
+
+describe("insight due-scan floor", () => {
+  const NOW = new Date("2026-07-15T12:00:00Z");
+  const deps = () => ({ complete: stubComplete(), timeZone: "UTC", now: NOW, db: ctx.db });
+
+  it("skips hours below the floor until something resets it", async () => {
+    await seedMessage({
+      chatId: "c1",
+      telegramMessageId: 1,
+      role: "user",
+      userId: "u1",
+      content: "early chat",
+      sentAt: new Date("2026-07-14T09:00:00Z"),
+    });
+    const first = await runAnalyticsInsights(deps());
+    expect(first.unitsComputed).toBe(1);
+
+    // A row lands in an hour older than the backlog window, via a direct DB
+    // write — the one path with no reset hook. The floor hides it…
+    await seedMessage({
+      chatId: "c1",
+      telegramMessageId: 2,
+      role: "user",
+      userId: "u1",
+      content: "ancient row",
+      sentAt: new Date("2026-07-12T08:00:00Z"),
+    });
+    const second = await runAnalyticsInsights(deps());
+    expect(second.summary).toBe("nothing to compute");
+
+    // …and a reset (what import and regenerate do) makes it owed again.
+    resetInsightScanFloor();
+    const third = await runAnalyticsInsights(deps());
+    expect(third.unitsComputed).toBe(1);
+  });
+
+  it("still finds a late-delivered message within the Telegram backlog window", async () => {
+    // An empty run advances the floor as far as it may go: 25 h behind now.
+    const empty = await runAnalyticsInsights(deps());
+    expect(empty.summary).toBe("nothing to compute");
+
+    // A backlogged update lands 16 h in the past — inside the safety margin.
+    await seedMessage({
+      chatId: "c1",
+      telegramMessageId: 1,
+      role: "user",
+      userId: "u1",
+      content: "delivered late",
+      sentAt: new Date("2026-07-14T20:00:00Z"),
+    });
+    const result = await runAnalyticsInsights(deps());
+    expect(result.unitsComputed).toBe(1);
+  });
+
+  it("is reset by a history CSV import, so imported old hours get scored", async () => {
+    await runAnalyticsInsights(deps());
+
+    const headers = ["chat_id", "telegram_message_id", "role", "content", "sent_at"];
+    const csv = [headers.join(","), "c9,50,user,imported oldie,2026-07-10T09:00:00Z"].join("\n");
+    const imported = await importHistoryCsv(
+      { csv, mapping: guessMapping(headers) },
+      { kind: "test" },
+      ctx.db,
+    );
+    expect(imported.imported).toBe(1);
+
+    const result = await runAnalyticsInsights(deps());
+    expect(result.unitsComputed).toBe(1);
+    const hour = await getPeriodInsight(ctx.db, {
+      granularity: "hour",
+      bucket: "2026-07-10 09",
+      chatId: "c9",
+    });
+    expect(hour?.moodScore).toBe(70);
+  });
+
+  it("is reset by a regenerate, so its dropped hours are re-scored", async () => {
+    await seedMessage({
+      chatId: "c1",
+      telegramMessageId: 1,
+      role: "user",
+      userId: "u1",
+      content: "planning the weekend trip",
+      sentAt: new Date("2026-07-14T09:00:00Z"),
+    });
+    await runAnalyticsInsights(deps());
+    // A second, empty run advances the floor past the scored hour.
+    await runAnalyticsInsights(deps());
+
+    const regen = await regenerateAnalyticsInsights(deps(), {
+      granularity: "hour",
+      bucket: "2026-07-14 09",
+    });
+    // Re-scored only because regenerate dropped the floor along with the rows.
+    expect(regen.unitsComputed).toBe(1);
   });
 });

@@ -179,7 +179,7 @@ export interface PendingInsightHour {
  */
 export async function listHoursNeedingInsight(
   db: DrizzleDb,
-  params: { timeZone: string; currentHour: string; limit: number },
+  params: { timeZone: string; currentHour: string; limit: number; floorHour?: string },
 ): Promise<PendingInsightHour[]> {
   const rows = await db.execute<{ chat_id: string; insight_hour: string; message_count: number }>(sql`
     with hours as (
@@ -188,7 +188,7 @@ export async function listHoursNeedingInsight(
         to_char(date_trunc('hour', (sent_at at time zone ${params.timeZone})), 'YYYY-MM-DD HH24') as insight_hour,
         count(*)::int as message_count
       from chat_messages
-      where deleted_at is null
+      where deleted_at is null ${hourScanFloorFilter(params)}
       group by 1, 2
     )
     select hours.chat_id, hours.insight_hour, hours.message_count
@@ -215,10 +215,22 @@ export async function listInsightHours(db: DrizzleDb): Promise<string[]> {
   return rows.rows.map((r) => r.insight_hour);
 }
 
+/**
+ * The scan-floor bound for the due-scan CTEs: only group messages at or after
+ * the floor hour (inclusive — the floor hour itself may still be owed). The
+ * bound is applied to raw `sent_at`, so rows below it skip the per-row timezone
+ * expression entirely instead of being grouped and then filtered out.
+ */
+function hourScanFloorFilter(params: { timeZone: string; floorHour?: string }): SQL {
+  if (!params.floorHour) return sql``;
+  const { fromUtc } = insightHourUtcRange(params.floorHour, params.timeZone);
+  return sql`and sent_at >= ${fromUtc}`;
+}
+
 /** How many (chat, hour) pairs still need an insight — for the dashboard backlog. */
 export async function countHoursNeedingInsight(
   db: DrizzleDb,
-  params: { timeZone: string; currentHour: string },
+  params: { timeZone: string; currentHour: string; floorHour?: string },
 ): Promise<number> {
   const rows = await db.execute<{ n: number }>(sql`
     with hours as (
@@ -226,7 +238,7 @@ export async function countHoursNeedingInsight(
         chat_id,
         to_char(date_trunc('hour', (sent_at at time zone ${params.timeZone})), 'YYYY-MM-DD HH24') as insight_hour
       from chat_messages
-      where deleted_at is null
+      where deleted_at is null ${hourScanFloorFilter(params)}
       group by 1, 2
     )
     select count(*)::int as n

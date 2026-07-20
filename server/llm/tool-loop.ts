@@ -124,6 +124,35 @@ const MAX_STALL_ROUNDS = 3;
  */
 const DEFAULT_MAX_ROUNDS = 16;
 
+/**
+ * How many of a round's tool calls may run at once. A model that emits several
+ * independent lookups in one round (three history searches, a search plus a
+ * page read) should not pay for them serially, but an unbounded batch could
+ * stampede the DB pool or Playwright — so parallel, with a small cap.
+ */
+const MAX_PARALLEL_TOOL_CALLS = 4;
+
+/**
+ * Map `items` through `fn` with at most `limit` in flight, results in input
+ * order. `fn` must not reject (the tool executor catches internally).
+ */
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, async () => {
+      for (let i = next++; i < items.length; i = next++) {
+        results[i] = await fn(items[i]);
+      }
+    }),
+  );
+  return results;
+}
+
 function toolCallSignature(call: ChatCompletionMessageToolCall): string {
   if (call.type !== "function" || !call.function?.name) return "";
   return `${call.function.name}:${call.function.arguments ?? ""}`;
@@ -221,12 +250,16 @@ export async function runToolLoop(params: RunToolLoopParams): Promise<ToolLoopRe
 
     conversation.push(round.assistantMessage);
 
-    for (const call of toolCalls) {
-      if (call.type !== "function" || !call.function?.name) continue;
+    const calls = toolCalls.flatMap((call) => {
+      if (call.type !== "function" || !call.function?.name) return [];
       seen.add(toolCallSignature(call));
-      const name = call.function.name;
-      const args = parseToolArguments(call.function.arguments);
+      return [{ id: call.id, name: call.function.name, args: parseToolArguments(call.function.arguments) }];
+    });
 
+    // A round's calls are independent by construction (the model asked for all of
+    // them before seeing any result), so they run concurrently — capped, since a
+    // batch of Playwright reads or DB scans should not land at once.
+    const records = await mapWithConcurrency(calls, MAX_PARALLEL_TOOL_CALLS, async ({ name, args }) => {
       let result: McpToolCallResult;
       let ok = true;
       try {
@@ -236,9 +269,14 @@ export async function runToolLoop(params: RunToolLoopParams): Promise<ToolLoopRe
         ok = false;
         result = { text: err instanceof Error ? err.message : "Tool execution failed", isError: true };
       }
+      return { name, args, result, ok } satisfies ToolCallRecord;
+    });
 
-      await params.onToolCall?.({ name, args, result, ok });
-      conversation.push({ role: "tool", tool_call_id: call.id, content: result.text });
+    // Report and append in call-list order regardless of completion order, so
+    // traces and the conversation the model re-reads stay deterministic.
+    for (let i = 0; i < calls.length; i += 1) {
+      await params.onToolCall?.(records[i]);
+      conversation.push({ role: "tool", tool_call_id: calls[i].id, content: records[i].result.text });
     }
   }
 }
