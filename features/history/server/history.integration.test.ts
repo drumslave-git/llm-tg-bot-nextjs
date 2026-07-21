@@ -183,6 +183,36 @@ describe("getConversationWindow", () => {
     expect(window).toEqual({ messages: [], count: 0 });
   });
 
+  it("keeps only the newest N messages when capped with maxMessages", async () => {
+    for (const [id, content] of [
+      [1, "oldest"],
+      [2, "middle"],
+      [3, "newest"],
+    ] as const) {
+      await recordIncomingMessage(
+        {
+          chatId: "5",
+          telegramMessageId: id,
+          userId: "100",
+          content,
+          sentAt: new Date(EARLIER_TODAY.getTime() + id * 60_000),
+        },
+        ctx.db,
+      );
+    }
+
+    const window = await getConversationWindow({ chatId: "5", now: TODAY, maxMessages: 2 }, ctx.db);
+    // The cap drops the oldest turns first — recency wins in a shrunken window.
+    expect(window.count).toBe(2);
+    expect(window.messages[0].content).not.toContain("[#1] User 100: oldest");
+    expect(window.messages[0].content).toContain("[#2] User 100: middle");
+    expect(window.messages[0].content).toContain("[#3] User 100: newest");
+
+    // A cap of zero yields an empty window without touching the transcript shape.
+    const empty = await getConversationWindow({ chatId: "5", now: TODAY, maxMessages: 0 }, ctx.db);
+    expect(empty).toEqual({ messages: [], count: 0 });
+  });
+
   it("labels user turns with the known-user label", async () => {
     await upsertKnownUser(ctx.db, {
       userId: "100",

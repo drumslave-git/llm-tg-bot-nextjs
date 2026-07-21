@@ -625,6 +625,123 @@ describe("handleIncomingMessage", () => {
 });
 
 /**
+ * A request too large for the model's context window is the one provider failure
+ * the service can fix itself: re-inject less history and try again. The shrink
+ * must be stepwise (halving, newest messages kept), end at a no-history attempt,
+ * and leave a warn step in the trace for every retry.
+ */
+describe("handleIncomingMessage — context-overflow retry", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const overflow = () =>
+    new Error(
+      "LLM endpoint error (400): request (36280 tokens) exceeds the available context size (32768 tokens), try increasing it",
+    );
+
+  /** A window whose transcript names its own size, so calls are distinguishable. */
+  const window = (n: number) => ({
+    messages: [{ role: "user" as const, content: `transcript of ${n}` }],
+    count: n,
+  });
+
+  /** A generator that overflows `failures` times, then answers normally. */
+  function generatorFailing(failures: number) {
+    const fn = vi.fn();
+    for (let i = 0; i < failures; i++) fn.mockRejectedValueOnce(overflow());
+    return fn.mockImplementation(async (messages, _onToolCall, onRequest, onRound) => {
+      await onRequest?.({ model: "m", messages });
+      const result = { content: "hi back", model: "m", latencyMs: 5 };
+      await onRound?.({ index: 0, isFinal: true, ...result });
+      return result;
+    });
+  }
+
+  it("halves the history window per overflow until the request fits, tracing each retry", async () => {
+    const loadHistory = vi
+      .fn()
+      .mockResolvedValueOnce(window(8)) // initial load
+      .mockResolvedValueOnce(window(4))
+      .mockResolvedValueOnce(window(2));
+    const generateReply = generatorFailing(2);
+    const d = deps({ loadHistory, generateReply });
+
+    const out = await handleIncomingMessage(incoming({ text: "hi" }), d);
+    expect(out).toEqual({ status: "replied", text: "hi back" });
+
+    // Reloads ask for the newest half of the previous cap: 8 → 4 → 2.
+    expect(loadHistory).toHaveBeenCalledTimes(3);
+    expect(loadHistory.mock.calls[1][0]).toEqual({ maxMessages: 4 });
+    expect(loadHistory.mock.calls[2][0]).toEqual({ maxMessages: 2 });
+    // The attempt that succeeded was composed from the shrunken window.
+    const finalMessages = generateReply.mock.calls[2][0];
+    expect(finalMessages.some((m: { content: unknown }) => m.content === "transcript of 2")).toBe(
+      true,
+    );
+
+    const retries = recorder.event.mock.calls
+      .map((c) => c[0])
+      .filter((e) => e.message.startsWith("context overflow"));
+    expect(retries).toHaveLength(2);
+    expect(retries[0].level).toBe("warn");
+    expect(retries[0].message).toContain("shrunk to 4 messages");
+    expect(retries[0].data).toMatchObject({
+      attempt: 1,
+      previousMessageCount: 8,
+      retryMessageCount: 4,
+      error: expect.stringContaining("exceeds the available context size"),
+    });
+    expect(retries[1].data).toMatchObject({
+      attempt: 2,
+      previousMessageCount: 4,
+      retryMessageCount: 2,
+    });
+  });
+
+  it("drops to a no-history attempt when the window can shrink no further", async () => {
+    const loadHistory = vi.fn().mockResolvedValue(window(1));
+    const generateReply = generatorFailing(1);
+    const d = deps({ loadHistory, generateReply });
+
+    const out = await handleIncomingMessage(incoming({ text: "hi" }), d);
+    expect(out).toEqual({ status: "replied", text: "hi back" });
+
+    // Cap 1 → 0: no reload — the retry simply omits the transcript entirely.
+    expect(loadHistory).toHaveBeenCalledTimes(1);
+    const retryMessages = generateReply.mock.calls[1][0];
+    expect(retryMessages.some((m: { content: unknown }) => m.content === "transcript of 1")).toBe(
+      false,
+    );
+    const retry = recorder.event.mock.calls
+      .map((c) => c[0])
+      .find((e) => e.message === "context overflow — retrying without history");
+    expect(retry.level).toBe("warn");
+    expect(retry.data).toMatchObject({ previousMessageCount: 1, retryMessageCount: 0 });
+  });
+
+  it("fails when the request overflows even with no history injected", async () => {
+    const generateReply = vi.fn().mockRejectedValue(overflow());
+    const d = deps({ generateReply }); // default loadHistory: empty window
+    const out = await handleIncomingMessage(incoming({ text: "hi" }), d);
+    expect(out.status).toBe("error");
+    // Nothing left to shrink → no retry, the overflow surfaces as-is.
+    expect(generateReply).toHaveBeenCalledOnce();
+    expect(recorder.fail).toHaveBeenCalledOnce();
+  });
+
+  it("does not retry a non-overflow provider failure", async () => {
+    const loadHistory = vi.fn().mockResolvedValue(window(4));
+    const generateReply = vi.fn().mockRejectedValue(new Error("provider down"));
+    const d = deps({ loadHistory, generateReply });
+    const out = await handleIncomingMessage(incoming({ text: "hi" }), d);
+    expect(out).toEqual({ status: "error", message: "provider down" });
+    expect(generateReply).toHaveBeenCalledOnce();
+    expect(loadHistory).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
  * The analyzer only ever sees a group message the deterministic checks could not
  * settle — i.e. one that may be calling the bot by name in another alphabet or an
  * inflected form.

@@ -203,6 +203,31 @@ function apiErrorDetail(err: APIError): string {
   return err.message;
 }
 
+/**
+ * Provider phrasings for "this request does not fit the model's context window".
+ * There is no reliable structured code across OpenAI-compatible servers —
+ * llama.cpp, vLLM, and OpenAI each say it differently — so detection is by
+ * message. Matched against the already-mapped {@link ApiError} message (which
+ * embeds the provider's detail verbatim).
+ */
+const CONTEXT_OVERFLOW_PATTERNS: readonly RegExp[] = [
+  /exceeds? the (?:available )?context (?:size|length|window)/i, // llama.cpp
+  /maximum context length/i, // OpenAI, vLLM
+  /context[_ ]length[_ ]exceeded/i, // OpenAI error code
+  /context overflow/i,
+];
+
+/**
+ * True when an LLM failure means the request was too large for the model's
+ * context window — the one provider error a caller can fix by sending less
+ * (e.g. shrinking the injected history) rather than by retrying as-is.
+ */
+export function isContextOverflowError(err: unknown): boolean {
+  const message =
+    err instanceof Error ? err.message : typeof err === "string" ? err : "";
+  return CONTEXT_OVERFLOW_PATTERNS.some((pattern) => pattern.test(message));
+}
+
 /** Map provider/network failures to a clean {@link ApiError} without leaking internals. */
 export function toLlmError(err: unknown, baseUrl: string): ApiError {
   if (err instanceof ApiError) return err;

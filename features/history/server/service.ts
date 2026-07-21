@@ -250,6 +250,12 @@ export async function getConversationWindow(
     excludeTelegramMessageId?: number;
     now?: Date;
     /**
+     * Cap the window to the newest N messages. Unset → the whole 24-hour window.
+     * Used by the context-overflow retry: a day too big for the model's context
+     * is re-injected progressively smaller until the request fits.
+     */
+    maxMessages?: number;
+    /**
      * Resolve media suffixes (e.g. ` [photo: <description>]`) for the window's
      * message ids, so past image turns read as text. Injected so history stays
      * decoupled from the vision feature. Best-effort — omit or resolve empty when
@@ -260,9 +266,15 @@ export async function getConversationWindow(
   db: DrizzleDb = getDb(),
 ): Promise<ConversationWindow> {
   const since = historyWindowStart(params.now ?? new Date());
-  const records = await getChatMessagesSince(db, params.chatId, since, {
+  const fetched = await getChatMessagesSince(db, params.chatId, since, {
     excludeTelegramMessageId: params.excludeTelegramMessageId,
   });
+  // Keep the newest N: recency matters most for a reply, so a shrunken window
+  // drops the oldest turns first.
+  const records =
+    params.maxMessages != null && params.maxMessages < fetched.length
+      ? fetched.slice(fetched.length - params.maxMessages)
+      : fetched;
 
   const speakerLabels = await resolveSpeakerLabels(db, records);
   const mediaSuffixes = params.loadMediaSuffixes

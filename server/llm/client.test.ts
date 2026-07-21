@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { imagePart } from "@/test/__mocks__/vision";
-import { sanitizeMessagesForTrace, toOpenAiBaseUrl, type ChatMessage } from "./client";
+import {
+  isContextOverflowError,
+  sanitizeMessagesForTrace,
+  toOpenAiBaseUrl,
+  type ChatMessage,
+} from "./client";
 
 describe("sanitizeMessagesForTrace", () => {
   it("leaves plain-text messages untouched", () => {
@@ -39,6 +44,36 @@ describe("sanitizeMessagesForTrace", () => {
       type: "image_url",
       image_url: { url: "data:image/png;base64,ABCD" },
     });
+  });
+});
+
+describe("isContextOverflowError", () => {
+  it.each([
+    // llama.cpp, as mapped through toLlmError
+    "LLM endpoint error (400): request (36280 tokens) exceeds the available context size (32768 tokens), try increasing it",
+    // llama.cpp (older phrasing)
+    "the request exceeds the available context size, try increasing the context size",
+    // OpenAI / vLLM
+    "This model's maximum context length is 32768 tokens. However, you requested 36280 tokens.",
+    // OpenAI structured error code, when it lands in the message
+    "400 context_length_exceeded",
+    "context overflow detected",
+  ])("matches: %s", (message) => {
+    expect(isContextOverflowError(new Error(message))).toBe(true);
+    expect(isContextOverflowError(message)).toBe(true);
+  });
+
+  it.each([
+    "LLM endpoint error (500): internal server error",
+    "Connection to http://localhost:11434 timed out",
+    "LLM returned an empty response",
+  ])("does not match other failures: %s", (message) => {
+    expect(isContextOverflowError(new Error(message))).toBe(false);
+  });
+
+  it("is false for non-error values", () => {
+    expect(isContextOverflowError(undefined)).toBe(false);
+    expect(isContextOverflowError({ status: 400 })).toBe(false);
   });
 });
 

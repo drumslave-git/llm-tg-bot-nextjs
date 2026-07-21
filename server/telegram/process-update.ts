@@ -220,11 +220,12 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
       const interval = setInterval(tick, TYPING_REFRESH_MS);
       return () => clearInterval(interval);
     },
-    loadHistory() {
+    loadHistory(options) {
       return getConversationWindow({
         chatId,
         botLabel,
         excludeTelegramMessageId: currentMessageId,
+        maxMessages: options?.maxMessages,
         // Turn stored media descriptions into transcript suffixes so a past image
         // turn reads as text (e.g. ` [photo: a red car…]`).
         loadMediaSuffixes: (ids) => getMediaSuffixesForMessages(chatId, ids),

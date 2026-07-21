@@ -199,6 +199,32 @@ Next: **Priority 12 — Image generation** (Analytics landed 2026-07-15 as the n
 
 ### Session log
 
+- 2026-07-21 (user-requested — context-overflow retry with stepwise history
+  shrinking, done): a reply request too large for the model's context window
+  (seen live: `LLM endpoint error (400): request (36280 tokens) exceeds the
+  available context size (32768 tokens)`) no longer fails the reply outright.
+  The bot-messaging service now catches the overflow, halves the injected
+  history window (newest messages kept), and retries — repeatedly — down to a
+  final attempt with no history at all; only then does the error surface. Every
+  retry is a **warn `step` trace event** (`context overflow — retrying with
+  history shrunk to N messages` / `… retrying without history`, with `attempt`,
+  `previousMessageCount`, `retryMessageCount`, and the provider error in
+  `data`), each followed by the retried request's own `llm_request` event, so
+  the trace shows exactly which window size finally fit.
+  - `server/llm/client.ts`: new `isContextOverflowError()` — message-pattern
+    detection (llama.cpp, OpenAI/vLLM phrasings, `context_length_exceeded`),
+    since OpenAI-compatible servers expose no structured code for this.
+  - `features/history/server/service.ts`: `getConversationWindow` gained
+    `maxMessages` (keeps the newest N rows; 0 → empty window).
+  - `features/bot-messaging/server/service.ts`: `loadHistory` dep now takes
+    `{ maxMessages? }`; the generate call sits in a retry loop whose shrink
+    schedule runs on the *requested* cap (guaranteed termination regardless of
+    what the loader returns).
+  - `server/telegram/process-update.ts`: `loadHistory` forwards the cap.
+  - Proof: typecheck ✓, lint ✓, 606 unit tests ✓ (4 new retry tests + detector
+    tests), history integration suite 20/20 ✓ (new `maxMessages` test).
+  - Note: the running dev server (if any) needs a restart to pick this up.
+
 - 2026-07-21 (user-requested — ad blocking in the page reader + tool rename, done):
   the `read_page` MCP tool is now **`read_web_page`** (clearer verb phrase for the
   model, matching `search_web`), and the Playwright page fetcher drops ad/tracker

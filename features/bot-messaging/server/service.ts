@@ -6,7 +6,11 @@ import type { DrizzleDb } from "@/db/drizzle";
 import { FEATURES } from "@/lib/features";
 import { buildLanguageInstruction } from "@/lib/language";
 import type { ChatContentPart, ChatMessage, ChatUsage } from "@/server/llm/client";
-import { llmUsageOf, sanitizeRequestBodyForTrace } from "@/server/llm/client";
+import {
+  isContextOverflowError,
+  llmUsageOf,
+  sanitizeRequestBodyForTrace,
+} from "@/server/llm/client";
 import { startTrace, type TraceRecorder } from "@/server/trace";
 import { buildAnalyzerMessages, parseAnalyzerVerdict } from "./address-analyzer";
 import { checkAddressed, type AddressResult, type AddressSource, type BotIdentity } from "./addressing";
@@ -143,8 +147,13 @@ export interface BotMessagingDeps {
   /**
    * Load the current-day conversation window as prior turns to inject before the
    * current message. Injected so the service stays free of DB/history coupling.
+   * `maxMessages` caps the window to the newest N — the context-overflow retry
+   * reloads with progressively smaller caps until the request fits the model.
    */
-  loadHistory: () => Promise<{ messages: ChatMessage[]; count: number }>;
+  loadHistory: (options?: { maxMessages?: number }) => Promise<{
+    messages: ChatMessage[];
+    count: number;
+  }>;
   /**
    * Load a context block to inject as a system message after the base system
    * prompt: in a group, the participant roster (known members + operator notes);
@@ -534,7 +543,7 @@ export async function handleIncomingMessage(
         });
       }
 
-      const messages: ChatMessage[] = [
+      const composeMessages = (historyMessages: ChatMessage[]): ChatMessage[] => [
         { role: "system", content: systemPrompt },
         ...(chatContext ? [{ role: "system" as const, content: chatContext.content }] : []),
         ...(memory ? [{ role: "system" as const, content: memory.content }] : []),
@@ -542,7 +551,7 @@ export async function handleIncomingMessage(
           ? [{ role: "system" as const, content: senderPreferences.content }]
           : []),
         ...(addressingHint ? [{ role: "system" as const, content: addressingHint }] : []),
-        ...history.messages,
+        ...historyMessages,
         ...(deps.timeContext ? [{ role: "system" as const, content: deps.timeContext }] : []),
         ...(languageInstruction
           ? [{ role: "system" as const, content: languageInstruction }]
@@ -557,39 +566,80 @@ export async function handleIncomingMessage(
       // the request is the *whole* body the model saw (model, messages, tools), not
       // hand-picked fields. Inline image bytes are replaced with a compact marker
       // (the real image is on the Vision page); all other content is verbatim.
-      const reply = await deps.generateReply(
-        messages,
-        async (call) => {
+      const generate = (historyMessages: ChatMessage[]) =>
+        deps.generateReply(
+          composeMessages(historyMessages),
+          async (call) => {
+            await trace.event({
+              type: "external_call",
+              level: call.ok ? "info" : "warn",
+              message: `tool: ${call.name}`,
+              data: { args: call.args, result: call.result },
+            });
+          },
+          async (requestBody) => {
+            await trace.event({
+              type: "llm_request",
+              message: "request",
+              data: sanitizeRequestBodyForTrace(requestBody),
+            });
+          },
+          // 4b. One response event per model round, as it happens. A reply that loops
+          // through tools produces several; a direct answer produces one. Recording
+          // the sum instead made those two shapes indistinguishable, which is exactly
+          // what the performance dashboard needs to tell apart.
+          async (round) => {
+            await trace.event({
+              type: "llm_response",
+              message: round.isFinal ? "response" : `tool turn ${round.index + 1} response`,
+              data: round.responseBody ?? {},
+              usage: {
+                ...llmUsageOf(round),
+                callKind: round.isFinal ? "reply-final" : "reply-tool-turn",
+              },
+            });
+          },
+        );
+
+      // 4c. Context-overflow retry: a day of history can outgrow the model's
+      // context window, and the only caller-fixable lever is how much history is
+      // injected. On overflow, halve the window (newest messages kept) and retry,
+      // down to a final attempt with no history at all. The shrink schedule runs
+      // on the *requested* cap — never on what the loader returned — so it always
+      // terminates. Every retry is recorded as its own warn step (followed by the
+      // retried request event), so the trace shows exactly which window size
+      // finally fit. Any other failure, or overflow with history already empty,
+      // propagates as before.
+      let historyWindow = history;
+      let windowCap = history.count;
+      let reply: GeneratedReply;
+      for (let attempt = 1; ; attempt++) {
+        try {
+          reply = await generate(historyWindow.messages);
+          break;
+        } catch (err) {
+          if (!isContextOverflowError(err) || windowCap === 0) throw err;
+          windowCap = Math.floor(windowCap / 2);
           await trace.event({
-            type: "external_call",
-            level: call.ok ? "info" : "warn",
-            message: `tool: ${call.name}`,
-            data: { args: call.args, result: call.result },
-          });
-        },
-        async (requestBody) => {
-          await trace.event({
-            type: "llm_request",
-            message: "request",
-            data: sanitizeRequestBodyForTrace(requestBody),
-          });
-        },
-        // 4b. One response event per model round, as it happens. A reply that loops
-        // through tools produces several; a direct answer produces one. Recording
-        // the sum instead made those two shapes indistinguishable, which is exactly
-        // what the performance dashboard needs to tell apart.
-        async (round) => {
-          await trace.event({
-            type: "llm_response",
-            message: round.isFinal ? "response" : `tool turn ${round.index + 1} response`,
-            data: round.responseBody ?? {},
-            usage: {
-              ...llmUsageOf(round),
-              callKind: round.isFinal ? "reply-final" : "reply-tool-turn",
+            type: "step",
+            level: "warn",
+            message:
+              windowCap > 0
+                ? `context overflow — retrying with history shrunk to ${windowCap} messages`
+                : "context overflow — retrying without history",
+            data: {
+              attempt,
+              error: err instanceof Error ? err.message : String(err),
+              previousMessageCount: historyWindow.count,
+              retryMessageCount: windowCap,
             },
           });
-        },
-      );
+          historyWindow =
+            windowCap > 0
+              ? await deps.loadHistory({ maxMessages: windowCap })
+              : { messages: [], count: 0 };
+        }
+      }
 
       // A long answer is split at natural boundaries and delivered as several
       // messages — Telegram caps one message at 4096 chars, and truncating
