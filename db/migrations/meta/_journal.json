@@ -239,6 +239,13 @@
       "when": 1784545824819,
       "tag": "0033_fuzzy_yellow_claw",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1784626504614,
+      "tag": "0034_steady_azazel",
+      "breakpoints": true
     }
   ]
 }

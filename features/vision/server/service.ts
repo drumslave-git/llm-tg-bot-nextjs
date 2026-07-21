@@ -34,7 +34,7 @@ import { downloadTelegramFile } from "./telegram-files";
  * Two paths:
  *  - **Ingest** (passive, untraced, high-volume like history capture): every
  *    incoming media message is downloaded, normalized to a bounded JPEG, and
- *    stored as base64 with `status = 'pending'`.
+ *    stored (bytes in `media_blobs`) with `status = 'pending'`.
  *  - **Describe** (traced, a meaningful action): for the addressed turn the
  *    stored image is captioned immediately and the bytes are dropped
  *    (`markDescribed`), so past turns read as text in the transcript. The rest
@@ -146,8 +146,8 @@ export async function ingestMessageMedia(
     return null;
   }
 
-  // A still image stores its single base64; a video/GIF stores the whole frame
-  // sequence (with the first frame in `data_base64` for the dashboard preview).
+  // A still image stores its single frame; a video/GIF stores the whole frame
+  // sequence (its first frame doubles as the dashboard preview).
   const isSequence = loaded.images.length > 1;
   await insertMedia(db, {
     id: crypto.randomUUID(),

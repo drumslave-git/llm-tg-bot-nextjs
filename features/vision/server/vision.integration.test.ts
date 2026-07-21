@@ -1,13 +1,17 @@
+import { asc, eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
+import { mediaBlobs } from "@/db/schema";
 import type { ChatCompletionResult } from "@/server/llm/client";
 import { listTraces } from "@/server/trace";
 import { startTestDb, type TestDb } from "@/test/db";
 
 import {
   getMediaAnnotations,
+  getMediaByMessage,
   insertMedia,
   insertUnavailableMedia,
+  listPendingMedia,
   listRecentMedia,
   markDescribed,
 } from "./repository";
@@ -86,8 +90,56 @@ describe("message_media repository", () => {
     expect(described?.description).toBe("a red car");
     expect(described?.dataBase64).toBeNull();
     expect(described?.describedAt).not.toBeNull();
+    // The bytes are physically gone, not just hidden: no blob rows remain.
+    const blobs = await ctx.db.select().from(mediaBlobs).where(eq(mediaBlobs.mediaId, pending!.id));
+    expect(blobs).toHaveLength(0);
     // A second describe is a no-op (row no longer pending).
     expect(await markDescribed(ctx.db, pending!.id, "different")).toBeNull();
+  });
+
+  it("stores a video's frames as ordered blob rows and reads them back in order", async () => {
+    const frames = ["frame-one", "frame-two", "frame-three"].map((text) =>
+      Buffer.from(text).toString("base64"),
+    );
+    await insertMedia(ctx.db, {
+      id: crypto.randomUUID(),
+      chatId: "5",
+      telegramMessageId: 50,
+      kind: "video",
+      fileId: "vid-50",
+      fileUniqueId: "vu50",
+      mimeType: "image/jpeg",
+      dataBase64: frames[0],
+      frames,
+      visionHint: null,
+    });
+
+    // One bytea row per frame, indexed in chronological order.
+    const blobs = await ctx.db.select().from(mediaBlobs).orderBy(asc(mediaBlobs.frameIndex));
+    expect(blobs.map((b) => b.frameIndex)).toEqual([0, 1, 2]);
+    expect(blobs.map((b) => b.data.toString())).toEqual(["frame-one", "frame-two", "frame-three"]);
+
+    // Reading the row back reassembles the same base64 sequence, first frame as preview.
+    const record = await getMediaByMessage(ctx.db, "5", 50);
+    expect(record?.frames).toEqual(frames);
+    expect(record?.dataBase64).toBe(frames[0]);
+  });
+
+  it("lists bytes only for pending rows, and the backfill scan is byte-free", async () => {
+    const described = await seedPending({ telegramMessageId: 60 });
+    await markDescribed(ctx.db, described!.id, "a cat");
+    await seedPending({ telegramMessageId: 61 });
+
+    const list = await listRecentMedia(ctx.db);
+    const byMessage = new Map(list.map((r) => [r.telegramMessageId, r]));
+    expect(byMessage.get(61)?.dataBase64).toBe("QUJD");
+    expect(byMessage.get(60)?.dataBase64).toBeNull();
+
+    // The backfill batch carries references only — never payloads.
+    const pending = await listPendingMedia(ctx.db);
+    expect(pending).toEqual([
+      { id: byMessage.get(61)!.id, chatId: "5", telegramMessageId: 61 },
+    ]);
   });
 
   it("returns media annotations keyed by telegram message id", async () => {

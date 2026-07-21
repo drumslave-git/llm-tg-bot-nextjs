@@ -13,8 +13,8 @@ Status values:
 ## Current Summary
 
 Status: in-progress
-Owner: agent/2026-07-18
-Last updated: 2026-07-18
+Owner: agent/2026-07-21
+Last updated: 2026-07-21
 
 > **Dev LLM tokens are free** (operator, 2026-07-16): the dev LLM is **local and
 > self-hosted**, so token spend is not a reason to skip anything — *"you can test as
@@ -187,6 +187,50 @@ Realtime: the dashboard now updates **live over SSE** (user decision — not pol
 Next: **Priority 12 — Image generation** (Analytics landed 2026-07-15 as the new priority 11, ahead of Image generation per the user; the remaining order is Image generation → Browser agent → Mood, now 12 → 13 → 14). Image generation: generate images through a configured provider with dashboard/debug visibility and downloadable traces — the provider boundary is the open design question (which is a decision to put to the user, per `decisions-ask-dont-document`), and it should reuse the DB-backed settings pattern (`config-in-db-not-env`) rather than an env key. Flows are verified with the **bot-less simulation harness** (`simulateUpdate` / injected deps against real Postgres) — a real bot token is not a testing gate, only the live Telegram send/receive adapters remain out of in-process scope.
 
 ### Session log
+
+- 2026-07-21 (Improvements pass 8 — §6.1 media bytes to `bytea`, done): media
+  payloads no longer live in `message_media` as base64 — a new `media_blobs`
+  table holds real `bytea`, one row per frame, keyed `(media_id, frame_index)`
+  with `ON DELETE CASCADE`. Frame 0 doubles as the dashboard preview (ingestion
+  always set `data_base64` to the first frame, so nothing is stored twice
+  anymore). Bytes exist only while a row is `pending`; `markDescribed` deletes
+  the blob rows in the same transaction that flips the status — dropping bytes
+  is now a `DELETE`, not a main-row rewrite.
+  - **The repository still speaks base64** (`MediaRecord` unchanged — the
+    vision model and the preview both want base64 anyway), so the service, UI,
+    and every caller are untouched; only `features/vision/server/repository.ts`
+    converts Buffer↔base64 at the boundary. `insertMedia` writes row + blobs
+    transactionally; reads fetch blobs only for `pending` rows (one `inArray`
+    query for the whole list). Two callers *narrowed*: `listRecentMedia`'s
+    conditional byte projection is gone (the scan physically cannot touch
+    bytes), and `listPendingMedia` now returns byte-free
+    `PendingMediaRef`s — the backfill batch never loads payloads it may not
+    use (`describeAndStore` re-reads each row when its turn comes), which was
+    the "backlog of pending videos is when the table is hottest" half of 6.1.
+  - **Migration `0034` generated AND applied** (`db:migrate` run; dev DB
+    verified consistent after: 10 media rows, all `described`, 0 blob rows, 0
+    pending-without-bytes). The hand-added data-copy (still image → frame 0;
+    video frames → rows 0..n-1 via `WITH ORDINALITY`; `data_base64` of a video
+    deliberately not copied — it was always `frames[0]`) was **proven in a
+    scratch Testcontainer**: migrations applied through 0033, old-shape rows
+    seeded (pending still, pending 3-frame video, described row), then 0034 —
+    blobs came out ordered and byte-identical, described row got none, both
+    base64 columns gone. The dev DB alone could not prove this (nothing
+    pending there), and the operator's prod DB is exactly where the copy will
+    run for real.
+  - Tests: +2 integration cases and a hardened `markDescribed` case in
+    `vision.integration.test.ts` (frames round-trip through `bytea` in order;
+    blob rows physically deleted on describe; `listRecentMedia` returns bytes
+    only for pending rows; `listPendingMedia` returns refs only). `test/db.ts`
+    derives its truncate list from the schema, so the new table was isolated
+    from day one.
+  - Proof: lint ✓, typecheck ✓, 568 unit ✓, full integration ✓ (**256 passed /
+    21 skipped**), build ✓. Not verified in the browser: `/vision` sits behind
+    the new auth and the dashboard is in the deliberate forced-`/setup` state
+    that only the operator should complete (pass-6 note) — and the dev DB has
+    no pending media, so the gallery would render identically anyway; the
+    render path (`listMedia` → `toView`) is unchanged and covered by the
+    integration tests.
 
 - 2026-07-21 (Improvements pass 7 — §12.1 concurrency test coverage, done):
   the untested area the runner made *live* relevant now has integration

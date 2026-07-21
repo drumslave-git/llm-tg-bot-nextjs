@@ -3,6 +3,7 @@ import {
   bigint,
   boolean,
   check,
+  customType,
   index,
   integer,
   jsonb,
@@ -13,6 +14,13 @@ import {
   uniqueIndex,
   vector,
 } from "drizzle-orm/pg-core";
+
+/** Raw binary column. node-postgres maps `bytea` to/from `Buffer` natively. */
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({
+  dataType() {
+    return "bytea";
+  },
+});
 
 import { EMBEDDING_DIMENSIONS } from "@/lib/embeddings";
 
@@ -400,13 +408,13 @@ export type ChatSummaryDayInsert = typeof chatSummaryDays.$inferInsert;
  * as {@link chatMessages} so the two join on `(chat_id, telegram_message_id)`.
  *
  * Lifecycle:
- *  - On ingestion the normalized image is stored as base64 (`data_base64`) with
- *    `status = 'pending'` — the raw bytes the vision model reads.
+ *  - On ingestion the normalized image bytes land in {@link mediaBlobs} (one row
+ *    per frame) with `status = 'pending'` — the raw bytes the vision model reads.
  *  - Once described (immediately for the addressed turn, later via the vision
  *    backfill job for the rest) the model's text description is written to
- *    `description`, `data_base64` is cleared, and `status = 'described'`. This
+ *    `description`, the blob rows are deleted, and `status = 'described'`. This
  *    keeps long-term history token-light: past turns carry a text description,
- *    not a megabyte of base64.
+ *    not a megabyte of image bytes.
  *  - Media that cannot be loaded/decoded is `status = 'unavailable'` (no bytes,
  *    an operator-visible reason), so it is neither re-attempted nor lost.
  *
@@ -428,15 +436,6 @@ export const messageMedia = pgTable(
     fileUniqueId: text("file_unique_id"),
     /** Mime hint of the stored image (always `image/jpeg` after normalization). */
     mimeType: text("mime_type"),
-    /** Normalized JPEG as base64; null once described (bytes dropped) or unavailable. */
-    dataBase64: text("data_base64"),
-    /**
-     * For a video/GIF: the normalized JPEG frames sampled from the clip, in
-     * chronological order, as base64 — sent to the model as an ordered image
-     * sequence. Null for a single still image (uses `data_base64`) and dropped
-     * once described. `data_base64` holds the first frame for the dashboard preview.
-     */
-    framesBase64: jsonb("frames_base64").$type<string[]>(),
     /** Extra hint for the describer (e.g. a sticker's emoji), or null. */
     visionHint: text("vision_hint"),
     /** The vision model's text description; null until described. */
@@ -457,6 +456,34 @@ export const messageMedia = pgTable(
 
 export type MessageMediaRow = typeof messageMedia.$inferSelect;
 export type MessageMediaInsert = typeof messageMedia.$inferInsert;
+
+/**
+ * The binary payload of a pending {@link messageMedia} row, one row per frame:
+ * a still image is a single row (`frame_index = 0`), a video/GIF is its sampled
+ * frames in chronological order. Frame 0 doubles as the dashboard preview.
+ *
+ * Kept out of `message_media` on purpose: bytes only exist while a row is
+ * `pending`, so listing/annotating media never drags TOASTed payloads through a
+ * scan, and dropping bytes on describe is a plain `DELETE` instead of rewriting
+ * the main row. Stored as real `bytea` — no base64 inflation, no jsonb parsing.
+ */
+export const mediaBlobs = pgTable(
+  "media_blobs",
+  {
+    /** Owning media row; blobs vanish with it. */
+    mediaId: text("media_id")
+      .notNull()
+      .references(() => messageMedia.id, { onDelete: "cascade" }),
+    /** Position in the frame sequence (0 for a still image / the preview frame). */
+    frameIndex: integer("frame_index").notNull(),
+    /** Normalized JPEG bytes of this frame. */
+    data: bytea("data").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.mediaId, t.frameIndex] })],
+);
+
+export type MediaBlobRow = typeof mediaBlobs.$inferSelect;
+export type MediaBlobInsert = typeof mediaBlobs.$inferInsert;
 
 /**
  * A scheduled task: a chat-scoped standing directive ("remind me to call mom at

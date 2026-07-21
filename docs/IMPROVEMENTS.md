@@ -43,14 +43,19 @@ Status (see the session log in `NEXTJS_REWRITE_PROGRESS.md` for proof):
   out-of-order completion) and advisory-lock contention from two separate
   pools.
 
+- 2026-07-21, pass 8 ✅: 6.1 media bytes → `media_blobs` bytea side table
+  (one row per frame, deleted on describe; migration 0034 applied, its
+  data-copy proven against seeded old-shape rows). `listPendingMedia` is now
+  byte-free too — the backfill batch scan carries references only.
+
 Still open: 4.1's cost concern (the pre-filter was reverted; the unchosen
 verdict-cache / per-group-flag mitigations need a new decision if analyzer
-volume ever bites), the 6.1 bytea-media migration (a session of its own), and
-the deferred-by-design bits: 5.2 and 10.2 (extract on second use / when a consumer
-appears), 9.1(3) and 9.3 (when data volume demands), 10.3 Debug paging, 11.2
-Dockerfile lockfile, and §12.1(2) trace-store scale (partly covered by the
-multi-month corpus tests). Deliberate omission: no change-password flow —
-resetting means clearing the DB column (README).
+volume ever bites), and the deferred-by-design bits: 5.2 and 10.2 (extract on
+second use / when a consumer appears), 9.1(3) and 9.3 (when data volume
+demands), 10.3 Debug paging, 11.2 Dockerfile lockfile, and §12.1(2)
+trace-store scale (partly covered by the multi-month corpus tests). Deliberate
+omission: no change-password flow — resetting means clearing the DB column
+(README).
 
 ---
 
@@ -378,7 +383,7 @@ into `components/ui` first, per the "extract before second use" rule.
 
 ## 6. Vision
 
-### 6.1 [M] scalability — Base64 frames in `jsonb`
+### 6.1 ✅ [M] scalability — Base64 frames in `jsonb` (done 2026-07-21: `media_blobs` bytea side table, one row per frame, keyed `(media_id, frame_index)`; migration 0034 copies old bytes and drops both base64 columns)
 
 `message_media.frames_base64` stores up to `VIDEO_FRAME_COUNT` JPEG frames as
 base64 strings inside a `jsonb` column, and `data_base64` a full image as
