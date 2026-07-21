@@ -194,7 +194,7 @@ export const BROWSER_AGENT_TOOLS: ChatCompletionFunctionTool[] = [
   ),
   fn(
     "browser_download_stream",
-    "Download a STREAMING video/audio from its HLS/DASH manifest URL (an .m3u8 or .mpd) — the format tube sites and most in-browser players use, where the media is split into many segments with no single file to GET. It assembles the segments into one MP4 at the best available quality. Find the manifest URL first by inspecting the page source or the page's network requests (look for .m3u8/.mpd). Owner-started runs only. Small results are attached to the chat; large ones are reported by name.",
+    "Download a STREAMING video/audio from its HLS/DASH manifest URL (an .m3u8 or .mpd) — the format most in-browser video players use, where the media is split into many segments with no single file to GET. It assembles the segments into one MP4 at the best available quality. Find the manifest URL first by inspecting the page source or the page's network requests (look for .m3u8/.mpd). Owner-started runs only. Small results are attached to the chat; large ones are reported by name.",
     {
       type: "object",
       properties: {

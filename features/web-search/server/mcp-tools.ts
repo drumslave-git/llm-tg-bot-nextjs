@@ -18,12 +18,17 @@ export const SEARCH_WEB_TOOL = "search_web";
 export const WEB_SEARCH_TOOL_NAMES = [SEARCH_WEB_TOOL];
 
 const SEARCH_WEB_DESCRIPTION =
-  "Search the public web via Tavily to DISCOVER pages when you do not already have a specific URL. " +
-  "ONLY call when the user explicitly asks you to search the web, look something up online, " +
-  "verify a claim, or check current facts. " +
+  "Search the public web via Tavily to DISCOVER pages and get quick text snippets when you do not " +
+  "already have a specific URL — to find sources, look up general facts, news, or definitions, or " +
+  "verify a claim. ONLY call when the user asks you to look something up online. " +
   "Do NOT use for casual chat, general knowledge, or opinions the user did not ask you to verify. " +
   "Do NOT use to open a specific web page the user already gave you or that is already in the " +
-  "conversation — a known URL should be read directly, not searched for.";
+  "conversation — a known URL should be read directly, not searched for. " +
+  "Do NOT use to read a LIVE or CURRENT value off a specific site the user named — a live " +
+  "player/viewer count, live stats, a chart or dashboard, a current price or availability: this " +
+  "returns a cached snippet that is stale or plain wrong for those numbers, which change by the " +
+  "minute and are computed in the browser. Those must be read by actually visiting and rendering " +
+  "the page with the browsing agent, not with this search.";
 
 /** Structured payload returned alongside the text summary. */
 const searchWebOutputSchema = {

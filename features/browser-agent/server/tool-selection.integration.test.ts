@@ -21,6 +21,9 @@ import { BROWSE_WEB_TOOL } from "./mcp-tools";
  * and *not* for a quick fact or casual chat. Both directions are asserted — a
  * tool that fires on "cool website!" is worse than one that never fires.
  *
+ * All fixtures are synthetic (example.com / made-up placeholders); no real user
+ * data is used.
+ *
  * Run: `LLM_LIVE=1 npm run test:integration -- browser-agent/server/tool-selection`
  */
 describe.skipIf(!LLM_LIVE)("browser agent tool selection (live)", () => {
@@ -31,7 +34,7 @@ describe.skipIf(!LLM_LIVE)("browser agent tool selection (live)", () => {
     async () => {
       const run = await runToolSelection({
         userText:
-          "Go to https://news.ycombinator.com, find the current top story, and tell me its title and how many points it has.",
+          "Go to https://example.com, open its 'products' section, and tell me the name of the first product listed.",
         cannedResults: {
           [BROWSE_WEB_TOOL]: {
             text: "Browsing run started in the background. Tell the user you're on it.",
@@ -71,11 +74,10 @@ describe.skipIf(!LLM_LIVE)("browser agent tool selection (live)", () => {
   it(
     "browses when the user gives a link and asks to download the file/video on it",
     async () => {
-      // Regression for a real prod trace (2026-07-21): the model refused with
-      // "I'm a language model, not a video downloader" and called no tool. The
-      // description now asserts the download capability hard enough to override
-      // that false prior. A neutral URL stands in for the real (adult) one — the
-      // failure was about "download a file", not the content.
+      // Regression: a download request must NOT be refused with "I'm just a language
+      // model / can't download files" — the description asserts the capability hard
+      // enough to override that false prior. The failure was about "download a file",
+      // independent of the content.
       const run = await runToolSelection({
         userText: "https://example.com/clips/sample.mp4 download this video",
         cannedResults: {
@@ -91,10 +93,47 @@ describe.skipIf(!LLM_LIVE)("browser agent tool selection (live)", () => {
   );
 
   it(
+    "browses a named dynamic site for a live value a search snippet can't give",
+    async () => {
+      // Regression: for a live value tied to a specific named site, web search returns
+      // stale/inconsistent cached snippets, so a named-site + live-value request must
+      // browse and read the real rendered number.
+      const run = await runToolSelection({
+        userText: "how many users are online right now on stats.example.com?",
+        cannedResults: {
+          [BROWSE_WEB_TOOL]: {
+            text: "Browsing run started in the background. Tell the user you're on it; do not invent results.",
+            structuredContent: { ok: true, runId: "run_demo_4" },
+          },
+        },
+      });
+      expectToolCalled(run, BROWSE_WEB_TOOL);
+    },
+    TOOL_SELECTION_TIMEOUT,
+  );
+
+  it(
     "does not browse for a plain fact it already knows",
     async () => {
       const run = await runToolSelection({ userText: "What's the capital of France?" });
       expectToolNotCalled(run, BROWSE_WEB_TOOL);
+    },
+    TOOL_SELECTION_TIMEOUT,
+  );
+
+  it(
+    "does not over-trigger: a commodity live value's PRIMARY action stays a plain search",
+    async () => {
+      // The live-value trigger must not make weather spin up a background browse run
+      // as its primary action — no site named, and a search snippet answers it well.
+      // Asserted on the FIRST tool because the model is stochastic and the multi-round
+      // harness may also fire a later browse call; what matters is that its primary
+      // move is the search, which it answers from and stops.
+      const run = await runToolSelection({ userText: "what's the weather in London right now?" });
+      expect(
+        run.toolNames[0],
+        `expected weather's primary tool to be search_web, got: [${run.toolNames.join(", ")}]`,
+      ).toBe("search_web");
     },
     TOOL_SELECTION_TIMEOUT,
   );

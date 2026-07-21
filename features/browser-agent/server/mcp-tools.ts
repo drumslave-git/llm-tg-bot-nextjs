@@ -28,18 +28,33 @@ export const BROWSER_AGENT_TOOL_NAMES = [BROWSE_WEB_TOOL];
 const BROWSE_WEB_DESCRIPTION =
   "Start a background web-browsing agent that opens a REAL browser and can do things you cannot do " +
   "yourself: navigate pages, follow links, search a site, click, fill forms, read content behind a " +
-  "click, AND download files (documents, images, videos, archives) to send to the user. " +
+  "click, read a page's LIVE rendered values, AND download files (documents, images, videos, archives) " +
+  "to send to the user. " +
   "You CAN get a file for the user through this tool — so when a user gives you a link and asks you " +
   "to download / save / grab / get / fetch it (or the video/image/file on it), DO NOT reply that you " +
   "are 'just a language model' or 'cannot download files': call this tool instead. That refusal is " +
   "wrong — this is exactly the tool for it. " +
-  "MUST call whenever the user asks to download or save a file, video, image, or document, or asks " +
-  "you to do something on the web that needs actually visiting and interacting with pages. " +
+  "MUST call when: (a) the user asks to download or save a file, video, image, or document; (b) the " +
+  "user names a specific site, service, or page to get data FROM (e.g. 'on <site>', 'check <site>', " +
+  "'from <site>') — go read it there; (c) the user wants a LIVE or CURRENT value that a web-search " +
+  "snippet cannot give reliably — a live player/viewer/user count, live stats, charts or a dashboard, a " +
+  "current price, stock, or availability — because those pages compute their numbers in the browser and " +
+  "a search snippet is usually stale or plain wrong. (Commodity live values that a plain search shows " +
+  "accurately — the weather, the current time, a well-known exchange rate — do NOT need this; use a " +
+  "normal search for those. This is for a value tied to a specific site/service the user named, like a " +
+  "live count or price rendered on that site's own page.) (d) the task needs any multi-step interaction " +
+  "on the web. " +
+  "In those cases go read the real value on the page instead of answering from a search snippet. " +
+  "Use it for these EVEN IF earlier in this same conversation a similar question was answered with a " +
+  "plain web search — that was the weaker, stale path; a named site or a live value should be read live " +
+  "in the browser, so do not just copy the previous approach. " +
   "The agent works step by step and reports back to this chat when it is done (this may take a while). " +
-  "Do NOT call only for a quick fact you already know, or when a plain web search or reading one known " +
-  "URL for its text is enough (a download or any multi-step interaction is NOT one of those cases). " +
-  "Write the goal as a clear, self-contained instruction, and INCLUDE ALL links the user gave — the " +
-  "agent starts from nothing but this text. " +
+  "Do NOT call only for a quick fact you already know, or when a general web search or a single static " +
+  "page genuinely answers it (general news, a definition, a well-known fact) — but a download, a named " +
+  "site to read from, a live/current value, or any multi-step interaction IS a reason to use this, not " +
+  "a plain search. " +
+  "Write the goal as a clear, self-contained instruction, and INCLUDE ALL links and site names the user " +
+  "gave — the agent starts from nothing but this text. " +
   "The agent replies to the chat itself, so just tell the user you're on it; do not invent results.";
 
 /** Register the browser-agent MCP tool on the shared server. */

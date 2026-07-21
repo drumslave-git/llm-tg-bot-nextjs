@@ -8,7 +8,7 @@ import { BrowserAgentSession } from "./session";
 
 /**
  * Opt-in **real-network** proof of the two new browser primitives, against public
- * test endpoints (no LLM, no tube site). Skipped unless `BROWSER_LIVE=1` and
+ * test endpoints (no LLM, no real user data). Skipped unless `BROWSER_LIVE=1` and
  * needs ffmpeg on PATH for the stream case.
  *
  * Run: `BROWSER_LIVE=1 npm run test:integration -- browser-agent/server/primitives-live`
