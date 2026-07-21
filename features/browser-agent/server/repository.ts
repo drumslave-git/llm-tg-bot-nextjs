@@ -1,6 +1,6 @@
 import "server-only";
 
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, sql } from "drizzle-orm";
 
 import type { DrizzleDb } from "@/db/drizzle";
 import {
@@ -14,7 +14,9 @@ import type {
   BrowserAgentRunDetail,
   BrowserDownloadRecord,
   BrowserRunStatus,
+  BrowserRunStep,
 } from "../types";
+import { getLiveState } from "./live-state";
 
 /**
  * Typed persistence for browser-agent runs and their screenshots. Pure data
@@ -75,19 +77,42 @@ export async function getBrowserAgentRun(
   return row ? mapRow(row) : null;
 }
 
-/** One run plus the sequence numbers of its stored screenshots, or null. */
+/** One run plus its activity feed, screenshot seqs, and live state, or null. */
 export async function getBrowserAgentRunDetail(
   db: DrizzleDb,
   id: string,
 ): Promise<BrowserAgentRunDetail | null> {
-  const run = await getBrowserAgentRun(db, id);
-  if (!run) return null;
+  const row = await db.query.browserAgentRuns.findFirst({ where: eq(browserAgentRuns.id, id) });
+  if (!row) return null;
+  const run = mapRow(row);
   const shots = await db
     .select({ seq: browserRunScreenshots.seq })
     .from(browserRunScreenshots)
     .where(eq(browserRunScreenshots.runId, id))
     .orderBy(asc(browserRunScreenshots.seq));
-  return { ...run, screenshotSeqs: shots.map((s) => s.seq) };
+  return {
+    ...run,
+    // `seq` is presentational, derived from stored order (1-based).
+    activity: (row.activity ?? []).map((s, i): BrowserRunStep => ({ ...s, seq: i + 1 })),
+    screenshotSeqs: shots.map((s) => s.seq),
+    // Live state only makes sense while the run is in flight.
+    live: run.status === "running" ? getLiveState(id) : null,
+  };
+}
+
+/** Append one completed action to a run's activity feed. Returns the new length (seq). */
+export async function appendBrowserRunStep(
+  db: DrizzleDb,
+  runId: string,
+  step: Omit<BrowserRunStep, "seq">,
+): Promise<void> {
+  await db
+    .update(browserAgentRuns)
+    .set({
+      activity: sql`${browserAgentRuns.activity} || ${JSON.stringify([step])}::jsonb`,
+      steps: sql`${browserAgentRuns.steps} + 1`,
+    })
+    .where(eq(browserAgentRuns.id, runId));
 }
 
 /** Insert a queued run with an app-generated id. Returns the stored record. */
@@ -147,7 +172,11 @@ export async function setBrowserAgentRunTrace(
   await db.update(browserAgentRuns).set({ traceId }).where(eq(browserAgentRuns.id, id));
 }
 
-/** Settle a run as done or failed with its report/error, steps, and downloads. */
+/**
+ * Settle a run as done or failed with its report/error and downloads. `steps` is
+ * owned by {@link appendBrowserRunStep} (incremented per completed action), so it
+ * is deliberately not written here — the count already reflects every step.
+ */
 export async function settleBrowserAgentRun(
   db: DrizzleDb,
   id: string,
@@ -155,7 +184,6 @@ export async function settleBrowserAgentRun(
     status: Extract<BrowserRunStatus, "done" | "failed">;
     report?: string | null;
     error?: string | null;
-    steps: number;
     downloads: BrowserDownloadRecord[];
   },
 ): Promise<void> {
@@ -165,7 +193,6 @@ export async function settleBrowserAgentRun(
       status: input.status,
       report: input.report ?? null,
       error: input.error ?? null,
-      steps: input.steps,
       downloads: input.downloads,
       finishedAt: new Date(),
     })

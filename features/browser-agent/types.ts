@@ -21,6 +21,40 @@ export interface BrowserDownloadRecord {
   inline: boolean;
 }
 
+/**
+ * One completed browser action within a run, for the live activity feed. Appended
+ * as each tool finishes, so the operator sees exactly what the agent did and in
+ * what order (and where it failed).
+ */
+export interface BrowserRunStep {
+  /** Order within the run, starting at 1. */
+  seq: number;
+  /** The tool that ran, e.g. `browser_navigate`, `browser_get_network`. */
+  tool: string;
+  /** Human action label, e.g. "navigate example.com", "download stream …". */
+  action: string;
+  /** Page URL at the time of the action, or null. */
+  url: string | null;
+  /** Whether the action succeeded. */
+  ok: boolean;
+  /** Short one-line outcome (page title, "5 m3u8 found", an error message, …). */
+  summary: string;
+  /** ISO timestamp the action finished. */
+  at: string;
+}
+
+/**
+ * Ephemeral live state of a run in flight (never persisted): what the agent is
+ * doing *right now* and, during a download, its progress. Held in memory by the
+ * runner and merged into the run detail while `status = 'running'`.
+ */
+export interface BrowserRunLiveState {
+  /** The in-flight action label ("downloading stream …"), or null between steps. */
+  currentAction: string | null;
+  /** Live download progress line (bytes/speed, or ffmpeg size/time), or null. */
+  progress: string | null;
+}
+
 /** A browser-agent run as returned to clients (no secrets — all fields are safe). */
 export interface BrowserAgentRun {
   id: string;
@@ -46,8 +80,12 @@ export interface BrowserAgentRun {
   finishedAt: string | null;
 }
 
-/** Run detail: the run plus which screenshots exist (served as images by seq). */
+/** Run detail: the run plus its activity feed, screenshots, and live state. */
 export interface BrowserAgentRunDetail extends BrowserAgentRun {
+  /** Every completed action, in order — the activity feed. */
+  activity: BrowserRunStep[];
   /** Capture-order sequence numbers of stored screenshots. */
   screenshotSeqs: number[];
+  /** Live state while running (current action + download progress); null when settled. */
+  live: BrowserRunLiveState | null;
 }

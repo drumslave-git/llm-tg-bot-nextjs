@@ -958,6 +958,20 @@ interface BrowserAgentDownloadJson {
 }
 
 /**
+ * One completed action in a run's activity feed (structural twin of
+ * `BrowserRunStep` in `features/browser-agent/types.ts`, minus `seq`, which is
+ * derived from array order on read).
+ */
+interface BrowserAgentStepJson {
+  tool: string;
+  action: string;
+  url: string | null;
+  ok: boolean;
+  summary: string;
+  at: string;
+}
+
+/**
  * One browser-agent run: a self-contained browsing goal the chat model queued via
  * the `browse_web` tool (or the operator queued from the dashboard), executed in
  * the background by a sub-agent LLM driving the generic browser toolset. The
@@ -991,6 +1005,11 @@ export const browserAgentRuns = pgTable(
     error: text("error"),
     /** Browser actions the agent performed. */
     steps: integer("steps").notNull().default(0),
+    /** Ordered activity feed — one entry per completed action (live during a run). */
+    activity: jsonb("activity")
+      .$type<BrowserAgentStepJson[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
     /** Files downloaded during the run (see {@link BrowserAgentDownloadJson}). */
     downloads: jsonb("downloads")
       .$type<BrowserAgentDownloadJson[]>()

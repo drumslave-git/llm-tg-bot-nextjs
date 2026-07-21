@@ -27,6 +27,20 @@ import {
 /** Thrown when a stream needs ffmpeg but it is not installed. */
 export class FfmpegMissingError extends Error {}
 
+/** Live progress of an in-flight ffmpeg mux (there is no total to divide by). */
+export interface StreamProgress {
+  /** Bytes written to the output MP4 so far. */
+  outputBytes: number;
+  /** Media timestamp muxed so far (`HH:MM:SS`), i.e. how much video is assembled. */
+  time: string;
+}
+
+export interface StreamDownloadOptions {
+  title?: string | null;
+  /** Called (throttled by ffmpeg's own cadence) as the mux progresses. */
+  onProgress?: (progress: StreamProgress) => void;
+}
+
 /** ffmpeg read/write timeout (µs) so a stalled segment can't hang forever. */
 const STREAM_RW_TIMEOUT_US = 30_000_000;
 /** Absolute cap on the muxed output (leaves a valid, playable partial for long videos). */
@@ -54,7 +68,7 @@ async function resolveHlsInputs(url: URL): Promise<{ inputUrls: string[]; maps: 
  */
 export async function downloadStreamToDisk(
   rawUrl: string,
-  options: { title?: string | null } = {},
+  options: StreamDownloadOptions = {},
 ): Promise<DiskDownload> {
   const url = await assertPublicUrl(rawUrl);
   await fs.mkdir(DOWNLOADS_DIR, { recursive: true });
@@ -102,9 +116,10 @@ export async function downloadStreamToDisk(
   const sizeBytes = await runFfmpeg(
     ["-y", ...inputArgs, ...outArgs(["-bsf:a", "aac_adtstoasc"])],
     filePath,
+    options.onProgress,
   ).catch(async (err: unknown) => {
     if (err instanceof FfmpegMissingError) throw err;
-    return runFfmpeg(["-y", ...inputArgs, ...outArgs([])], filePath);
+    return runFfmpeg(["-y", ...inputArgs, ...outArgs([])], filePath, options.onProgress);
   });
 
   if (sizeBytes === 0) {
@@ -120,12 +135,30 @@ export async function downloadStreamToDisk(
  * ffmpeg exits non-zero when the `-fs` cap interrupts it, yet the partial MP4 is
  * valid, so a non-empty file counts as success regardless of exit code.
  */
-async function runFfmpeg(args: string[], filePath: string): Promise<number> {
+async function runFfmpeg(
+  args: string[],
+  filePath: string,
+  onProgress?: (progress: StreamProgress) => void,
+): Promise<number> {
   let stderrTail = "";
   const outcome = await new Promise<number | "enoent">((resolve) => {
     const proc = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "pipe"] });
     proc.stderr?.on("data", (chunk) => {
-      stderrTail = (stderrTail + String(chunk)).slice(-2000);
+      const text = String(chunk);
+      stderrTail = (stderrTail + text).slice(-2000);
+      // ffmpeg emits periodic status lines like
+      //   frame=... size=   45056kB time=00:01:23.45 bitrate=... speed=1.2x
+      // Parse the size + media time so the operator sees live mux progress.
+      if (onProgress) {
+        const size = text.match(/size=\s*(\d+)\s*(k?)B/i);
+        const time = text.match(/time=(\d+:\d+:\d+)/);
+        if (size || time) {
+          onProgress({
+            outputBytes: size ? Number(size[1]) * (size[2] ? 1024 : 1) : 0,
+            time: time?.[1] ?? "00:00:00",
+          });
+        }
+      }
     });
     proc.on("error", () => resolve("enoent")); // ffmpeg not installed
     proc.on("close", (code) => resolve(code ?? 1));

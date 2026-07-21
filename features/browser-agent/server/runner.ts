@@ -23,7 +23,9 @@ import { startTrace } from "@/server/trace";
 import type { BrowserAgentRun, BrowserDownloadRecord } from "../types";
 import { runBrowserAgent } from "./agent";
 import { formatDownloadLine, formatRunReport } from "../format";
+import { clearLiveState, setLiveAction, setLiveProgress } from "./live-state";
 import {
+  appendBrowserRunStep,
   claimBrowserAgentRun,
   failStaleRunningRuns,
   insertBrowserRunScreenshot,
@@ -118,7 +120,6 @@ async function runOne(run: BrowserAgentRun, db: DrizzleDb): Promise<void> {
 
   const session = new BrowserAgentSession();
   const downloads: BrowserDownloadRecord[] = [];
-  let steps = 0;
   let screenshotSeq = 0;
 
   try {
@@ -128,7 +129,6 @@ async function runOne(run: BrowserAgentRun, db: DrizzleDb): Promise<void> {
       await settleBrowserAgentRun(db, run.id, {
         status: "failed",
         error: "No LLM is configured.",
-        steps: 0,
         downloads: [],
       });
       return;
@@ -152,14 +152,33 @@ async function runOne(run: BrowserAgentRun, db: DrizzleDb): Promise<void> {
       isOwner: run.isOwner,
       downloadMaxMb,
       downloads,
-      onAction: async (action, url) => {
-        steps += 1;
+      onAction: (action, url) => {
+        // Reflect the in-flight action immediately for the live "current action"
+        // indicator; the completed-step record (with outcome) follows in onStep.
+        setLiveAction(run.id, url ? `${action} — ${url}` : action);
+      },
+      onStep: async (step) => {
+        setLiveAction(run.id, null);
+        await appendBrowserRunStep(db, run.id, {
+          tool: step.tool,
+          action: step.action,
+          url: step.url,
+          ok: step.ok,
+          summary: step.summary,
+          at: new Date().toISOString(),
+        }).catch(() => undefined);
         await trace.event({
           type: "external_call",
-          message: `browser: ${action}`,
-          data: { step: steps, url },
+          level: step.ok ? "info" : "warn",
+          message: `browser: ${step.action}`,
+          data: { tool: step.tool, url: step.url, ok: step.ok, summary: step.summary },
         });
+        // A completed step is a discrete, low-frequency event — refresh the list
+        // (step count) and any open detail. Live progress within a download is not
+        // published here; the detail view polls for that.
+        publishEvent(FEATURE.realtimeTopic);
       },
+      onProgress: (line) => setLiveProgress(run.id, line),
       onScreenshot: async ({ buffer, url, title }) => {
         const seq = screenshotSeq++;
         await insertBrowserRunScreenshot(db, { runId: run.id, seq, url, title, data: buffer }).catch(
@@ -240,7 +259,6 @@ async function runOne(run: BrowserAgentRun, db: DrizzleDb): Promise<void> {
     await settleBrowserAgentRun(db, run.id, {
       status: "done",
       report,
-      steps,
       downloads,
     });
     await trace.succeed({
@@ -252,7 +270,6 @@ async function runOne(run: BrowserAgentRun, db: DrizzleDb): Promise<void> {
     await settleBrowserAgentRun(db, run.id, {
       status: "failed",
       error: message,
-      steps,
       downloads,
     }).catch(() => undefined);
     // Tell the chat the run failed, so a user is never left waiting on a promise.
@@ -261,6 +278,7 @@ async function runOne(run: BrowserAgentRun, db: DrizzleDb): Promise<void> {
     }
     await trace.fail(err);
   } finally {
+    clearLiveState(run.id);
     await session.close();
     active = false;
     publishEvent(FEATURE.realtimeTopic);

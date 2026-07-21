@@ -1,7 +1,15 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useState } from "react";
-import { ChevronDown, ChevronRight, Download } from "lucide-react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import {
+  ChevronDown,
+  ChevronRight,
+  Check,
+  Download,
+  Globe,
+  Loader2,
+  X,
+} from "lucide-react";
 
 import {
   Badge,
@@ -17,70 +25,146 @@ import {
 } from "@/components/ui";
 import { Timestamp } from "@/components/time/Timestamp";
 import { cn } from "@/lib/cn";
-import { Globe } from "lucide-react";
 
-import type { BrowserAgentRun, BrowserAgentRunDetail } from "../types";
+import { formatBytes } from "../files";
+import type { BrowserAgentRun, BrowserAgentRunDetail, BrowserRunStep } from "../types";
 import { runStatusBadge } from "./statusTone";
 
-/** Human MB for a byte count. */
-function mb(bytes: number): string {
-  const value = bytes / 1024 / 1024;
-  return value < 1 ? "<1 MB" : `${Math.round(value)} MB`;
+/** One activity-feed row: tool, action, outcome. */
+function StepRow({ step }: { step: BrowserRunStep }) {
+  return (
+    <li className="flex items-start gap-2 py-1 text-sm">
+      <span className="mt-0.5 shrink-0" aria-hidden>
+        {step.ok ? (
+          <Check className="h-4 w-4 text-success" />
+        ) : (
+          <X className="h-4 w-4 text-danger" />
+        )}
+      </span>
+      <span className="w-6 shrink-0 text-right font-mono text-xs text-faint">{step.seq}</span>
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-baseline gap-x-2">
+          <code className="rounded bg-surface-2 px-1 py-0.5 text-xs text-muted">{step.tool}</code>
+          <span className="text-foreground">{step.action}</span>
+        </div>
+        {step.summary ? (
+          <p className={cn("truncate text-xs", step.ok ? "text-muted" : "text-danger")}>
+            {step.summary}
+          </p>
+        ) : null}
+      </div>
+    </li>
+  );
 }
 
-/** The expanded detail for one run: report/error, downloads, and screenshots. */
+/**
+ * The expanded, live detail for one run: a current-action banner with download
+ * progress while it runs, the step-by-step activity feed, the report, downloads,
+ * and screenshots. While the run is queued/running it polls the run-detail API so
+ * steps and progress stream in without a page reload; polling stops on settle.
+ */
 function RunDetail({ run }: { run: BrowserAgentRun }) {
   const [detail, setDetail] = useState<BrowserAgentRunDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const activeRef = useRef(true);
 
   useEffect(() => {
-    let cancelled = false;
-    void (async () => {
+    activeRef.current = true;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const tick = async () => {
       try {
-        const res = await fetch(`/api/browser/${run.id}`);
+        const res = await fetch(`/api/browser/${run.id}`, { cache: "no-store" });
         if (!res.ok) throw new Error(`Failed to load run (${res.status})`);
         const body = (await res.json()) as { data: BrowserAgentRunDetail };
-        if (!cancelled) setDetail(body.data);
+        if (!activeRef.current) return;
+        setDetail(body.data);
+        setError(null);
+        // Keep polling only while the run is in flight; ~1.2s is live enough for
+        // steps and a download progress line without hammering the server.
+        if (body.data.status === "queued" || body.data.status === "running") {
+          timer = setTimeout(tick, 1200);
+        }
       } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : "Failed to load run");
+        if (!activeRef.current) return;
+        setError(err instanceof Error ? err.message : "Failed to load run");
+        timer = setTimeout(tick, 3000);
       }
-    })();
-    return () => {
-      cancelled = true;
     };
-    // Re-fetch when the run's own state advances (status/steps change on refresh).
-  }, [run.id, run.status, run.steps, run.finishedAt]);
+    void tick();
 
+    return () => {
+      activeRef.current = false;
+      if (timer) clearTimeout(timer);
+    };
+  }, [run.id]);
+
+  const view = detail ?? run;
+  const activity = detail?.activity ?? [];
   const screenshotSeqs = detail?.screenshotSeqs ?? [];
+  const live = detail?.live ?? null;
+  const running = view.status === "running" || view.status === "queued";
 
   return (
     <div className="space-y-4 bg-surface-2/40 px-4 py-4">
-      {run.error ? (
+      {/* Live banner: what the agent is doing right now + download progress. */}
+      {running ? (
+        <div className="flex items-start gap-2 rounded-md border border-info/30 bg-info/10 px-3 py-2">
+          <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-info motion-reduce:animate-none" aria-hidden />
+          <div className="min-w-0 text-sm">
+            <p className="font-medium text-info">
+              {view.status === "queued"
+                ? "Queued — waiting for a runner…"
+                : (live?.currentAction ?? "Working…")}
+            </p>
+            {live?.progress ? (
+              <p className="mt-0.5 font-mono text-xs text-muted">{live.progress}</p>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+
+      {view.error ? (
         <div>
           <p className="text-xs font-medium tracking-wide text-faint uppercase">Error</p>
-          <p className="mt-1 text-sm text-danger">{run.error}</p>
+          <p className="mt-1 text-sm text-danger">{view.error}</p>
         </div>
       ) : null}
 
-      {run.report ? (
+      {/* Activity feed — every action the agent took, in order. */}
+      {activity.length > 0 ? (
+        <div>
+          <p className="text-xs font-medium tracking-wide text-faint uppercase">
+            Activity ({activity.length} step{activity.length === 1 ? "" : "s"})
+          </p>
+          <ul className="mt-1 divide-y divide-border/60">
+            {activity.map((step) => (
+              <StepRow key={step.seq} step={step} />
+            ))}
+          </ul>
+        </div>
+      ) : running ? (
+        <p className="text-sm text-muted">No actions yet…</p>
+      ) : null}
+
+      {view.report ? (
         <div>
           <p className="text-xs font-medium tracking-wide text-faint uppercase">Report</p>
-          <p className="mt-1 whitespace-pre-wrap text-sm text-foreground">{run.report}</p>
+          <p className="mt-1 whitespace-pre-wrap text-sm text-foreground">{view.report}</p>
         </div>
-      ) : run.status === "running" || run.status === "queued" ? (
-        <p className="text-sm text-muted">No report yet — the run is still in progress.</p>
       ) : null}
 
-      {run.downloads.length > 0 ? (
+      {view.downloads.length > 0 ? (
         <div>
           <p className="text-xs font-medium tracking-wide text-faint uppercase">Downloads</p>
           <ul className="mt-1 space-y-1">
-            {run.downloads.map((file, i) => (
+            {view.downloads.map((file, i) => (
               <li key={i} className="flex items-center gap-2 text-sm">
                 <Download className="h-3.5 w-3.5 text-muted" aria-hidden />
                 <span>{file.filename}</span>
                 <span className="text-muted">
-                  · {mb(file.sizeBytes)} · {file.inline ? "attached to chat" : "downloads folder"}
+                  · {formatBytes(file.sizeBytes)} ·{" "}
+                  {file.inline ? "attached to chat" : "downloads folder"}
                 </span>
               </li>
             ))}

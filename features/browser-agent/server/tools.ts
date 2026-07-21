@@ -6,6 +6,7 @@ import type { ChatCompletionFunctionTool } from "openai/resources/chat/completio
 
 import type { McpToolCallResult } from "@/server/mcp/tool-result";
 
+import { formatBytes } from "../files";
 import { formatSnapshot, type PageSnapshot } from "../snapshot";
 import type { BrowserDownloadRecord } from "../types";
 import { downloadToDisk, type DiskDownload } from "./download";
@@ -42,8 +43,21 @@ export interface AgentToolContext {
   downloadMaxMb: number;
   /** Every completed download, for the run row + end-of-run recap. */
   downloads: BrowserDownloadRecord[];
-  /** Called before each action, with a short label + the current URL. */
+  /** Called before each action starts, with a short label + the current URL. */
   onAction: (action: string, url: string | null) => void | Promise<void>;
+  /**
+   * Called after each action finishes, with its outcome — the activity-feed entry.
+   * `action` is the same label the matching {@link onAction} used.
+   */
+  onStep: (step: {
+    tool: string;
+    action: string;
+    url: string | null;
+    ok: boolean;
+    summary: string;
+  }) => void | Promise<void>;
+  /** Live download progress line while a file/stream downloads (null when idle). */
+  onProgress?: (line: string | null) => void;
   /**
    * Store one captured screenshot (bytes never travel through the trace).
    * Resolves the stored sequence number, for the result text.
@@ -210,110 +224,164 @@ function str(args: Record<string, unknown>, key: string): string {
   return typeof v === "string" ? v : v == null ? "" : String(v);
 }
 
-/** Build the dispatcher the agent's tool loop calls for each browser action. */
+/**
+ * Build the dispatcher the agent's tool loop calls for each browser action. Every
+ * call is bracketed with a live-feed pair: {@link AgentToolContext.onAction} fires
+ * as the action starts (drives the "current action" indicator) and
+ * {@link AgentToolContext.onStep} fires when it finishes with its outcome (the
+ * activity-feed entry). Download tools additionally stream byte/mux progress
+ * through {@link AgentToolContext.onProgress}.
+ */
 export function makeBrowserToolDispatcher(ctx: AgentToolContext) {
   return async (name: string, args: Record<string, unknown>): Promise<McpToolCallResult> => {
+    // Capture the human action label the cases pass to onAction, so the completed
+    // step is recorded under the same label the live indicator showed.
+    let action = name;
+    const local: AgentToolContext = {
+      ...ctx,
+      onAction: async (label, url) => {
+        action = label;
+        await ctx.onAction(label, url);
+      },
+    };
+
+    let result: McpToolCallResult;
     try {
-      switch (name) {
-        case "browser_navigate": {
-          const url = str(args, "url");
-          await ctx.onAction(`navigate ${url}`, ctx.session.currentUrl());
-          return snapshotResult(await ctx.session.navigate(url));
-        }
-        case "browser_back": {
-          await ctx.onAction("back", ctx.session.currentUrl());
-          return snapshotResult(await ctx.session.back());
-        }
-        case "browser_click": {
-          const ref = num(args, "ref");
-          if (ref == null) return errorResult("ref is required");
-          await ctx.onAction(`click [${ref}]`, ctx.session.currentUrl());
-          return snapshotResult(await ctx.session.click(ref));
-        }
-        case "browser_type": {
-          const ref = num(args, "ref");
-          if (ref == null) return errorResult("ref is required");
-          const text = str(args, "text");
-          const submit = args.submit === true;
-          await ctx.onAction(`type into [${ref}]`, ctx.session.currentUrl());
-          return snapshotResult(await ctx.session.type(ref, text, submit));
-        }
-        case "browser_scroll": {
-          const direction = str(args, "direction") === "up" ? "up" : "down";
-          const pages = num(args, "pages") ?? 1;
-          await ctx.onAction(`scroll ${direction}`, ctx.session.currentUrl());
-          return snapshotResult(await ctx.session.scroll(direction, pages));
-        }
-        case "browser_read": {
-          await ctx.onAction("read page", ctx.session.currentUrl());
-          return snapshotResult(await ctx.session.read());
-        }
-        case "browser_source": {
-          const offset = num(args, "offset") ?? 0;
-          await ctx.onAction(`read source @${offset}`, ctx.session.currentUrl());
-          const { html, offset: start, total } = await ctx.session.source(offset);
-          const end = start + html.length;
-          const header =
-            `PAGE SOURCE (characters ${start}–${end} of ${total}` +
-            (end < total ? `; call again with offset ${end} for more` : "; end of document") +
-            `):\n`;
-          return { text: header + html };
-        }
-        case "browser_get_network": {
-          const filter = str(args, "filter") || undefined;
-          await ctx.onAction(filter ? `network ~${filter}` : "network", ctx.session.currentUrl());
-          return { text: formatNetwork(ctx.session.getNetwork(filter)) };
-        }
-        case "browser_screenshot": {
-          await ctx.onAction("screenshot", ctx.session.currentUrl());
-          const buffer = await ctx.session.screenshot();
-          const meta = await ctx.session.pageMeta();
-          const seq = await ctx.onScreenshot({ buffer, url: meta.url, title: meta.title });
-          return {
-            text: `Screenshot #${seq + 1} captured (shown to you as an image).`,
-            images: [`data:image/jpeg;base64,${buffer.toString("base64")}`],
-          };
-        }
-        case "browser_wait": {
-          const seconds = num(args, "seconds") ?? 3;
-          await ctx.onAction(`wait ${seconds}s`, ctx.session.currentUrl());
-          return snapshotResult(await ctx.session.wait(seconds));
-        }
-        case "browser_download_file": {
-          if (!ctx.isOwner) return errorResult(DOWNLOAD_DENIED);
-          const url = str(args, "url");
-          await ctx.onAction(`download file ${url}`, ctx.session.currentUrl());
-          const meta = await ctx.session.pageMeta();
-          return finishDownload(ctx, await downloadToDisk(url, { title: meta.title }), meta.url ?? url);
-        }
-        case "browser_download_stream": {
-          if (!ctx.isOwner) return errorResult(DOWNLOAD_DENIED);
-          const url = str(args, "url");
-          await ctx.onAction(`download stream ${url}`, ctx.session.currentUrl());
-          const meta = await ctx.session.pageMeta();
-          try {
-            return finishDownload(
-              ctx,
-              await downloadStreamToDisk(url, { title: meta.title }),
-              meta.url ?? url,
-            );
-          } catch (err) {
-            // ffmpeg missing is an operator-fixable environment fact — say so plainly
-            // rather than as a generic tool failure the agent might paper over.
-            if (err instanceof FfmpegMissingError) return errorResult(err.message);
-            throw err;
-          }
-        }
-        default:
-          return errorResult(`Unknown tool: ${name}`);
-      }
+      result = await dispatchTool(local, name, args);
     } catch (err) {
-      return errorResult(err instanceof Error ? err.message : "Tool failed");
+      result = errorResult(err instanceof Error ? err.message : "Tool failed");
     }
+
+    ctx.onProgress?.(null); // the action is over — clear any lingering progress line
+    await ctx.onStep({
+      tool: name,
+      action,
+      url: ctx.session.currentUrl(),
+      ok: !result.isError,
+      summary: summarizeResult(result),
+    });
+    return result;
   };
 }
 
+/** Run one browser tool. Throws are caught by the wrapper and recorded as a step. */
+async function dispatchTool(
+  ctx: AgentToolContext,
+  name: string,
+  args: Record<string, unknown>,
+): Promise<McpToolCallResult> {
+  switch (name) {
+    case "browser_navigate": {
+      const url = str(args, "url");
+      await ctx.onAction(`navigate ${url}`, ctx.session.currentUrl());
+      return snapshotResult(await ctx.session.navigate(url));
+    }
+    case "browser_back": {
+      await ctx.onAction("back", ctx.session.currentUrl());
+      return snapshotResult(await ctx.session.back());
+    }
+    case "browser_click": {
+      const ref = num(args, "ref");
+      if (ref == null) return errorResult("ref is required");
+      await ctx.onAction(`click [${ref}]`, ctx.session.currentUrl());
+      return snapshotResult(await ctx.session.click(ref));
+    }
+    case "browser_type": {
+      const ref = num(args, "ref");
+      if (ref == null) return errorResult("ref is required");
+      const text = str(args, "text");
+      const submit = args.submit === true;
+      await ctx.onAction(`type into [${ref}]`, ctx.session.currentUrl());
+      return snapshotResult(await ctx.session.type(ref, text, submit));
+    }
+    case "browser_scroll": {
+      const direction = str(args, "direction") === "up" ? "up" : "down";
+      const pages = num(args, "pages") ?? 1;
+      await ctx.onAction(`scroll ${direction}`, ctx.session.currentUrl());
+      return snapshotResult(await ctx.session.scroll(direction, pages));
+    }
+    case "browser_read": {
+      await ctx.onAction("read page", ctx.session.currentUrl());
+      return snapshotResult(await ctx.session.read());
+    }
+    case "browser_source": {
+      const offset = num(args, "offset") ?? 0;
+      await ctx.onAction(`read source @${offset}`, ctx.session.currentUrl());
+      const { html, offset: start, total } = await ctx.session.source(offset);
+      const end = start + html.length;
+      const header =
+        `PAGE SOURCE (characters ${start}–${end} of ${total}` +
+        (end < total ? `; call again with offset ${end} for more` : "; end of document") +
+        `):\n`;
+      return { text: header + html };
+    }
+    case "browser_get_network": {
+      const filter = str(args, "filter") || undefined;
+      await ctx.onAction(filter ? `network ~${filter}` : "network", ctx.session.currentUrl());
+      return { text: formatNetwork(ctx.session.getNetwork(filter)) };
+    }
+    case "browser_screenshot": {
+      await ctx.onAction("screenshot", ctx.session.currentUrl());
+      const buffer = await ctx.session.screenshot();
+      const meta = await ctx.session.pageMeta();
+      const seq = await ctx.onScreenshot({ buffer, url: meta.url, title: meta.title });
+      return {
+        text: `Screenshot #${seq + 1} captured (shown to you as an image).`,
+        images: [`data:image/jpeg;base64,${buffer.toString("base64")}`],
+      };
+    }
+    case "browser_wait": {
+      const seconds = num(args, "seconds") ?? 3;
+      await ctx.onAction(`wait ${seconds}s`, ctx.session.currentUrl());
+      return snapshotResult(await ctx.session.wait(seconds));
+    }
+    case "browser_download_file": {
+      if (!ctx.isOwner) return errorResult(DOWNLOAD_DENIED);
+      const url = str(args, "url");
+      await ctx.onAction(`download file ${url}`, ctx.session.currentUrl());
+      const meta = await ctx.session.pageMeta();
+      const result = await downloadToDisk(url, {
+        title: meta.title,
+        onProgress: (p) =>
+          ctx.onProgress?.(
+            p.totalBytes
+              ? `Downloading ${formatBytes(p.receivedBytes)} / ${formatBytes(p.totalBytes)} (${formatBytes(p.bytesPerSec)}/s)`
+              : `Downloading ${formatBytes(p.receivedBytes)} (${formatBytes(p.bytesPerSec)}/s)`,
+          ),
+      });
+      return finishDownload(ctx, result, meta.url ?? url);
+    }
+    case "browser_download_stream": {
+      if (!ctx.isOwner) return errorResult(DOWNLOAD_DENIED);
+      const url = str(args, "url");
+      await ctx.onAction(`download stream ${url}`, ctx.session.currentUrl());
+      const meta = await ctx.session.pageMeta();
+      try {
+        const result = await downloadStreamToDisk(url, {
+          title: meta.title,
+          onProgress: (p) =>
+            ctx.onProgress?.(`Assembling stream — ${formatBytes(p.outputBytes)} written, ${p.time} muxed`),
+        });
+        return finishDownload(ctx, result, meta.url ?? url);
+      } catch (err) {
+        // ffmpeg missing is an operator-fixable environment fact — say so plainly
+        // rather than as a generic tool failure the agent might paper over.
+        if (err instanceof FfmpegMissingError) return errorResult(err.message);
+        throw err;
+      }
+    }
+    default:
+      return errorResult(`Unknown tool: ${name}`);
+  }
+}
+
 const DOWNLOAD_DENIED = "Downloads are disabled for this run (only the owner can download files).";
+
+/** The first non-empty line of a tool result, bounded — the activity-feed summary. */
+function summarizeResult(result: McpToolCallResult): string {
+  const firstLine = result.text.split("\n").map((l) => l.trim()).find(Boolean) ?? "";
+  return firstLine.length > 160 ? `${firstLine.slice(0, 157)}…` : firstLine;
+}
 
 /**
  * Shared post-download delivery: record the file, decide inline vs link by the

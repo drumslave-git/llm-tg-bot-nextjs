@@ -253,6 +253,13 @@
       "when": 1784636279642,
       "tag": "0035_lame_stature",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1784662644580,
+      "tag": "0036_confused_klaw",
+      "breakpoints": true
     }
   ]
 }

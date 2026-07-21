@@ -4,6 +4,7 @@ import { startTestDb, type TestDb } from "@/test/db";
 
 import { enqueueBrowserRun, getBrowserAgentRunView, getBrowserAgentRuns } from "./service";
 import {
+  appendBrowserRunStep,
   claimBrowserAgentRun,
   failStaleRunningRuns,
   getBrowserAgentRun,
@@ -66,20 +67,49 @@ describe("browser-agent queue", () => {
     expect(await listQueuedBrowserAgentRuns(ctx.db)).toHaveLength(0);
   });
 
-  it("settles a claimed run as done with its report, steps, and downloads", async () => {
+  it("records an activity feed as steps are appended, and settles as done", async () => {
     const run = await enqueueBrowserRun({ goal: "g", chatId: "1", isOwner: true }, ctx.db);
     await claimBrowserAgentRun(ctx.db, run.id);
+
+    // Steps accumulate as the agent acts — this is what drives the live feed and
+    // the run's `steps` count (settle no longer sets it).
+    await appendBrowserRunStep(ctx.db, run.id, {
+      tool: "browser_navigate",
+      action: "navigate https://x/",
+      url: "https://x/",
+      ok: true,
+      summary: "Example — 3 elements",
+      at: new Date().toISOString(),
+    });
+    await appendBrowserRunStep(ctx.db, run.id, {
+      tool: "browser_download_stream",
+      action: "download stream https://x/v.m3u8",
+      url: "https://x/",
+      ok: true,
+      summary: 'Saved "v.mp4" (120 MB)',
+      at: new Date().toISOString(),
+    });
+
     await settleBrowserAgentRun(ctx.db, run.id, {
       status: "done",
       report: "Found it.",
-      steps: 4,
-      downloads: [{ sourceUrl: "https://x/a", filename: "a.pdf", sizeBytes: 2048, inline: true }],
+      downloads: [{ sourceUrl: "https://x/a", filename: "v.mp4", sizeBytes: 2048, inline: false }],
     });
 
     const settled = await getBrowserAgentRun(ctx.db, run.id);
-    expect(settled).toMatchObject({ status: "done", report: "Found it.", steps: 4 });
+    expect(settled).toMatchObject({ status: "done", report: "Found it.", steps: 2 });
     expect(settled!.downloads).toHaveLength(1);
     expect(settled!.finishedAt).not.toBeNull();
+
+    const detail = await getBrowserAgentRunView(run.id, ctx.db);
+    expect(detail!.activity.map((s) => s.tool)).toEqual([
+      "browser_navigate",
+      "browser_download_stream",
+    ]);
+    // seq is derived from stored order (1-based) on read.
+    expect(detail!.activity.map((s) => s.seq)).toEqual([1, 2]);
+    // A settled run exposes no live state.
+    expect(detail!.live).toBeNull();
   });
 
   it("fails runs left running by a previous process", async () => {

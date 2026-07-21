@@ -1,12 +1,16 @@
 import { loadEnvConfig } from "@next/env";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { getDb } from "@/db/drizzle";
 import { closePool } from "@/db/pool";
 import { getLlmRuntime } from "@/features/settings/server/service";
 import { closeSharedChromium } from "@/features/link-fetch/server/playwright";
 
 import type { BrowserDownloadRecord } from "../types";
 import { runBrowserAgent } from "./agent";
+import { enqueueBrowserRun, getBrowserAgentRunView } from "./service";
+import { startBrowserAgentRunner } from "./runner";
+import { emitRunEnqueued } from "./signal";
 import { BrowserAgentSession } from "./session";
 import type { AgentToolContext } from "./tools";
 
@@ -53,6 +57,7 @@ describe.skipIf(!LLM_LIVE)("browser agent — real browse (live)", () => {
         onAction: (action) => {
           actions.push(action);
         },
+        onStep: () => {},
         onScreenshot: async () => {
           const seq = screenshots.length;
           screenshots.push({ seq });
@@ -84,6 +89,49 @@ describe.skipIf(!LLM_LIVE)("browser agent — real browse (live)", () => {
       } finally {
         await session.close();
       }
+    },
+    BROWSE_TIMEOUT,
+  );
+
+  it(
+    "records a live activity feed through the real runner (dashboard run)",
+    async () => {
+      const runtime = await getLlmRuntime();
+      if (!runtime) throw new Error("LLM is not configured in DB settings.");
+      const db = getDb();
+
+      // A dashboard run has no chat — nothing is sent to Telegram; the report and
+      // the activity feed land on the run row, which is exactly what the UI reads.
+      const run = await enqueueBrowserRun(
+        { goal: "Open https://example.com and tell me its main heading.", chatId: null, isOwner: true },
+        db,
+      );
+      startBrowserAgentRunner(db);
+      emitRunEnqueued();
+
+      // Poll the run detail the same way the dashboard does, until it settles.
+      const started = Date.now();
+      let detail = await getBrowserAgentRunView(run.id, db);
+      while (detail && (detail.status === "queued" || detail.status === "running")) {
+        if (Date.now() - started > BROWSE_TIMEOUT - 5000) break;
+        await new Promise((r) => setTimeout(r, 1000));
+        detail = await getBrowserAgentRunView(run.id, db);
+      }
+
+      expect(detail?.status).toBe("done");
+      // The activity feed is populated and ordered: at least a navigate, ok.
+      expect(detail!.activity.length).toBeGreaterThan(0);
+      expect(detail!.activity[0].tool).toBe("browser_navigate");
+      expect(detail!.activity.every((s) => typeof s.seq === "number")).toBe(true);
+      expect(detail!.steps).toBe(detail!.activity.length);
+      // A settled run drops its live state.
+      expect(detail!.live).toBeNull();
+
+      console.info(
+        `\n[runner feed] status=${detail!.status} steps=${detail!.steps}\n` +
+          detail!.activity.map((s) => `  ${s.seq}. ${s.tool} — ${s.ok ? "ok" : "FAIL"} — ${s.summary}`).join("\n") +
+          `\n`,
+      );
     },
     BROWSE_TIMEOUT,
   );
