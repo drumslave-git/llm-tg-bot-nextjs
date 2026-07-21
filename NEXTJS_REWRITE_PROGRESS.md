@@ -224,6 +224,17 @@ Next: **Priority 12 — Image generation** (Analytics landed 2026-07-15 as the n
   - Proof: typecheck ✓, lint ✓, 606 unit tests ✓ (4 new retry tests + detector
     tests), history integration suite 20/20 ✓ (new `maxMessages` test).
   - Note: the running dev server (if any) needs a restart to pick this up.
+  - **Live-trace fix (same day, trace a4859ca7)**: the first live overflow
+    stopped after one retry — llama.cpp words the *mid-generation* exhaustion
+    differently from the oversized-prompt rejection (`500: Context size has
+    been exceeded.` vs `400: request (N tokens) exceeds the available context
+    size (M tokens)`), and the detector's exact-phrasing patterns missed the
+    500, so the second failure was treated as a plain provider error.
+    `isContextOverflowError` now matches the concept, not phrasings: a context
+    size/length/window mention plus an exceeded/overflow word in either order
+    (OpenAI's exceed-less `maximum context length …` wording matched
+    separately). Both live phrasings are pinned in `client.test.ts`.
+    Proof: typecheck ✓, lint ✓, 609 unit ✓.
 
 - 2026-07-21 (user-requested — ad blocking in the page reader + tool rename, done):
   the `read_page` MCP tool is now **`read_web_page`** (clearer verb phrase for the

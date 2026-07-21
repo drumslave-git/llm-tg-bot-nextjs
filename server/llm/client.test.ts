@@ -49,15 +49,19 @@ describe("sanitizeMessagesForTrace", () => {
 
 describe("isContextOverflowError", () => {
   it.each([
-    // llama.cpp, as mapped through toLlmError
+    // llama.cpp oversized-prompt rejection, as mapped through toLlmError
     "LLM endpoint error (400): request (36280 tokens) exceeds the available context size (32768 tokens), try increasing it",
+    // llama.cpp mid-generation exhaustion — different path, different wording
+    // and status (seen live: trace a4859ca7, 2026-07-21)
+    "LLM endpoint error (500): Context size has been exceeded.",
     // llama.cpp (older phrasing)
     "the request exceeds the available context size, try increasing the context size",
-    // OpenAI / vLLM
+    // OpenAI / vLLM (no "exceeded" word at all)
     "This model's maximum context length is 32768 tokens. However, you requested 36280 tokens.",
     // OpenAI structured error code, when it lands in the message
     "400 context_length_exceeded",
     "context overflow detected",
+    "prompt is too large for the context window",
   ])("matches: %s", (message) => {
     expect(isContextOverflowError(new Error(message))).toBe(true);
     expect(isContextOverflowError(message)).toBe(true);

@@ -204,28 +204,28 @@ function apiErrorDetail(err: APIError): string {
 }
 
 /**
- * Provider phrasings for "this request does not fit the model's context window".
- * There is no reliable structured code across OpenAI-compatible servers —
- * llama.cpp, vLLM, and OpenAI each say it differently — so detection is by
- * message. Matched against the already-mapped {@link ApiError} message (which
- * embeds the provider's detail verbatim).
- */
-const CONTEXT_OVERFLOW_PATTERNS: readonly RegExp[] = [
-  /exceeds? the (?:available )?context (?:size|length|window)/i, // llama.cpp
-  /maximum context length/i, // OpenAI, vLLM
-  /context[_ ]length[_ ]exceeded/i, // OpenAI error code
-  /context overflow/i,
-];
-
-/**
  * True when an LLM failure means the request was too large for the model's
  * context window — the one provider error a caller can fix by sending less
  * (e.g. shrinking the injected history) rather than by retrying as-is.
+ *
+ * There is no structured code for this across OpenAI-compatible servers, and
+ * even one server words it differently per path — llama.cpp rejects an
+ * oversized prompt with `400: request (N tokens) exceeds the available context
+ * size (M tokens)` but reports mid-generation exhaustion as `500: Context size
+ * has been exceeded.` — so this matches the *concept*, not exact phrasings: a
+ * context size/length/window mention plus an exceeded/overflow word, in either
+ * order. OpenAI's own wording (`maximum context length … Please reduce …`)
+ * contains no "exceeded" and is matched separately.
  */
 export function isContextOverflowError(err: unknown): boolean {
   const message =
     err instanceof Error ? err.message : typeof err === "string" ? err : "";
-  return CONTEXT_OVERFLOW_PATTERNS.some((pattern) => pattern.test(message));
+  if (!message) return false;
+  if (/maximum context length/i.test(message)) return true; // OpenAI, vLLM
+  return (
+    /context[_ ](?:size|length|window)|context overflow/i.test(message) &&
+    /exceed|overflow|too (?:large|long|big|many)/i.test(message)
+  );
 }
 
 /** Map provider/network failures to a clean {@link ApiError} without leaking internals. */
