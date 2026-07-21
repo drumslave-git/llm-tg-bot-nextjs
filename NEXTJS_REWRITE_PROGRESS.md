@@ -188,6 +188,51 @@ Next: **Priority 12 — Image generation** (Analytics landed 2026-07-15 as the n
 
 ### Session log
 
+- 2026-07-21 (Improvements pass 7 — §12.1 concurrency test coverage, done):
+  the untested area the runner made *live* relevant now has integration
+  coverage; no runtime code changed.
+  - **New `server/telegram/process-update.concurrency.integration.test.ts`**
+    (3 ✓, same harness as the flow test: `simulateUpdate` → real
+    `processUpdate` against Testcontainers Postgres via `DATABASE_URL`):
+    (1) two updates for **different chats genuinely overlapping** — both
+    generators are held at a shared barrier until both pipelines are mid-reply,
+    then every side effect is checked for cross-talk and loss (own reply to own
+    sink, own chat text only in each LLM context, both senders remembered, each
+    mirror exactly its own exchange, one success trace per update with
+    correlation ids `<chatId>:<msgId>` distinguishing them); (2) **same chat,
+    processed in order** (the runner's `sequentialize` contract) → observed in
+    order: the second turn's LLM context contains the first exchange in
+    transcript order, and the mirror reads back `[u1, a1, u2, a2]` with intact
+    reply linkage; (3) **same chat, two in flight with completion order
+    forced inverted** (first message's reply gated until the second update
+    fully settles) → nothing lost: all four rows mirrored, each reply's
+    `replyToMessageId` anchors its own incoming message, both traces success,
+    and the inverted completion is asserted visible in insertion order (the
+    overlap was real, not incidental).
+  - **New `server/jobs/lock.integration.test.ts`** (3 ✓): advisory-lock
+    contention from **two separate `pg` pools** against one Postgres — each
+    pool standing in for one server process, the scenario the lock exists for
+    (the same-pool nesting case already lived in the backfill test). Covers
+    hold → contender skips (fn never runs) → release → re-acquire from the
+    other pool; two simultaneous contenders (winner blocked inside its job, so
+    the loser provably settles first as a skip; exactly one runs); and distinct
+    job names not contending across pools (both provably inside their fn at
+    once via the barrier — a key collision would deadlock into a timeout, not
+    pass vacuously).
+  - **New shared `test/async.ts`** (`deferred`, `barrier`) — third consumer of
+    the deferred-promise helper appeared, so it was extracted
+    (`extract-shared-before-second-use`); `idle-scheduler.test.ts` now imports
+    it instead of its local copy. `barrier(n)` is written so serialized-when-
+    they-shouldn't-be callers hang into a test timeout rather than passing.
+  - One test-authoring correction along the way: `getChatHistory` returns
+    **newest first** (dashboard order) — the first draft asserted insertion
+    order directly and all three pipeline tests failed; assertions now reverse
+    into transcript order.
+  - Proof: lint ✓, typecheck ✓, **568 unit ✓ (64 files)**, full integration ✓
+    (**254 passed / 21 skipped** — the skips are the pre-existing opt-in
+    real-LLM files). `docs/IMPROVEMENTS.md` §12.1(1) marked done; §12.1(2)
+    trace-store scale remains the only open testing gap.
+
 - 2026-07-20 (Improvements pass 6, "lets take that desigions"): **every held
   decision was put to the user (AskUserQuestion, seven rows added to Decision
   Notes) and then implemented in the same session.** ⚠️ **Operator notes:**

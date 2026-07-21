@@ -1,15 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { createIdleScheduler, type JobRunContext } from "./idle-scheduler";
+import { deferred } from "@/test/async";
 
-/** A deferred promise for pausing a run mid-flight. */
-function deferred<T>() {
-  let resolve!: (v: T) => void;
-  const promise = new Promise<T>((r) => {
-    resolve = r;
-  });
-  return { promise, resolve };
-}
+import { createIdleScheduler, type JobRunContext } from "./idle-scheduler";
 
 beforeEach(() => {
   vi.useFakeTimers();

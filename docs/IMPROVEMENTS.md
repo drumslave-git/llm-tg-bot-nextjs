@@ -38,15 +38,19 @@ Status (see the session log in `NEXTJS_REWRITE_PROGRESS.md` for proof):
   weakened detection); the analyzer runs on every undecided group message
   again.
 
+- 2026-07-21, pass 7 ✅: 12.1(1) concurrency coverage — two updates in flight
+  through the pipeline (cross-chat overlap, same-chat ordering, same-chat
+  out-of-order completion) and advisory-lock contention from two separate
+  pools.
+
 Still open: 4.1's cost concern (the pre-filter was reverted; the unchosen
 verdict-cache / per-group-flag mitigations need a new decision if analyzer
 volume ever bites), the 6.1 bytea-media migration (a session of its own), and
 the deferred-by-design bits: 5.2 and 10.2 (extract on second use / when a consumer
 appears), 9.1(3) and 9.3 (when data volume demands), 10.3 Debug paging, 11.2
-Dockerfile lockfile, and the testing gaps (§12.1's two-updates-in-flight case
-is now *live* relevant since the runner landed; trace-store scale is partly
-covered by the multi-month corpus tests). Deliberate omission: no
-change-password flow — resetting means clearing the DB column (README).
+Dockerfile lockfile, and §12.1(2) trace-store scale (partly covered by the
+multi-month corpus tests). Deliberate omission: no change-password flow —
+resetting means clearing the DB column (README).
 
 ---
 
@@ -525,9 +529,13 @@ The unit/integration split (Vitest + Testcontainers), injected collaborators,
 and the transport-seam simulation harness are genuinely strong. Gaps worth
 filling, in priority order:
 
-1. **[M] Concurrency**: no test exercises two updates in flight (relevant if
-   1.3 lands) or two schedulers contending for the advisory lock from separate
-   pools.
+1. ✅ **[M] Concurrency** (done 2026-07-21): two updates genuinely in flight
+   through the pipeline — cross-chat overlap with no cross-talk, same-chat
+   in-order processing observed in order, same-chat out-of-order completion
+   losing nothing
+   ([process-update.concurrency.integration.test.ts](../server/telegram/process-update.concurrency.integration.test.ts)) —
+   and two schedulers contending for the advisory lock from separate pools
+   ([lock.integration.test.ts](../server/jobs/lock.integration.test.ts)).
 2. **[L] Trace store scale**: store tests cover correctness, not behavior with
    a large multi-month corpus (would catch 1.5 regressions).
 
