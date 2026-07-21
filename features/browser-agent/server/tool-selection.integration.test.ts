@@ -69,6 +69,28 @@ describe.skipIf(!LLM_LIVE)("browser agent tool selection (live)", () => {
   );
 
   it(
+    "browses when the user gives a link and asks to download the file/video on it",
+    async () => {
+      // Regression for a real prod trace (2026-07-21): the model refused with
+      // "I'm a language model, not a video downloader" and called no tool. The
+      // description now asserts the download capability hard enough to override
+      // that false prior. A neutral URL stands in for the real (adult) one — the
+      // failure was about "download a file", not the content.
+      const run = await runToolSelection({
+        userText: "https://example.com/clips/sample.mp4 download this video",
+        cannedResults: {
+          [BROWSE_WEB_TOOL]: {
+            text: "Browsing run started in the background.",
+            structuredContent: { ok: true, runId: "run_demo_3" },
+          },
+        },
+      });
+      expectToolCalled(run, BROWSE_WEB_TOOL);
+    },
+    TOOL_SELECTION_TIMEOUT,
+  );
+
+  it(
     "does not browse for a plain fact it already knows",
     async () => {
       const run = await runToolSelection({ userText: "What's the capital of France?" });

@@ -36,10 +36,26 @@ const MAX_WAIT_SECONDS = 30;
 /** JPEG quality for viewport screenshots shown to the model. */
 const SCREENSHOT_QUALITY = 70;
 
+/** How many recent network responses to keep for `browser_get_network`. */
+const NETWORK_CAP = 500;
+
+/** One observed network response, surfaced so the agent can find real media URLs. */
+export interface NetworkEntry {
+  url: string;
+  method: string;
+  /** Playwright resource type: document, xhr, fetch, media, image, script, … */
+  resourceType: string;
+  status: number;
+  /** Response `content-type` (first token), or "". */
+  contentType: string;
+}
+
 export class BrowserAgentSession {
   private guarded: GuardedContext | null = null;
   private page: Page | null = null;
   private closed = false;
+  /** Ring buffer of observed responses — the raw material for finding media URLs. */
+  private network: NetworkEntry[] = [];
 
   /** Lazily open the guarded context + page on first use. */
   private async ensurePage(): Promise<Page> {
@@ -52,9 +68,43 @@ export class BrowserAgentSession {
       this.guarded.context.on("page", (page) => {
         this.page = page;
       });
+      // Record every response across every page in the context, so the agent can
+      // inspect the traffic itself and discover the real file/stream URL a player
+      // fetched — no media-sniffing heuristics baked into the code.
+      this.guarded.context.on("response", (response) => {
+        try {
+          const request = response.request();
+          this.network.push({
+            url: response.url(),
+            method: request.method(),
+            resourceType: request.resourceType(),
+            status: response.status(),
+            contentType: (response.headers()["content-type"] ?? "").split(";")[0].trim(),
+          });
+          if (this.network.length > NETWORK_CAP) this.network.shift();
+        } catch {
+          // A response that vanished before we read it is not worth failing over.
+        }
+      });
     }
     this.page = await this.guarded.context.newPage();
     return this.page;
+  }
+
+  /**
+   * The network responses observed so far (newest last), optionally filtered to
+   * those whose URL or content-type contains `filter` (case-insensitive). This is
+   * how the agent locates the actual media/stream URL a player loaded — it reads
+   * the traffic and decides, rather than the code guessing what "the video" is.
+   */
+  getNetwork(filter?: string): NetworkEntry[] {
+    const needle = filter?.trim().toLowerCase();
+    const entries = needle
+      ? this.network.filter(
+          (e) => e.url.toLowerCase().includes(needle) || e.contentType.toLowerCase().includes(needle),
+        )
+      : this.network;
+    return entries.slice();
   }
 
   /** Current page URL, or null before the first navigation. */

@@ -8,16 +8,22 @@ import type { McpToolCallResult } from "@/server/mcp/tool-result";
 
 import { formatSnapshot, type PageSnapshot } from "../snapshot";
 import type { BrowserDownloadRecord } from "../types";
-import { downloadToDisk } from "./download";
-import type { BrowserAgentSession } from "./session";
+import { downloadToDisk, type DiskDownload } from "./download";
+import { downloadStreamToDisk, FfmpegMissingError } from "./stream-download";
+import type { BrowserAgentSession, NetworkEntry } from "./session";
 
 /**
  * The browser agent's generic toolset (recorded decision: no scenario-specific
- * tools — navigate/back/click/type/scroll/read/source/screenshot/wait/download
- * cover a variety of tasks instead of encoding any one of them). These are plain
- * OpenAI tool definitions for the agent's own tool loop — they are NOT MCP tools
- * and are never offered to the main chat model; only the `browse_web` dispatch
- * tool is (see `mcp-tools.ts`).
+ * tools — the model composes primitives instead of the code encoding any one
+ * task): navigate, back, click, type, scroll, read page, read raw source,
+ * inspect network requests, screenshot, wait, download a direct file, download an
+ * HLS/DASH stream. Finding "the video" is the model's job — it reads the page or
+ * the network, picks the URL, and calls the matching download tool — not a
+ * media-sniffing heuristic baked in here.
+ *
+ * These are plain OpenAI tool definitions for the agent's own tool loop — they
+ * are NOT MCP tools and are never offered to the main chat model; only the
+ * `browse_web` dispatch tool is (see `mcp-tools.ts`).
  */
 
 /** A file collected during a run, delivered to the chat as it lands. */
@@ -123,11 +129,25 @@ export const BROWSER_AGENT_TOOLS: ChatCompletionFunctionTool[] = [
   ),
   fn(
     "browser_source",
-    "Read the current page's raw HTML source, in bounded chunks. Use when the visible text is not enough (hidden data, script-embedded values, exact markup); pass a larger offset to read further into the document.",
+    "Read the current page's raw HTML source, in bounded chunks. Use when the visible text is not enough (hidden data, script-embedded values, a media/file URL buried in inline scripts); pass a larger offset to read further into the document.",
     {
       type: "object",
       properties: {
         offset: { type: "number", description: "Character offset to start from (default 0)" },
+      },
+    },
+  ),
+  fn(
+    "browser_get_network",
+    "List the network requests the current page has made (URL, method, resource type, status, content-type). This is how you find the REAL file or stream URL that a player or the page loaded — e.g. an .mp4/.m3u8/.mpd a video player fetched, or a file a button pointed at — which is often NOT visible in the page text or links. Interact with the page first (play/scroll/click) so it loads what you want, then read the network here, pick the right URL, and download it with the matching download tool: a direct file (.mp4/.pdf/…) versus a streaming manifest (.m3u8/.mpd).",
+    {
+      type: "object",
+      properties: {
+        filter: {
+          type: "string",
+          description:
+            "Optional case-insensitive substring to match against the URL or content-type (e.g. \".mp4\", \".m3u8\", \"video\", \"audio\"). Omit to list everything.",
+        },
       },
     },
   ),
@@ -148,12 +168,23 @@ export const BROWSER_AGENT_TOOLS: ChatCompletionFunctionTool[] = [
     },
   ),
   fn(
-    "browser_download",
-    "Download a file from a URL to the server's downloads folder (only available when the run was started by the owner). The file is named automatically from the current page's title — do NOT pass a filename. Small files are also attached to the chat; large ones are reported by name.",
+    "browser_download_file",
+    "Download a DIRECT file URL — one URL that returns the whole file (.mp4, .pdf, .zip, .jpg …) — to the server's downloads folder (owner-started runs only). If the file URL is not an obvious link, find it first by inspecting the page source or the page's network requests. For a streaming video served as an HLS/DASH manifest (.m3u8/.mpd), use the streaming download tool instead — this one only fetches a single whole-file URL. The file is named automatically from the page title — do NOT pass a filename. Small files are also attached to the chat; large ones are reported by name.",
     {
       type: "object",
       properties: {
-        url: { type: "string", description: "Public http(s) URL of the file" },
+        url: { type: "string", description: "Public http(s) URL of the direct file" },
+      },
+      required: ["url"],
+    },
+  ),
+  fn(
+    "browser_download_stream",
+    "Download a STREAMING video/audio from its HLS/DASH manifest URL (an .m3u8 or .mpd) — the format tube sites and most in-browser players use, where the media is split into many segments with no single file to GET. It assembles the segments into one MP4 at the best available quality. Find the manifest URL first by inspecting the page source or the page's network requests (look for .m3u8/.mpd). Owner-started runs only. Small results are attached to the chat; large ones are reported by name.",
+    {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "Public http(s) URL of the .m3u8/.mpd manifest" },
       },
       required: ["url"],
     },
@@ -228,6 +259,11 @@ export function makeBrowserToolDispatcher(ctx: AgentToolContext) {
             `):\n`;
           return { text: header + html };
         }
+        case "browser_get_network": {
+          const filter = str(args, "filter") || undefined;
+          await ctx.onAction(filter ? `network ~${filter}` : "network", ctx.session.currentUrl());
+          return { text: formatNetwork(ctx.session.getNetwork(filter)) };
+        }
         case "browser_screenshot": {
           await ctx.onAction("screenshot", ctx.session.currentUrl());
           const buffer = await ctx.session.screenshot();
@@ -243,39 +279,30 @@ export function makeBrowserToolDispatcher(ctx: AgentToolContext) {
           await ctx.onAction(`wait ${seconds}s`, ctx.session.currentUrl());
           return snapshotResult(await ctx.session.wait(seconds));
         }
-        case "browser_download": {
-          if (!ctx.isOwner) {
-            return errorResult(
-              "Downloads are disabled for this run (only the owner can download files).",
-            );
-          }
+        case "browser_download_file": {
+          if (!ctx.isOwner) return errorResult(DOWNLOAD_DENIED);
           const url = str(args, "url");
-          await ctx.onAction(`download ${url}`, ctx.session.currentUrl());
-          // Name the file (and record its source) from the page it came from —
-          // never from a model-supplied name, which is inconsistent.
+          await ctx.onAction(`download file ${url}`, ctx.session.currentUrl());
           const meta = await ctx.session.pageMeta();
-          const result = await downloadToDisk(url, { title: meta.title });
-          const mb = Math.round(result.sizeBytes / 1024 / 1024);
-          // Small enough for Telegram — also attach it to the chat.
-          const inline = result.sizeBytes <= ctx.downloadMaxMb * 1024 * 1024;
-          const record: BrowserDownloadRecord = {
-            sourceUrl: meta.url ?? url,
-            filename: result.filename,
-            sizeBytes: result.sizeBytes,
-            inline,
-          };
-          ctx.downloads.push(record);
-          const file: CollectedFile | null = inline
-            ? { buffer: await readFile(result.filePath), filename: result.filename, mime: result.mime }
-            : null;
-          await ctx.onDownload(record, file);
-          return {
-            text:
-              `Saved to the downloads folder as "${result.filename}" (${mb} MB).` +
-              (inline
-                ? " Attaching it to the chat now."
-                : " It is too large to attach here — tell the user the filename and that it is in the downloads folder. Do NOT paste a URL."),
-          };
+          return finishDownload(ctx, await downloadToDisk(url, { title: meta.title }), meta.url ?? url);
+        }
+        case "browser_download_stream": {
+          if (!ctx.isOwner) return errorResult(DOWNLOAD_DENIED);
+          const url = str(args, "url");
+          await ctx.onAction(`download stream ${url}`, ctx.session.currentUrl());
+          const meta = await ctx.session.pageMeta();
+          try {
+            return finishDownload(
+              ctx,
+              await downloadStreamToDisk(url, { title: meta.title }),
+              meta.url ?? url,
+            );
+          } catch (err) {
+            // ffmpeg missing is an operator-fixable environment fact — say so plainly
+            // rather than as a generic tool failure the agent might paper over.
+            if (err instanceof FfmpegMissingError) return errorResult(err.message);
+            throw err;
+          }
         }
         default:
           return errorResult(`Unknown tool: ${name}`);
@@ -284,4 +311,56 @@ export function makeBrowserToolDispatcher(ctx: AgentToolContext) {
       return errorResult(err instanceof Error ? err.message : "Tool failed");
     }
   };
+}
+
+const DOWNLOAD_DENIED = "Downloads are disabled for this run (only the owner can download files).";
+
+/**
+ * Shared post-download delivery: record the file, decide inline vs link by the
+ * chat attach limit, hand it to the run's delivery sink, and return the model's
+ * result text. Both download tools (file and stream) end here. The filename comes
+ * from the page it was fetched on, never from the model (which is inconsistent).
+ */
+async function finishDownload(
+  ctx: AgentToolContext,
+  result: DiskDownload,
+  sourceUrl: string,
+): Promise<McpToolCallResult> {
+  const mb = Math.round(result.sizeBytes / 1024 / 1024);
+  const inline = result.sizeBytes <= ctx.downloadMaxMb * 1024 * 1024;
+  const record: BrowserDownloadRecord = {
+    sourceUrl,
+    filename: result.filename,
+    sizeBytes: result.sizeBytes,
+    inline,
+  };
+  ctx.downloads.push(record);
+  const file: CollectedFile | null = inline
+    ? { buffer: await readFile(result.filePath), filename: result.filename, mime: result.mime }
+    : null;
+  await ctx.onDownload(record, file);
+  return {
+    text:
+      `Saved to the downloads folder as "${result.filename}" (${mb} MB).` +
+      (inline
+        ? " Attaching it to the chat now."
+        : " It is too large to attach here — tell the user the filename and that it is in the downloads folder. Do NOT paste a URL."),
+  };
+}
+
+/** Render observed network responses for the agent (newest last, bounded). */
+function formatNetwork(entries: NetworkEntry[]): string {
+  if (entries.length === 0) {
+    return "No network requests recorded yet. Navigate, play, or interact with the page first, then read the network again.";
+  }
+  // Cap the rendered list so a chatty page can't blow the tool result out; the
+  // newest requests (a player's media fetches happen after load) matter most.
+  const shown = entries.slice(-120);
+  const omitted = entries.length - shown.length;
+  const lines = shown.map(
+    (e) => `[${e.resourceType}] ${e.status} ${e.contentType || "?"} ${e.url}`,
+  );
+  const header =
+    `NETWORK REQUESTS (${shown.length}${omitted > 0 ? ` of ${entries.length}, oldest ${omitted} omitted` : ""}):`;
+  return [header, ...lines].join("\n");
 }

@@ -26,15 +26,20 @@ export const BROWSE_WEB_TOOL = "browse_web";
 export const BROWSER_AGENT_TOOL_NAMES = [BROWSE_WEB_TOOL];
 
 const BROWSE_WEB_DESCRIPTION =
-  "Start a background web-browsing agent to research or do something on the web that needs " +
-  "actually visiting pages — following links, searching a site, filling a form, reading content " +
-  "behind a click, or fetching a file. The agent opens a real browser and works step by step, " +
-  "then reports back to this chat when it is done (this may take a while). " +
-  "Call this when the request needs live web interaction beyond a single page read or a search " +
-  "snippet. Do NOT call for a quick fact you already know, or when a plain web search or reading " +
-  "one known URL is enough. " +
-  "Write the goal as a clear, self-contained instruction, and INCLUDE ALL links the user gave — " +
-  "the agent starts from nothing but this text. " +
+  "Start a background web-browsing agent that opens a REAL browser and can do things you cannot do " +
+  "yourself: navigate pages, follow links, search a site, click, fill forms, read content behind a " +
+  "click, AND download files (documents, images, videos, archives) to send to the user. " +
+  "You CAN get a file for the user through this tool — so when a user gives you a link and asks you " +
+  "to download / save / grab / get / fetch it (or the video/image/file on it), DO NOT reply that you " +
+  "are 'just a language model' or 'cannot download files': call this tool instead. That refusal is " +
+  "wrong — this is exactly the tool for it. " +
+  "MUST call whenever the user asks to download or save a file, video, image, or document, or asks " +
+  "you to do something on the web that needs actually visiting and interacting with pages. " +
+  "The agent works step by step and reports back to this chat when it is done (this may take a while). " +
+  "Do NOT call only for a quick fact you already know, or when a plain web search or reading one known " +
+  "URL for its text is enough (a download or any multi-step interaction is NOT one of those cases). " +
+  "Write the goal as a clear, self-contained instruction, and INCLUDE ALL links the user gave — the " +
+  "agent starts from nothing but this text. " +
   "The agent replies to the chat itself, so just tell the user you're on it; do not invent results.";
 
 /** Register the browser-agent MCP tool on the shared server. */

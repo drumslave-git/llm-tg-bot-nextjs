@@ -14,8 +14,11 @@ import { buildDownloadFilename } from "../files";
 /**
  * Generic file download for the browser agent: stream a public URL to the
  * project's downloads folder, SSRF-checked at every redirect hop, with a size
- * cap. Deliberately plain HTTP only — the MVP's HLS/DASH + ffmpeg video pipeline
- * was scenario-specific machinery and is not ported (recorded decision).
+ * cap. This is the plain-HTTP primitive (`browser_download_file`); the HLS/DASH
+ * stream primitive (`browser_download_stream`) lives in `stream-download.ts` and
+ * reuses the SSRF/naming helpers exported here. Neither encodes *which* file to
+ * fetch — the agent finds the URL (via the page or the network) and picks the
+ * matching tool.
  */
 
 /**
@@ -37,8 +40,8 @@ const HEADER_TIMEOUT_MS = 60_000;
 /** Safety cap so a runaway response can't fill the disk. */
 const MAX_DISK_BYTES = 2 * 1024 * 1024 * 1024;
 
-/** Browser-like headers: plenty of file hosts refuse a bare fetch. */
-const DOWNLOAD_HEADERS = (url: URL): Record<string, string> => ({
+/** Browser-like headers: plenty of file hosts refuse a bare fetch. Shared with the stream downloader. */
+export const DOWNLOAD_HEADERS = (url: URL): Record<string, string> => ({
   "user-agent":
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
   referer: url.origin + "/",
@@ -48,9 +51,10 @@ const DOWNLOAD_HEADERS = (url: URL): Record<string, string> => ({
 /**
  * Full SSRF check for a URL about to be fetched server-side: shape (scheme,
  * no credentials, public-looking host) plus DNS (the host must resolve to a
- * public address). Throws with a safety message on any failure.
+ * public address). Throws with a safety message on any failure. Exported so the
+ * stream downloader guards its manifest + segment URLs the same way.
  */
-async function assertPublicUrl(rawUrl: string): Promise<URL> {
+export async function assertPublicUrl(rawUrl: string): Promise<URL> {
   const normalized = normalizeUrl(rawUrl);
   if (!normalized || !isSafePublicUrl(normalized)) {
     throw new Error("URL blocked for safety (private network or unsupported scheme)");
@@ -91,8 +95,8 @@ async function resolveFinalResponse(
   throw new Error(`Too many redirects fetching ${rawUrl}`);
 }
 
-/** Pick a non-colliding filename in the downloads dir (adds " (n)" if needed). */
-async function uniqueFilename(filename: string): Promise<string> {
+/** Pick a non-colliding filename in the downloads dir (adds " (n)" if needed). Shared. */
+export async function uniqueFilename(filename: string): Promise<string> {
   const ext = path.extname(filename);
   const stem = path.basename(filename, ext);
   let candidate = filename;
