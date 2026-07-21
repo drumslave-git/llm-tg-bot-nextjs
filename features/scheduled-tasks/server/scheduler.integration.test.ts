@@ -6,8 +6,9 @@ import type { ChatCompletionResult, ChatMessage } from "@/server/llm/client";
 import { listTraces } from "@/server/trace";
 import { startTestDb, type TestDb } from "@/test/db";
 
+import { MAX_ONE_SHOT_ATTEMPTS } from "../types";
 import { getScheduledTasks } from "./service";
-import { createScheduledTaskService } from "./service";
+import { createScheduledTaskService, editScheduledTaskService } from "./service";
 import { runDueScheduledTasks } from "./scheduler";
 
 /**
@@ -171,14 +172,99 @@ describe("runDueScheduledTasks (simulated fire — no bot, no live LLM)", () => 
     expect(traces.traces.some((t) => t.action === "fire" && t.status === "success")).toBe(true);
   });
 
-  it("deletes a spent one-shot even when the fire failed — it can never fire again", async () => {
+  it("keeps a failed one-shot due with an attempt recorded, and a later tick delivers it", async () => {
     const task = await createScheduledTaskService(
       { chatId: "555", instruction: "one-time ping", scheduleKind: "once", timeOfDay: "09:00", runDate: tomorrowIso() },
       trigger,
       ctx.db,
     );
+    const now = new Date(new Date(task.nextRunAt!).getTime() + 60_000);
     const sink = captureSink();
+    const failingRun = () =>
+      runDueScheduledTasks({
+        db: ctx.db,
+        now,
+        timezone: "UTC",
+        personalityPrompt: null,
+        complete: async () => {
+          throw new Error("LLM unreachable");
+        },
+        send: sink.send,
+        recordReply,
+      });
+
+    expect(await failingRun()).toEqual({ fired: 0, failed: 1 });
+    // Not deleted (the old behavior silently ate the reminder): still enabled,
+    // still due at the same instant, with the failed attempt on the record.
+    const [after] = await getScheduledTasks("555", ctx.db);
+    expect(after.enabled).toBe(true);
+    expect(after.attempts).toBe(1);
+    expect(after.nextRunAt).toBe(task.nextRunAt);
+
+    // The outage ends; the next tick delivers, and the spent one-shot is deleted.
     const res = await runDueScheduledTasks({
+      db: ctx.db,
+      now,
+      timezone: "UTC",
+      personalityPrompt: null,
+      complete: generator("Here's your one-time ping."),
+      send: sink.send,
+      recordReply,
+    });
+    expect(res).toEqual({ fired: 1, failed: 0 });
+    expect(sink.sent).toHaveLength(1);
+    expect(await getScheduledTasks("555", ctx.db)).toEqual([]);
+  });
+
+  it("disables a one-shot after the attempts cap — kept and badged, never deleted", async () => {
+    const task = await createScheduledTaskService(
+      { chatId: "555", instruction: "doomed ping", scheduleKind: "once", timeOfDay: "09:00", runDate: tomorrowIso() },
+      trigger,
+      ctx.db,
+    );
+    const now = new Date(new Date(task.nextRunAt!).getTime() + 60_000);
+    const sink = captureSink();
+    const failingRun = () =>
+      runDueScheduledTasks({
+        db: ctx.db,
+        now,
+        timezone: "UTC",
+        personalityPrompt: null,
+        complete: async () => {
+          throw new Error("LLM unreachable");
+        },
+        send: sink.send,
+        recordReply,
+      });
+
+    for (let i = 1; i < MAX_ONE_SHOT_ATTEMPTS; i += 1) {
+      expect(await failingRun()).toEqual({ fired: 0, failed: 1 });
+    }
+    // Still in the game one tick before the cap.
+    let [row] = await getScheduledTasks("555", ctx.db);
+    expect(row.enabled).toBe(true);
+    expect(row.attempts).toBe(MAX_ONE_SHOT_ATTEMPTS - 1);
+
+    // The capping failure disables — the row survives to explain itself.
+    expect(await failingRun()).toEqual({ fired: 0, failed: 1 });
+    [row] = await getScheduledTasks("555", ctx.db);
+    expect(row.enabled).toBe(false);
+    expect(row.attempts).toBe(MAX_ONE_SHOT_ATTEMPTS);
+
+    // Disabled means no longer scanned: a further tick fires nothing.
+    expect(await failingRun()).toEqual({ fired: 0, failed: 0 });
+    expect(sink.sent).toEqual([]);
+    const traces = await listTraces({ feature: "scheduled-tasks" });
+    expect(traces.traces.some((t) => t.action === "fire" && t.status !== "success")).toBe(true);
+  });
+
+  it("an operator edit restores a failed one-shot's full retry budget", async () => {
+    const task = await createScheduledTaskService(
+      { chatId: "555", instruction: "flaky ping", scheduleKind: "once", timeOfDay: "09:00", runDate: tomorrowIso() },
+      trigger,
+      ctx.db,
+    );
+    await runDueScheduledTasks({
       db: ctx.db,
       now: new Date(new Date(task.nextRunAt!).getTime() + 60_000),
       timezone: "UTC",
@@ -186,17 +272,13 @@ describe("runDueScheduledTasks (simulated fire — no bot, no live LLM)", () => 
       complete: async () => {
         throw new Error("LLM unreachable");
       },
-      send: sink.send,
+      send: captureSink().send,
       recordReply,
     });
+    expect((await getScheduledTasks("555", ctx.db))[0].attempts).toBe(1);
 
-    expect(res).toEqual({ fired: 0, failed: 1 });
-    expect(sink.sent).toEqual([]);
-    // Removed rather than left as a permanently-stuck due row (it would otherwise
-    // be retried on every tick forever). The failure is recorded in its trace.
-    expect(await getScheduledTasks("555", ctx.db)).toEqual([]);
-    const traces = await listTraces({ feature: "scheduled-tasks" });
-    expect(traces.traces.some((t) => t.action === "fire" && t.status !== "success")).toBe(true);
+    await editScheduledTaskService(task.id, { enabled: true }, trigger, ctx.db);
+    expect((await getScheduledTasks("555", ctx.db))[0].attempts).toBe(0);
   });
 
   it("does not deliver empty model output but still advances the schedule", async () => {

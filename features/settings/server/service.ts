@@ -524,5 +524,7 @@ const EMPTY_RECORD: SettingsRecord = {
   maintenanceModeEnabled: false,
   timezone: "UTC",
   dailyJobsRunTime: DEFAULT_DAILY_JOBS_RUN_TIME,
+  operatorPasswordHash: null,
+  sessionSecret: null,
   updatedAt: null,
 };

@@ -1,11 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 
-import { AppShell } from "@/components/layout/AppShell";
 import { ThemeScript } from "@/components/theme/theme-script";
-import { TimezoneProvider } from "@/components/time/TimezoneProvider";
-import { getTimezone } from "@/features/settings/server/service";
-import { getConfigReadiness } from "@/server/status";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -24,23 +20,23 @@ export const metadata: Metadata = {
 };
 
 // This is a live, DB-backed dashboard: every page already opts into dynamic
-// rendering, and the layout reads settings (timezone, config readiness) from the
-// database on each request. Declaring it here covers the whole tree — including
-// Next's built-in /_not-found, which has no page.tsx of its own — so nothing is
-// statically prerendered at build time, when DATABASE_URL is intentionally absent.
+// rendering. Declaring it here covers the whole tree — including Next's
+// built-in /_not-found, which has no page.tsx of its own — so nothing is
+// statically prerendered at build time, when DATABASE_URL is intentionally
+// absent.
 export const dynamic = "force-dynamic";
 
-export default async function RootLayout({
+/**
+ * Bare document shell: fonts, theme, global CSS. Everything dashboard-specific
+ * (auth gate, nav shell, timezone context) lives in the `(dashboard)` route
+ * group's layout, so the public `/login` and `/setup` pages render without the
+ * app chrome — and without any data the operator has not signed in to see.
+ */
+export default function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  const readiness = await getConfigReadiness();
-  // Every dashboard timestamp renders in this zone. Falls back to UTC when the
-  // database is unreachable — the shell still renders its "database unavailable"
-  // state rather than erroring on a formatting concern.
-  const timezone = await getTimezone().catch(() => "UTC");
-
   return (
     <html
       lang="en"
@@ -52,11 +48,7 @@ export default async function RootLayout({
       <head>
         <ThemeScript />
       </head>
-      <body className="min-h-full">
-        <TimezoneProvider timezone={timezone}>
-          <AppShell botStatus={readiness}>{children}</AppShell>
-        </TimezoneProvider>
-      </body>
+      <body className="min-h-full">{children}</body>
     </html>
   );
 }

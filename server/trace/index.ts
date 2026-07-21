@@ -25,6 +25,8 @@ export {
 export {
   getTraceList,
   getTraceDetail,
+  getTraceMonths,
+  pruneTraces,
   buildTraceBundle,
   buildTraceListBundle,
   type TraceQuery,

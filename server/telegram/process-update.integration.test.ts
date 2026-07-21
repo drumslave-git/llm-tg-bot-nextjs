@@ -123,6 +123,7 @@ describe("processUpdate (bot-less flow)", () => {
     });
     expect(res.replies).toEqual([]);
     expect(gen.calls).toHaveLength(0);
+    expect(analyzer.calls).toHaveLength(1);
 
     // Passive capture runs regardless of addressing: user remembered + mirrored.
     expect(await getKnownUser(ctx.db, "200")).not.toBeNull();

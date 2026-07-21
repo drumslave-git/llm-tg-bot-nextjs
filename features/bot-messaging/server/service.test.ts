@@ -618,7 +618,7 @@ describe("handleIncomingMessage", () => {
     expect(out).toEqual({ status: "error", message: "provider down" });
     expect(recorder.fail).toHaveBeenCalledOnce();
     expect(d.sendReply).toHaveBeenCalledOnce();
-    expect((d.sendReply as ReturnType<typeof vi.fn>).mock.calls[0][0]).toMatch(/couldn't generate/i);
+    expect((d.sendReply as ReturnType<typeof vi.fn>).mock.calls[0][0]).toMatch(/could not generate/i);
     // Typing is always stopped, even on the error path.
     expect(stopTyping).toHaveBeenCalledOnce();
   });

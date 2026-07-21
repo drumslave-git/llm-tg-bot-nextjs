@@ -1,6 +1,7 @@
 "use client";
 
-import { Bell, Menu, Search } from "lucide-react";
+import { Bell, LogOut, Menu, Search } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { Avatar } from "@/components/ui/Avatar";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -35,10 +36,26 @@ export function Topbar({ onMenuClick }: { onMenuClick: () => void }) {
         <Button variant="ghost" size="icon" aria-label="Notifications">
           <Bell className="h-4.5 w-4.5" />
         </Button>
+        <SignOutButton />
         <div className="ml-2">
           <Avatar name="Operator" size="sm" />
         </div>
       </div>
     </header>
+  );
+}
+
+/** Ends the operator session (expires the cookie) and returns to /login. */
+function SignOutButton() {
+  const router = useRouter();
+  async function signOut() {
+    await fetch("/api/auth/logout", { method: "POST" }).catch(() => undefined);
+    router.push("/login");
+    router.refresh();
+  }
+  return (
+    <Button variant="ghost" size="icon" onClick={signOut} aria-label="Sign out">
+      <LogOut className="h-4.5 w-4.5" />
+    </Button>
   );
 }

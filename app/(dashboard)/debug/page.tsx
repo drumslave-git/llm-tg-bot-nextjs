@@ -1,8 +1,8 @@
 import { Database } from "lucide-react";
 
-import { TraceExplorer } from "@/components/debug";
+import { PruneCard, TraceExplorer } from "@/components/debug";
 import { EmptyState, PageHeader } from "@/components/ui";
-import { getTraceList, type TraceListView } from "@/server/trace";
+import { getTraceList, getTraceMonths, type TraceListView } from "@/server/trace";
 import { traceQuerySchema } from "@/server/trace/schema";
 
 // Traces are read from the database at request time.
@@ -31,9 +31,10 @@ export default async function DebugPage({
   const query = parsed.success ? parsed.data : {};
 
   let view: TraceListView | null = null;
+  let months: string[] = [];
   let dbError: string | null = null;
   try {
-    view = await getTraceList(query);
+    [view, months] = await Promise.all([getTraceList(query), getTraceMonths()]);
   } catch (err) {
     dbError = err instanceof Error ? err.message : "Could not read traces from the database";
   }
@@ -45,7 +46,10 @@ export default async function DebugPage({
         description="Every traced action across features — inspect decision steps, external calls, LLM usage, and errors, then download a JSON bundle."
       />
       {view ? (
-        <TraceExplorer view={view} query={query} basePath="/debug" />
+        <div className="space-y-6">
+          <TraceExplorer view={view} query={query} basePath="/debug" />
+          <PruneCard months={months} />
+        </div>
       ) : (
         <EmptyState
           icon={Database}

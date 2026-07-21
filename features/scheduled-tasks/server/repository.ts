@@ -39,6 +39,7 @@ export interface UpdateScheduledTask {
   weekdays?: number[] | null;
   runDate?: string | null;
   enabled?: boolean;
+  attempts?: number;
   nextRunAt?: Date | null;
 }
 
@@ -54,6 +55,7 @@ function mapRow(row: ScheduledTaskRow): ScheduledTask {
     weekdays: row.weekdays ?? null,
     runDate: row.runDate,
     enabled: row.enabled,
+    attempts: row.attempts,
     recentDeliveries: row.recentDeliveries ?? [],
     lastRunAt: row.lastRunAt?.toISOString() ?? null,
     nextRunAt: row.nextRunAt?.toISOString() ?? null,
@@ -171,6 +173,28 @@ export async function markScheduledTaskRun(
 /** Prepend `delivered` to `recent` and cap the list to {@link RECENT_DELIVERIES_CAP}. */
 export function nextRecentDeliveries(recent: string[], delivered: string): string[] {
   return [delivered, ...recent].slice(0, RECENT_DELIVERIES_CAP);
+}
+
+/**
+ * Record a failed fire of a due one-shot: stamp `last_run_at` and the new
+ * attempts count, keeping `next_run_at` so the task stays due and retries on the
+ * next tick. With `disable` (the attempts cap is hit) the task is switched off —
+ * kept, never deleted — so the dashboard can show why it stopped.
+ */
+export async function markScheduledTaskFailedAttempt(
+  db: DrizzleDb,
+  id: string,
+  input: { lastRunAt: Date; attempts: number; disable: boolean },
+): Promise<void> {
+  await db
+    .update(scheduledTasks)
+    .set({
+      lastRunAt: input.lastRunAt,
+      attempts: input.attempts,
+      ...(input.disable ? { enabled: false } : {}),
+      updatedAt: new Date(),
+    })
+    .where(eq(scheduledTasks.id, id));
 }
 
 /** Delete one task. Returns true if a row was removed. */

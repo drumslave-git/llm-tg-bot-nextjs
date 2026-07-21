@@ -5,6 +5,7 @@
  */
 export { DebugFilters } from "./DebugFilters";
 export { DownloadButton } from "./DownloadButton";
+export { PruneCard } from "./PruneCard";
 export { JsonBlock } from "./JsonBlock";
 export { TraceDetail } from "./TraceDetail";
 export { TraceExplorer } from "./TraceExplorer";

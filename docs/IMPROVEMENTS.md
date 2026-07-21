@@ -28,20 +28,31 @@ Status (see the session log in `NEXTJS_REWRITE_PROGRESS.md` for proof):
   correction: 9.1(1) — range-aware `scanTraces` — had in fact already landed
   with 1.5's windowing in pass 2; the 9.1 header was stale.
 
-Still open: the needs-decision items (1.1 auth, 1.3 concurrency, 1.9 notice
-language, 7.1 one-shot retry, trace retention 1.5/11.1), the 6.1 bytea-media
-migration (a session of its own), 4.1 and 4.4 (both change when/how the bot
-answers — held for the user), and the deferred-by-design bits: 5.2 and 10.2
-(extract on second use / when a consumer appears), 9.1(3) and 9.3 (when data
-volume demands), 10.3 Debug paging, 11.2 Dockerfile lockfile, and the testing
-gaps (concurrency, trace-store scale — partly covered by the new multi-month
-corpus tests).
+- 2026-07-20, pass 6 ✅ — **the held decisions were put to the user (all seven
+  recorded in Decision Notes) and implemented**: 1.1 auth (DB password +
+  session), 1.3 concurrency (`@grammyjs/runner`), 1.9 notices (English,
+  system-labeled), 4.4 markdown → Telegram HTML, 7.1 one-shot
+  retry-then-disable, and 1.5/11.1's retention question (decided as **manual
+  prune only** — a Debug-page action, nothing automatic). 4.1's name-shaped
+  pre-filter shipped too but was **reverted the same day by the user** (it
+  weakened detection); the analyzer runs on every undecided group message
+  again.
+
+Still open: 4.1's cost concern (the pre-filter was reverted; the unchosen
+verdict-cache / per-group-flag mitigations need a new decision if analyzer
+volume ever bites), the 6.1 bytea-media migration (a session of its own), and
+the deferred-by-design bits: 5.2 and 10.2 (extract on second use / when a consumer
+appears), 9.1(3) and 9.3 (when data volume demands), 10.3 Debug paging, 11.2
+Dockerfile lockfile, and the testing gaps (§12.1's two-updates-in-flight case
+is now *live* relevant since the runner landed; trace-store scale is partly
+covered by the multi-month corpus tests). Deliberate omission: no
+change-password flow — resetting means clearing the DB column (README).
 
 ---
 
 ## 1. Cross-cutting
 
-### 1.1 [H] security — No authentication on the dashboard or API
+### 1.1 ✅ [H] security — No authentication on the dashboard or API (done 2026-07-20: DB password + signed session cookie; proxy optimistic redirect + real checks in the dashboard layout and `defineRoute`)
 
 There is no `middleware.ts`, no auth check in any Route Handler, and no session
 concept. Every endpoint is open to whoever can reach the port: reading the full
@@ -76,7 +87,7 @@ also intercept navigation redirects in Playwright (`page.on("response")` or a
 route handler) and abort when a hop lands on a private address. The pure
 `isPrivateIp` helper already exists — export it and reuse it at the fetch layer.
 
-### 1.3 [H] performance — Updates are processed strictly sequentially
+### 1.3 ✅ [H] performance — Updates are processed strictly sequentially (done 2026-07-20: `@grammyjs/runner` + per-chat `sequentialize`)
 
 `bot.start()` in [bot-manager.ts](server/telegram/bot-manager.ts:246) uses
 grammy's built-in polling, which awaits each update's handler before fetching
@@ -107,7 +118,7 @@ changes take effect without restart" still holds. Alternatively resolve settings
 once per update in `processUpdate` and pass them down (larger refactor, better
 purity).
 
-### 1.5 [H] scalability — Trace store loads all history into RAM and keeps it (windowing/eviction/sort/spread ✅ done 2026-07-18; retention still open — it deletes data, so it needs a decision)
+### 1.5 ✅ [H] scalability — Trace store loads all history into RAM and keeps it (windowing/eviction/sort/spread done 2026-07-18; retention decided 2026-07-20: **manual prune only**, a Debug-page action — no automatic deletion)
 
 [store.ts](server/trace/store.ts) `ensureAllLoaded` reads **every** monthly
 NDJSON file into memory the first time any Debug/analytics read happens, and the
@@ -174,7 +185,7 @@ server output to correlate. Suggestion: `console.error` (with the route path)
 for non-`ApiError` throws — traces don't cover route-level failures that happen
 before a service opens one.
 
-### 1.9 [M] UX — Static bot replies ignore the per-chat language
+### 1.9 ✅ [M] UX — Static bot replies ignore the per-chat language (decided + done 2026-07-20: keep English, framed as a system notice)
 
 `ERROR_REPLY` and `MAINTENANCE_REPLY` in
 [service.ts](features/bot-messaging/server/service.ts:34) are hard-coded
@@ -280,7 +291,7 @@ Suggestion: a generous default cap (e.g. 16 rounds) in
 
 ## 4. Telegram runtime & bot messaging
 
-### 4.1 [M] performance/cost — The addressing analyzer runs on every undecided group message
+### 4.1 [M] performance/cost — The addressing analyzer runs on every undecided group message (pre-filter built 2026-07-20, **reverted same day by the user** — it weakened detection; verdict cache / per-group flag remain unchosen options)
 
 [addressing.ts](features/bot-messaging/server/addressing.ts) returns
 `needsAnalyzer` for *any* group text that doesn't deterministically reference
@@ -316,7 +327,7 @@ suggestion: split on paragraph/sentence boundaries into ≤4096-char chunks and
 send sequentially (first as the reply, rest as follow-ups). The transport
 already returns message ids, so mirroring can store each chunk.
 
-### 4.4 [L] UX — Replies are plain text while models emit Markdown
+### 4.4 ✅ [L] UX — Replies are plain text while models emit Markdown (decided + done 2026-07-20: Markdown → Telegram HTML at the transport, plain-text fallback)
 
 Deliberate v1 scope, but the effect is visible daily: `**bold**` and code fences
 render literally. When revisited, prefer converting model Markdown to Telegram
@@ -385,7 +396,7 @@ columns conditionally in SQL instead.
 
 ## 7. Scheduled tasks
 
-### 7.1 [M] correctness — A one-shot that fails to fire is deleted
+### 7.1 ✅ [M] correctness — A one-shot that fails to fire is deleted (decided + done 2026-07-20: retry up to 5 ticks, then disable — never delete; migration 0032)
 
 [scheduler.ts](features/scheduled-tasks/server/scheduler.ts:166): the schedule
 is settled "regardless of fire success", and a spent one-shot is **deleted** —
@@ -485,7 +496,7 @@ the Debug page itself the slow thing. Pairs with 1.5's retention.
 
 ## 11. Deployment & operations
 
-### 11.1 [M] ops — No retention/rotation for the trace volume
+### 11.1 ✅ [M] ops — No retention/rotation for the trace volume (docs done in pass 4; decided + done 2026-07-20: manual prune on the Debug page — deliberately no automatic retention)
 
 `data/traces` grows without bound (see 1.5) and holds full conversation bodies.
 Add retention (delete/compact month files older than N months) and mention the

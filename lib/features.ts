@@ -90,6 +90,17 @@ export const FEATURES = {
     relatedIdsKey: "settings",
     path: "/settings",
   },
+  /** Trace-store maintenance itself (the manual prune) — traced like any mutation. */
+  traces: {
+    id: "traces",
+    label: "Traces",
+    path: "/debug",
+  },
+  /** Operator authentication (setup/login) — every attempt is traced. */
+  auth: {
+    id: "auth",
+    label: "Auth",
+  },
   "user-feedback": {
     id: "user-feedback",
     label: "User feedback",

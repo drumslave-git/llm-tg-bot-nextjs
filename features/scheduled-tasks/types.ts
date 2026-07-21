@@ -9,6 +9,13 @@ export type ScheduleKind = "once" | "daily" | "weekly";
 
 export const SCHEDULE_KINDS: ScheduleKind[] = ["once", "daily", "weekly"];
 
+/**
+ * How many consecutive failed fires a due one-shot gets before it is disabled
+ * (kept, badged — never deleted). Client-safe: the dashboard uses it to explain
+ * a disabled row.
+ */
+export const MAX_ONE_SHOT_ATTEMPTS = 5;
+
 /** The schedule portion of a task (what the wall-clock math needs). */
 export interface TaskSchedule {
   scheduleKind: ScheduleKind;
@@ -32,6 +39,8 @@ export interface ScheduledTask {
   weekdays: number[] | null;
   runDate: string | null;
   enabled: boolean;
+  /** Consecutive failed fires of a due one-shot; see {@link MAX_ONE_SHOT_ATTEMPTS}. */
+  attempts: number;
   /** The last few delivered message texts (newest first), for wording variation. */
   recentDeliveries: string[];
   /** ISO timestamp of the last firing, or null. */

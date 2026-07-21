@@ -103,3 +103,28 @@ All environment variables are documented in `.env.example`. Every variable also
 accepts a `<NAME>_FILE` Docker-secret variant. Required values are enforced at
 the point of use (`requireEnv`) rather than at process boot, so the dashboard can
 run and report what is missing.
+
+## Dashboard authentication
+
+The dashboard and its API are protected by a single operator password, stored
+**hashed in the database** (no env credential). On first contact a fresh
+install forces the `/setup` page, where the password is chosen; every later
+visit signs in at `/login`. Sessions are signed cookies valid for 30 days; the
+Sign out button in the top bar ends one.
+
+- **Set up promptly.** Until the password is set, the app is open — anyone who
+  can reach the port can run `/setup` first and own the dashboard. Bring the
+  stack up, then visit it and set the password before exposing the port beyond
+  localhost/LAN.
+- **Forgot the password?** Clear it in the database and run setup again:
+
+  ```sh
+  docker compose exec db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+    -c "update settings set operator_password_hash = null, session_secret = null"
+  ```
+
+  Restart is not required; the next dashboard visit redirects to `/setup`.
+- **Changing the password** is the same procedure (there is deliberately no
+  authenticated change-password flow yet). Rotating it invalidates every
+  session.
+- `/api/health` stays public for the Docker healthcheck and orchestrators.

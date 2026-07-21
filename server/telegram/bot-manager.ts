@@ -1,7 +1,9 @@
 import "server-only";
 
-import { Bot, InputFile, type Context } from "grammy";
+import { run, sequentialize, type RunnerHandle } from "@grammyjs/runner";
+import { Bot, GrammyError, InputFile, type Context } from "grammy";
 
+import { renderTelegramHtml } from "@/features/bot-messaging/telegram-html";
 import { getTelegramBotToken } from "@/features/settings/server/service";
 
 import { processCallbackUpdate } from "./process-callback";
@@ -17,6 +19,12 @@ import type { FeedbackTransport, IncomingUpdate, ReplyTransport } from "./transp
  * exactly one `getUpdates` consumer per token, so exactly one poller may run —
  * enforced here by a `globalThis` singleton that survives module re-evaluation
  * across Next bundles (instrumentation vs. Route Handlers) and dev hot-reload.
+ *
+ * Updates are processed **concurrently across chats** via `@grammyjs/runner`
+ * (user decision, 2026-07-20), with `sequentialize` keeping each chat strictly
+ * in order. Concurrency-audited: the typing loop is a per-call closure with its
+ * own timer, and the MCP tool context is `AsyncLocalStorage`-bound per turn —
+ * neither shares mutable per-update state.
  *
  * This module is now only the Telegram *edge*: the poller lifecycle plus a thin
  * grammy adapter that maps a live `Context` onto the transport-agnostic
@@ -37,6 +45,8 @@ export interface BotStatus {
 
 interface ManagerStore {
   bot: Bot | null;
+  /** The concurrent polling loop for the current bot, when running. */
+  runner: RunnerHandle | null;
   status: BotStatus;
   /** Guards against overlapping start/stop calls. */
   transitioning: boolean;
@@ -49,7 +59,7 @@ const STOPPED: BotStatus = { state: "stopped", username: null, since: null, erro
 function store(): ManagerStore {
   const g = globalThis as typeof globalThis & { [STORE_KEY]?: ManagerStore };
   if (!g[STORE_KEY]) {
-    g[STORE_KEY] = { bot: null, status: { ...STOPPED }, transitioning: false };
+    g[STORE_KEY] = { bot: null, runner: null, status: { ...STOPPED }, transitioning: false };
   }
   return g[STORE_KEY];
 }
@@ -72,10 +82,28 @@ export async function sendChatMessage(
 ): Promise<{ messageId: number }> {
   const bot = store().bot;
   if (!bot) throw new Error("Telegram bot is not running");
-  const sent = await bot.api.sendMessage(chatId, text, {
-    ...(opts.threadId != null ? { message_thread_id: opts.threadId } : {}),
-  });
-  return { messageId: sent.message_id };
+  const base = opts.threadId != null ? { message_thread_id: opts.threadId } : {};
+  try {
+    const sent = await bot.api.sendMessage(chatId, renderTelegramHtml(text), {
+      ...base,
+      parse_mode: "HTML",
+    });
+    return { messageId: sent.message_id };
+  } catch (err) {
+    if (!isEntityParseError(err)) throw err;
+    const sent = await bot.api.sendMessage(chatId, text, base);
+    return { messageId: sent.message_id };
+  }
+}
+
+/**
+ * Telegram rejected the rendered HTML entities (a converter blind spot, e.g. a
+ * nesting Telegram forbids). Only this failure falls back to a plain-text send —
+ * anything else (network, chat gone) must surface to the caller, and a blind
+ * retry could double-deliver.
+ */
+function isEntityParseError(err: unknown): boolean {
+  return err instanceof GrammyError && err.description.toLowerCase().includes("can't parse entities");
 }
 
 function errorMessage(err: unknown): string {
@@ -86,10 +114,16 @@ function errorMessage(err: unknown): string {
 function grammyTransport(ctx: Context): ReplyTransport {
   return {
     async sendReply(text, opts) {
-      const sent = await ctx.reply(text, {
-        reply_parameters: { message_id: opts.replyToMessageId },
-      });
-      return { messageId: sent.message_id };
+      const params = { reply_parameters: { message_id: opts.replyToMessageId } };
+      try {
+        const sent = await ctx.reply(renderTelegramHtml(text), { ...params, parse_mode: "HTML" });
+        return { messageId: sent.message_id };
+      } catch (err) {
+        if (!isEntityParseError(err)) throw err;
+        // The raw model text is always deliverable; formatting is best-effort.
+        const sent = await ctx.reply(text, params);
+        return { messageId: sent.message_id };
+      }
     },
     async sendPhoto(image, opts) {
       const sent = await ctx.api.sendPhoto(
@@ -215,6 +249,11 @@ export async function startBot(): Promise<BotStatus> {
     }
 
     const bot = new Bot(token);
+    // Per-chat sequential, cross-chat concurrent (user decision, 2026-07-20 —
+    // @grammyjs/runner): one chat's slow reply (tool rounds, a 300s image
+    // generation) must not freeze every other chat, while order within a chat
+    // is preserved. Must be registered before any handler.
+    bot.use(sequentialize((ctx) => ctx.chat?.id.toString()));
     bot.on("message", (ctx) => onMessage(ctx));
     bot.on("edited_message", (ctx) => onEditedMessage(ctx));
     // Feedback collection: 👍/👎 reactions open a menu, presses answer it. In
@@ -240,15 +279,21 @@ export async function startBot(): Promise<BotStatus> {
       error: null,
     };
 
-    // Long-polling loop; do not await (it resolves only when the bot stops).
+    // Concurrent long-polling loop via the runner; not awaited (its task
+    // resolves only when the bot stops, and rejects on a crash).
     // `message_reaction` is opt-in: it must be listed here or Telegram never
     // delivers it (and in groups the bot must additionally be an admin).
-    void bot
-      .start({
-        allowed_updates: ["message", "edited_message", "message_reaction", "callback_query"],
-      })
-      .catch((err) => {
+    const runner = run(bot, {
+      runner: {
+        fetch: {
+          allowed_updates: ["message", "edited_message", "message_reaction", "callback_query"],
+        },
+      },
+    });
+    s.runner = runner;
+    void runner.task()?.catch((err) => {
       s.bot = null;
+      s.runner = null;
       s.status = { ...s.status, state: "error", error: errorMessage(err) };
     });
 
@@ -259,14 +304,17 @@ export async function startBot(): Promise<BotStatus> {
 }
 
 async function stopBotInternal(s: ManagerStore): Promise<void> {
-  if (s.bot) {
+  if (s.runner) {
     try {
-      await s.bot.stop();
+      // Interrupts the pending getUpdates call and resolves once every
+      // in-flight update's middleware has finished — a clean drain.
+      await s.runner.stop();
     } catch (err) {
       console.error("Failed to stop Telegram bot:", errorMessage(err));
     }
-    s.bot = null;
+    s.runner = null;
   }
+  s.bot = null;
   s.status = { ...STOPPED };
 }
 

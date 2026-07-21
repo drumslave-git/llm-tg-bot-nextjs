@@ -57,6 +57,19 @@ export const settings = pgTable(
     activePersonalityId: text("active_personality_id").references(() => personalities.id, {
       onDelete: "set null",
     }),
+    /**
+     * Operator dashboard password as a self-describing scrypt hash
+     * (`scrypt:N:r:p:<saltB64>:<hashB64>`), set on the first-run `/setup` page
+     * (user decision, 2026-07-20 — DB-backed auth, no env credential). Null
+     * means auth is not configured yet and the dashboard forces `/setup`.
+     * Secret — never returned by any API.
+     */
+    operatorPasswordHash: text("operator_password_hash"),
+    /**
+     * HMAC key for session-cookie signing, generated alongside the password
+     * hash. Rotating it (a new setup) invalidates every session. Secret.
+     */
+    sessionSecret: text("session_secret"),
     /** Telegram Bot API token (from @BotFather). Secret — never returned in plaintext. */
     telegramBotToken: text("telegram_bot_token"),
     /** Tavily API key for the web-search MCP tool. Secret — never returned in plaintext. */
@@ -484,6 +497,13 @@ export const scheduledTasks = pgTable(
     runDate: text("run_date"),
     /** Whether the task is active (a spent one-shot flips this off). */
     enabled: boolean("enabled").notNull().default(true),
+    /**
+     * Consecutive failed fires of a due one-shot (user decision, 2026-07-20): a
+     * one-shot whose fire fails keeps its `next_run_at` and retries on later
+     * ticks; at the cap it is disabled — never deleted — so the row stays
+     * visible with why it stopped. Reset on any operator update.
+     */
+    attempts: integer("attempts").notNull().default(0),
     /** The last few delivered message texts, newest first, for wording variation. */
     recentDeliveries: jsonb("recent_deliveries").$type<string[]>().notNull().default(sql`'[]'::jsonb`),
     /** When the task last fired, or null. */

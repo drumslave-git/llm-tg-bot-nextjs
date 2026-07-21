@@ -23,10 +23,12 @@ import { publishEvent } from "@/server/realtime/hub";
 import { sendChatMessage } from "@/server/telegram/bot-manager";
 
 import { computeNextRun } from "../schedule";
+import { MAX_ONE_SHOT_ATTEMPTS } from "../types";
 import { fireScheduledTask } from "./fire";
 import {
   deleteScheduledTask,
   listDueScheduledTasks,
+  markScheduledTaskFailedAttempt,
   markScheduledTaskRun,
   nextRecentDeliveries,
   nextUpcomingRunAt,
@@ -114,11 +116,14 @@ export async function runDueScheduledTasks(deps: DueRunDeps): Promise<{ fired: n
     if (result.ok) fired += 1;
     else failed += 1;
 
-    // Settle the schedule regardless of fire success, so a failing task doesn't
-    // busy-loop. A task with no future run is spent — a one-shot that has now
-    // had its turn — and is *deleted*: it can never fire again (creation rejects
-    // a past one-shot), so keeping the row would only leave a dead entry on the
-    // dashboard. The fire is still recorded in its trace either way.
+    // Settle the schedule. A recurring task advances regardless of fire success
+    // (the next occurrence self-heals, and advancing prevents a busy-loop). A
+    // one-shot that *fired* is spent and is deleted — it can never fire again
+    // (creation rejects a past one-shot), so keeping the row would only leave a
+    // dead entry. A one-shot that *failed* keeps its due `next_run_at` and
+    // retries on later ticks, up to MAX_ONE_SHOT_ATTEMPTS, then is disabled —
+    // never deleted — so a transient outage cannot silently eat a reminder
+    // (user decision, 2026-07-20). Every fire is recorded in its trace.
     const nextRunAt = computeNextRun(task, now, deps.timezone);
     if (nextRunAt) {
       await markScheduledTaskRun(db, task.id, {
@@ -128,8 +133,15 @@ export async function runDueScheduledTasks(deps: DueRunDeps): Promise<{ fired: n
           ? nextRecentDeliveries(task.recentDeliveries ?? [], result.text!)
           : undefined,
       }).catch(() => undefined);
-    } else {
+    } else if (result.ok) {
       await deleteScheduledTask(db, task.id).catch(() => undefined);
+    } else {
+      const attempts = task.attempts + 1;
+      await markScheduledTaskFailedAttempt(db, task.id, {
+        lastRunAt: now,
+        attempts,
+        disable: attempts >= MAX_ONE_SHOT_ATTEMPTS,
+      }).catch(() => undefined);
     }
     publishEvent(FEATURE.realtimeTopic);
   }

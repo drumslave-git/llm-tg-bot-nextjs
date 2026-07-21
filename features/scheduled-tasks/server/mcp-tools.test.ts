@@ -20,6 +20,7 @@ function task(over: Partial<ScheduledTask> = {}): ScheduledTask {
     weekdays: null,
     runDate: null,
     enabled: true,
+    attempts: 0,
     recentDeliveries: [],
     lastRunAt: null,
     nextRunAt: null,

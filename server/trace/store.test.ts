@@ -13,7 +13,9 @@ import {
   getLatestTraceIdsByCorrelation,
   getTrace,
   listFeatures,
+  listTraceMonths,
   listTraces,
+  pruneTracesBefore,
   scanTraces,
 } from "./store";
 import { startTrace, type StartTraceInput } from "./recorder";
@@ -346,6 +348,63 @@ describe("multi-month corpus (range + eviction)", () => {
     for (const id of ids) {
       expect(grouped.get(id)?.map((e) => e.message)).toEqual([`event of ${id}`, "model replied"]);
     }
+  });
+});
+
+describe("pruneTracesBefore (manual prune)", () => {
+  /** Four months, two traces each, ids like `2026-01-a` — cold store. */
+  function seedFourMonths(): void {
+    for (let m = 1; m <= 4; m++) {
+      const month = `2026-${String(m).padStart(2, "0")}`;
+      writeMonthFile(store.dir, month, [
+        traceLine(`${month}-a`, `${month}-10T08:00:00.000Z`),
+        traceLine(`${month}-b`, `${month}-20T09:30:00.000Z`),
+      ]);
+    }
+    __resetTraceStoreForTests();
+  }
+
+  it("deletes files, cache, and correlation entries strictly before the cutoff", async () => {
+    seedFourMonths();
+    const result = await pruneTracesBefore("2026-03");
+    expect(result).toEqual({ months: ["2026-01", "2026-02"], traces: 4 });
+
+    // Files are gone; the kept months still list and read with events.
+    expect(await listTraceMonths()).toEqual(["2026-03", "2026-04"]);
+    const all = await listTraces({});
+    expect(all.total).toBe(4);
+    expect(await getTrace("2026-01-a")).toBeNull();
+    expect((await getTrace("2026-03-a"))!.events).toHaveLength(2);
+
+    // The pruned traces' correlation entries are gone too.
+    const latest = await getLatestTraceIdsByCorrelation(["corr:2026-01-a", "corr:2026-03-a"]);
+    expect(latest.get("corr:2026-01-a")).toBeUndefined();
+    expect(latest.get("corr:2026-03-a")).toBeDefined();
+
+    // Idempotent: a re-run finds nothing left to delete.
+    expect(await pruneTracesBefore("2026-03")).toEqual({ months: [], traces: 0 });
+  });
+
+  it("prunes a warmed cache correctly and never touches unflushed traces", async () => {
+    seedFourMonths();
+    await scanTraces({}); // load every month, full tier
+    const open = await startTrace(baseInput); // running: RAM only, not on disk
+
+    const result = await pruneTracesBefore("2026-04");
+    expect(result.months).toEqual(["2026-01", "2026-02", "2026-03"]);
+
+    const all = await listTraces({});
+    // The kept month's pair plus the still-open trace.
+    expect(all.total).toBe(3);
+    expect(await getTrace(open.id)).not.toBeNull();
+    await open.succeed();
+  });
+
+  it("cannot delete the newest month: pruning before it leaves it whole", async () => {
+    seedFourMonths();
+    await pruneTracesBefore("2026-04");
+    const kept = await listTraces({});
+    expect(kept.traces.map((t) => t.id).sort()).toEqual(["2026-04-a", "2026-04-b"]);
   });
 });
 

@@ -12,6 +12,7 @@ export const dynamic = "force-dynamic";
  * body also reports DB-stored configuration presence (informational; the LLM is
  * not a readiness gate).
  */
+// Public: the Docker healthcheck and orchestrators probe this without a session.
 export const GET = defineRoute(async () => {
   const health = await getHealth();
   return Response.json(
@@ -26,4 +27,4 @@ export const GET = defineRoute(async () => {
     },
     { status: health.ready ? 200 : 503 },
   );
-});
+}, { auth: false });

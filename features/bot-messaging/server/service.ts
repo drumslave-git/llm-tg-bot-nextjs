@@ -31,10 +31,16 @@ import { splitReply } from "./reply";
 
 const FEATURE = FEATURES["bot-messaging"];
 
-const ERROR_REPLY = "Sorry — I couldn't generate a reply just now. Please try again.";
+// Static notices are deliberately English regardless of the chat's configured
+// language, framed as the *system* speaking rather than the persona (user
+// decision, 2026-07-20): the error notice is needed exactly when the LLM that
+// could translate it is down, and a labeled infrastructure message does not
+// read as the bot breaking its language contract.
+const ERROR_REPLY =
+  "⚠️ System: the bot could not generate a reply just now. Please try again.";
 
 const MAINTENANCE_REPLY =
-  "🛠️ The bot is in maintenance mode and is only responding to its owner right now. " +
+  "🛠️ System: the bot is in maintenance mode and is only responding to its owner right now. " +
   "Please try again later.";
 
 /** Result of a reply generation, as returned by the injected generator. */

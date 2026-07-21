@@ -26,7 +26,7 @@ import type { ApiErrorBody } from "@/lib/api-error";
 
 import { describeSchedule } from "../schedule";
 import type { TaskSchedulerJobInfo } from "../server/scheduler";
-import type { ScheduledTask, ScheduleKind } from "../types";
+import { MAX_ONE_SHOT_ATTEMPTS, type ScheduledTask, type ScheduleKind } from "../types";
 import { TaskSchedulerCard } from "./TaskSchedulerCard";
 
 /**
@@ -374,9 +374,16 @@ function TaskCard({
               <Badge tone="success" dot>
                 Enabled
               </Badge>
+            ) : task.attempts >= MAX_ONE_SHOT_ATTEMPTS ? (
+              <Badge tone="danger">Failed — gave up after {task.attempts} attempts</Badge>
             ) : (
               <Badge tone="neutral">Disabled</Badge>
             )}
+            {task.enabled && task.attempts > 0 ? (
+              <Badge tone="warning">
+                Retrying — {task.attempts} failed attempt{task.attempts === 1 ? "" : "s"}
+              </Badge>
+            ) : null}
             {overdue ? (
               <Badge tone={paused ? "danger" : "warning"}>
                 {paused ? "Overdue — firing paused" : "Overdue"}

@@ -188,6 +188,92 @@ Next: **Priority 12 — Image generation** (Analytics landed 2026-07-15 as the n
 
 ### Session log
 
+- 2026-07-20 (Improvements pass 6, "lets take that desigions"): **every held
+  decision was put to the user (AskUserQuestion, seven rows added to Decision
+  Notes) and then implemented in the same session.** ⚠️ **Operator notes:**
+  (1) the dashboard is now password-protected — the **next visit forces
+  `/setup`** to choose the operator password (the session's throwaway
+  verification password was cleared; the DB is left unconfigured on purpose);
+  (2) the poller now runs through `@grammyjs/runner` — a **dev-server restart**
+  puts the runner + markdown replies live (the verification session already ran
+  one and confirmed the bot autostarts and polls).
+  - **1.1 auth (decided: DB password + session).** New `server/auth/*`
+    (scrypt password hashing via `node:crypto`, stateless HMAC session tokens,
+    `judgeSessionToken`/`requireOperator`), settings columns
+    `operator_password_hash` + `session_secret` (migration `0033`, applied;
+    both mapped but excluded from every API view), `proxy.ts` (Next 16's
+    renamed middleware, Node runtime) doing the **optimistic cookie-presence
+    redirect** the Next auth guide prescribes, with the **real** checks where
+    the DB lives: a new `app/(dashboard)/` route group layout for pages (URLs
+    unchanged; login/setup live outside it on a bare root layout) and
+    `defineRoute`, which now requires a valid session by default —
+    `{ auth: false }` exists on exactly four routes: `/api/health` (Docker
+    healthcheck) and the three `/api/auth/*` endpoints. The SSE `/api/events`
+    stream guards itself (not a defineRoute). Every setup/login attempt is
+    traced under new feature **`auth`** (never the password; failed logins cost
+    a flat 500 ms). Sign-out button in the Topbar. README documents the
+    first-run flow, the race warning (set up before exposing the port), and
+    the reset one-liner (clear the two columns). **No change-password flow by
+    design** — reset = clear the columns.
+  - **1.3 concurrency (decided: `@grammyjs/runner`).** `bot.start()` replaced
+    by `run(bot)` with per-chat `sequentialize` registered before all handlers:
+    cross-chat concurrent, in-chat ordered. `stop()` drains in-flight
+    middleware; the runner's `task()` rejection maps to the old crash-to-error
+    path. Audit done: the typing loop is a per-call closure/timer and the MCP
+    tool context is per-turn `AsyncLocalStorage` — no shared per-update state.
+  - **1.9 notices (decided: keep English, label as system).** `ERROR_REPLY` /
+    `MAINTENANCE_REPLY` now read "⚠️/🛠️ System: …" — infrastructure speaking,
+    not the persona breaking the chat-language contract.
+  - **4.1 analyzer — REVERTED (same day).** The name-shaped pre-filter
+    (Cyrillic↔Latin transliteration + stem prefix + bounded edit distance in
+    front of the analyzer) shipped and was then reverted at the user's
+    direction: *"much weaker detection, not satisfying."* `name-shape.ts` and
+    its tests are deleted, `checkAddressed` hands every undecided group text
+    to the analyzer again, and the three touched test files are restored to
+    the pre-filter-free expectations. The Decision Notes row is marked
+    reverted — do not re-add a lexical pre-filter without a new decision; the
+    unchosen verdict-cache / per-group-flag options remain if analyzer cost
+    ever bites.
+  - **4.4 markdown (decided: convert to Telegram HTML).** New pure
+    `features/bot-messaging/telegram-html.ts` — balanced-by-construction
+    conversion (code fences/inline code lifted first, everything else
+    entity-escaped, tags only from paired replacements; bold/italic/strike,
+    links http(s)-only, headings→bold, bullets→•, blockquotes). Applied **at
+    the transport boundary only** (grammy `sendReply` + `sendChatMessage`, so
+    task fires too): history/traces/simulation keep raw model text. Fallback:
+    only a Telegram "can't parse entities" rejection resends as plain text;
+    other errors surface (a blind retry could double-deliver).
+  - **7.1 one-shots (decided: retry, then disable — never delete).**
+    `scheduled_tasks.attempts` (migration `0032`, applied); a failed one-shot
+    fire keeps `next_run_at` and retries each tick up to
+    `MAX_ONE_SHOT_ATTEMPTS` (5), then is **disabled** with a "Failed — gave up
+    after N attempts" badge (plus a "Retrying" badge while enabled); a
+    successful spent one-shot is still deleted; any operator edit resets the
+    counter. The old delete-on-failure test was replaced (it pinned the
+    behavior the user rejected).
+  - **1.5/11.1 retention (decided: manual prune only — the recommended
+    automatic keep-N-months was rejected).** `pruneTracesBefore` in the trace
+    store (deletes month files strictly before a cutoff + evicts every cache
+    tier + correlation entries; idempotent; open/pending traces untouched),
+    traced under new feature **`traces`** via `POST /api/traces/prune`, and a
+    `PruneCard` on `/debug` (month picker + two-step destructive confirm that
+    names the doomed months; the newest month is never deletable).
+  - **Proof:** lint ✓, typecheck ✓, unit **578** ✓, integration **249 ✓ / 21
+    skipped** (new: auth unit 8 + integration 6, prune store 3, one-shot retry
+    3, name-shape 11 unit + 2 pipeline, telegram-html 11), build ✓ (proxy +
+    /login + /setup emitted), migrations 0032+0033 applied to the dev DB.
+    **Live-verified** on a fresh dev server: `/` → `/setup` (proxy + layout
+    redirects), password set → authenticated Overview (bot autostarted under
+    the runner, DB/LLM probes green), Sign out → `/login`, wrong password →
+    "Wrong password" (534 ms — the flat delay, visible in its `auth:error`
+    trace), right password → dashboard; `/debug` lists Auth/Traces in the
+    feature filter with the three auth traces, and renders the PruneCard;
+    reset procedure exercised for real (columns cleared → `/setup` re-armed);
+    no console errors; server stopped after.
+  - Tracked but out of scope here: §12.1's two-updates-in-flight test gap is
+    now live-relevant (the runner landed); 6.1 bytea stays a session of its
+    own.
+
 - 2026-07-20 (Improvements pass 5, "work on improvements"): **3.2 parallel tool
   calls and 9.2's due-scan floor are done** — the two items every earlier pass
   log had skipped over (pass 4's "closes every no-decision item" claim was
@@ -2915,6 +3001,13 @@ writing `docs/decisions/*.md`. This table is the lightweight record.
 
 | Topic | Status | Decided by | Decision |
 | --- | --- | --- | --- |
+| Dashboard/API auth — 1.1 (2026-07-20) | done | user | **DB-backed operator password + cookie session.** A first-run setup page sets one operator password (stored **hashed** in DB-backed settings, per `config-in-db-not-env`); `middleware.ts` and `defineRoute` both check a signed session cookie (API covered even if middleware is bypassed); login/logout pages. Rejected: an `OPERATOR_TOKEN` env var (config belongs in the DB); documenting LAN-only with no auth. |
+| Update concurrency — 1.3 (2026-07-20) | done | user | **`@grammyjs/runner`** (new dependency): per-chat sequential, cross-chat concurrent update processing — order preserved within a chat, chats independent. Audit targets before landing: the typing loop and the `AsyncLocalStorage` tool context. Rejected: a hand-rolled per-chat queue (more of our code for the same semantics); staying sequential. |
+| Trace retention — 1.5/11.1 (2026-07-20) | done | user | **Manual prune only — no automatic deletion ever.** A Debug-page action "delete traces older than \<month\>" with a two-step destructive confirm; growth continues unless the operator acts. Rejected: an automatic keep-N-months retention setting (the recommended option — the operator prefers nothing deleted without an explicit click); keep-forever with no tooling. |
+| One-shot task failure — 7.1 (2026-07-20) | done | user | **Retry, then disable — never delete.** A one-shot whose fire fails keeps `next_run_at` and gains an attempts counter; it retries on later poll ticks up to a bounded cap (5), then is **disabled** with a failed badge, staying visible on `/scheduled-tasks`. Requires an `attempts` column migration. Rejected: disable-immediately with no retry; the current delete-on-settle (silently eats reminders during an outage). |
+| Static notice language — 1.9 (2026-07-20) | done | user | **Keep the English text but label it as a system notice** (e.g. "⚠️ System: …"), so `ERROR_REPLY`/`MAINTENANCE_REPLY` read as infrastructure speaking rather than the persona breaking the chat language. Rejected: a static per-language translation map (the recommended option); LLM-generating notices per language (the error notice is needed exactly when the LLM is down). |
+| Addressing analyzer cost — 4.1 (2026-07-20) | **reverted 2026-07-20** | user | *Implemented, then reverted the same day by the user: the pre-filter made detection "much weaker — not satisfying". A lexical gate in front of the analyzer under-detects the very spellings the analyzer exists for, and a missed summons costs more than the analyzer calls saved.* **Standing behavior: every undecided group message goes to the LLM analyzer** (the pre-pass-6 state). The originally-offered alternatives (verdict cache for identical texts; per-group opt-in flag) were not chosen and remain open options if analyzer cost ever bites. Do not re-add a lexical pre-filter without a new decision. |
+| Reply formatting — 4.4 (2026-07-20) | done | user | **Convert model Markdown to Telegram HTML** with proper escaping (MVP parity), applied at the reply boundary and to scheduled-task fires; fall back to plain text when conversion fails. Rejected: `parse_mode: MarkdownV2` (fragile escaping); stripping markers to clean text; keeping literal plain text. |
 | Analytics rework — chart resolution (2026-07-18) | done | user | **Charts plot sub-buckets inside the selected period**: day→24 hourly points, week→7 daily, month→daily, year→12 monthly. `all` is removed from chart cards (it drew a single dot), kept on tiles and insight cards as a lifetime figure. Rejected: keeping a trailing "last N periods" window for charts, which would have left two different filter models on one page. |
 | Analytics rework — LLM call granularity (2026-07-18) | done | user | **One row per provider round, tagged by call kind** recorded at the call site (`addressing-check`, `reply-tool-turn`, `reply-final`, `vision-describe`, …). The tool loop emits one usage event per round instead of summing, so a four-round reply is four rows. Explicitly **no "legacy" bucket** in the UI — older trace files are classified exactly by `callKindOf` instead. Rejected: keeping a tool-looping reply as one summed row with a `rounds` column, which leaves a slow single turn hidden inside the sum. |
 | Analytics rework — mood granularity (2026-07-18) | done | user | **Mood is evaluated hourly, "like everything else"** — the scored unit moves from (chat, day) to (chat, hour), because the hour is the finest grain the dashboard plots. Everything coarser is a hierarchical roll-up. Only hours holding messages are scored, so cost tracks conversation volume, not the calendar. |

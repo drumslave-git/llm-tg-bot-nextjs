@@ -43,6 +43,10 @@ export interface SettingsRecord {
   timezone: string;
   /** Local `HH:MM` (in `timezone`) every daily background job runs at. */
   dailyJobsRunTime: string;
+  /** Operator password (scrypt, self-describing). Secret — never in any view. */
+  operatorPasswordHash: string | null;
+  /** Session-cookie HMAC key. Secret — never in any view. */
+  sessionSecret: string | null;
   updatedAt: string | null;
 }
 
@@ -65,6 +69,8 @@ export interface SettingsPatch {
   maintenanceModeEnabled?: boolean;
   timezone?: string;
   dailyJobsRunTime?: string;
+  operatorPasswordHash?: string | null;
+  sessionSecret?: string | null;
 }
 
 /**
@@ -104,6 +110,8 @@ function mapRow(row: SettingsRow): SettingsRecord {
     maintenanceModeEnabled: row.maintenanceModeEnabled,
     timezone: row.timezone,
     dailyJobsRunTime: row.dailyJobsRunTime,
+    operatorPasswordHash: row.operatorPasswordHash,
+    sessionSecret: row.sessionSecret,
     updatedAt: row.updatedAt.toISOString(),
   };
 }

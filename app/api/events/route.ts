@@ -1,4 +1,6 @@
 import type { RealtimeEvent } from "@/lib/realtime";
+import { requireOperator } from "@/server/auth";
+import { errorResponse, toApiError } from "@/server/http";
 import { subscribe } from "@/server/realtime/hub";
 
 /**
@@ -14,7 +16,14 @@ export const dynamic = "force-dynamic";
 /** SSE comment heartbeat interval — keeps the connection alive through proxies. */
 const HEARTBEAT_MS = 25_000;
 
-export function GET(request: Request): Response {
+export async function GET(request: Request): Promise<Response> {
+  // Not a defineRoute handler (it streams), so it carries the session check
+  // itself. EventSource sends cookies on same-origin requests automatically.
+  try {
+    await requireOperator(request);
+  } catch (err) {
+    return errorResponse(toApiError(err));
+  }
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream<Uint8Array>({

@@ -1,8 +1,17 @@
 import "server-only";
 
 import { ApiError } from "@/lib/api-error";
-import type { Trace, TraceBundle, TraceStatus } from "@/lib/trace";
-import { getEventsForTraces, getTrace, listFeatures, listTraces } from "./store";
+import type { Trace, TraceBundle, TraceStatus, TraceTrigger } from "@/lib/trace";
+import {
+  getEventsForTraces,
+  getTrace,
+  listFeatures,
+  listTraceMonths,
+  listTraces,
+  pruneTracesBefore,
+  type PruneTracesResult,
+} from "./store";
+import { withTrace } from "./with-trace";
 
 /**
  * Shared Debug service — the single boundary the Debug pages and the
@@ -52,6 +61,48 @@ const bundle = (traces: Trace[]): TraceBundle => ({
   exportedAt: new Date().toISOString(),
   traces,
 });
+
+const MONTH_KEY_RE = /^\d{4}-\d{2}$/;
+
+/** The month keys with stored trace files, ascending (the prune picker's source). */
+export async function getTraceMonths(): Promise<string[]> {
+  return listTraceMonths();
+}
+
+/**
+ * Delete every stored trace month strictly older than `beforeMonth` — the
+ * operator's manual prune (user decision, 2026-07-20: no automatic retention;
+ * nothing is deleted without this explicit action). Destructive and traced: the
+ * deleted months and counts are recorded in the prune's own trace.
+ */
+export async function pruneTraces(
+  beforeMonth: string,
+  trigger: TraceTrigger,
+): Promise<PruneTracesResult> {
+  if (!MONTH_KEY_RE.test(beforeMonth)) {
+    throw ApiError.badRequest("beforeMonth must be a YYYY-MM month key");
+  }
+  return withTrace(
+    {
+      feature: "traces",
+      action: "prune",
+      trigger,
+      inputSummary: `delete stored months before ${beforeMonth}`,
+    },
+    async (trace) => {
+      const result = await pruneTracesBefore(beforeMonth);
+      await trace.event({
+        type: "db",
+        message: "month files deleted",
+        data: { beforeMonth, months: result.months, traces: result.traces },
+      });
+      await trace.succeed({
+        outputSummary: `${result.months.length} month file(s) deleted, ${result.traces} trace(s) removed`,
+      });
+      return result;
+    },
+  );
+}
 
 /** Downloadable bundle for a single trace (with its events). */
 export async function buildTraceBundle(id: string): Promise<TraceBundle> {

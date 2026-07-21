@@ -1,6 +1,6 @@
 import "server-only";
 
-import { appendFile, mkdir, readdir, readFile } from "node:fs/promises";
+import { appendFile, mkdir, readdir, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 
 import { getEnv } from "@/server/env";
@@ -119,6 +119,17 @@ function indexCorrelation(s: TraceStore, trace: Trace): void {
   if (list.some((e) => e.id === trace.id)) return;
   list.push({ id: trace.id, feature: trace.feature, startedAt: trace.startedAt });
   s.correlations.set(corr, list);
+}
+
+/** Drop a trace's correlation index entry (its month is being pruned). */
+function unindexCorrelation(s: TraceStore, trace: Trace): void {
+  const corr = trace.trigger.correlationId;
+  if (!corr) return;
+  const list = s.correlations.get(corr);
+  if (!list) return;
+  const rest = list.filter((e) => e.id !== trace.id);
+  if (rest.length) s.correlations.set(corr, rest);
+  else s.correlations.delete(corr);
 }
 
 /** Move a trace's correlation index entry when it settles with a new correlation id. */
@@ -244,6 +255,49 @@ function flushedTraces(s: TraceStore): Trace[] {
     for (const trace of list) out.push(trace);
   }
   return out;
+}
+
+/** The month keys with flushed trace files, ascending — the prune picker's source. */
+export async function listTraceMonths(): Promise<string[]> {
+  return diskMonthKeys(store());
+}
+
+export interface PruneTracesResult {
+  /** The month keys whose files were deleted, ascending. */
+  months: string[];
+  /** How many stored traces those files held. */
+  traces: number;
+}
+
+/**
+ * Delete every flushed month file strictly older than `beforeMonth` (`YYYY-MM`),
+ * along with its cache tiers and correlation-index entries. Open and pending
+ * traces are never touched (they are not on disk). Idempotent: a re-run after a
+ * partial failure deletes whatever is still there.
+ *
+ * Manual-only by user decision (2026-07-20): there is no automatic retention —
+ * trace data is deleted exclusively through this explicit operator action.
+ */
+export async function pruneTracesBefore(beforeMonth: string): Promise<PruneTracesResult> {
+  const s = store();
+  const keys = (await diskMonthKeys(s)).filter((key) => key < beforeMonth);
+  const months: string[] = [];
+  let traces = 0;
+  for (const key of keys) {
+    // Load headers first so the count and the correlation entries to drop are known.
+    await loadMonth(s, key, "headers");
+    const list = s.months.get(key) ?? [];
+    await rm(fileFor(s, key), { force: true });
+    traces += list.length;
+    for (const trace of list) unindexCorrelation(s, trace);
+    s.months.delete(key);
+    s.loaded.delete(key);
+    const fullIdx = s.fullMonths.indexOf(key);
+    if (fullIdx !== -1) s.fullMonths.splice(fullIdx, 1);
+    months.push(key);
+  }
+  if (months.length > 0) s.sortedFlushed = null;
+  return { months, traces };
 }
 
 // --- Write ops (called by the recorder) --------------------------------------

@@ -1,8 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
 import { ApiError } from "@/lib/api-error";
 import { defineRoute, ok, parseJson, parseQuery, toApiError } from "@/server/http";
+
+// defineRoute checks the operator session (a DB read) on every non-public
+// route; these unit tests exercise the wrapper's own machinery, so the check is
+// stubbed and asserted separately below.
+const requireOperatorMock = vi.fn<(request: Request) => Promise<void>>(async () => undefined);
+vi.mock("@/server/auth/service", () => ({
+  requireOperator: (request: Request) => requireOperatorMock(request),
+}));
 
 function jsonRequest(body: unknown, url = "http://test/api"): Request {
   return new Request(url, {
@@ -96,5 +104,24 @@ describe("defineRoute", () => {
     const body = await res.json();
     expect(body.error.code).toBe("internal_error");
     expect(JSON.stringify(body)).not.toContain("internal secret");
+  });
+
+  it("answers 401 when the session check rejects, without running the body", async () => {
+    requireOperatorMock.mockRejectedValueOnce(ApiError.unauthorized("Sign in"));
+    const body = vi.fn(async () => ok({}));
+    const res = await defineRoute(body)(new Request("http://test/api"));
+    expect(res.status).toBe(401);
+    expect(body).not.toHaveBeenCalled();
+  });
+
+  it("skips the session check only when a route opts out with auth: false", async () => {
+    requireOperatorMock.mockClear();
+    const open = defineRoute(async () => ok({ open: true }), { auth: false });
+    expect((await open(new Request("http://test/api"))).status).toBe(200);
+    expect(requireOperatorMock).not.toHaveBeenCalled();
+
+    const gated = defineRoute(async () => ok({}));
+    await gated(new Request("http://test/api"));
+    expect(requireOperatorMock).toHaveBeenCalledOnce();
   });
 });

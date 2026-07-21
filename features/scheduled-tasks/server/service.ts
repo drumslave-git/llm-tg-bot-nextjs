@@ -190,6 +190,9 @@ export async function editScheduledTaskService(
         weekdays: schedule.weekdays,
         runDate: schedule.runDate,
         enabled,
+        // Any operator edit is a fresh start for the failed-fire counter — a
+        // re-enabled one-shot gets its full retry budget back.
+        attempts: 0,
         nextRunAt,
       });
       if (!record) throw ApiError.notFound("Unknown task");

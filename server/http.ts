@@ -116,21 +116,37 @@ interface NextRouteContext {
   params?: Promise<Record<string, string>>;
 }
 
+export interface DefineRouteOptions {
+  /**
+   * Whether the route requires a valid operator session (the default). The only
+   * public routes are the auth endpoints themselves and the health probe — set
+   * `auth: false` explicitly there, nowhere else. Enforced here as well as at
+   * the proxy layer so the API stays covered even when the proxy is bypassed.
+   */
+  auth?: boolean;
+}
+
 /**
- * Wrap a route body with shared error handling. Any thrown value — `ApiError`,
- * `ZodError`, or unknown — becomes a consistent JSON error response with the
- * correct status.
+ * Wrap a route body with the operator-session check and shared error handling.
+ * Any thrown value — `ApiError`, `ZodError`, or unknown — becomes a consistent
+ * JSON error response with the correct status.
  *
  * ```ts
  * export const GET = defineRoute(async ({ params }) => ok(await load(params.id)));
  * ```
  */
-export function defineRoute(body: RouteBody) {
+export function defineRoute(body: RouteBody, options: DefineRouteOptions = {}) {
   return async function handler(
     request: Request,
     context?: NextRouteContext,
   ): Promise<Response> {
     try {
+      if (options.auth !== false) {
+        // Imported lazily to keep the http module free of a DB dependency for
+        // its pure helpers (and their unit tests).
+        const { requireOperator } = await import("@/server/auth/service");
+        await requireOperator(request);
+      }
       const params = (await context?.params) ?? {};
       return await body({ request, params });
     } catch (err) {

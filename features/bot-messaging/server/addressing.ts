@@ -19,6 +19,12 @@ import type { Message } from "@grammyjs/types";
  * with one LLM call — see `address-analyzer.ts`. Keeping that split here means
  * the cheap checks stay pure and only a genuinely ambiguous message costs a
  * completion.
+ *
+ * Deliberately NO cheap "name-shaped" pre-filter in front of the analyzer: one
+ * was built and reverted (user decision, 2026-07-20) — any lexical gate is
+ * weaker than the LLM at spotting the name in unfamiliar spellings, and a
+ * missed summons costs more than the analyzer calls saved. Every undecided
+ * group message goes to the analyzer.
  */
 
 export type AddressSource =
