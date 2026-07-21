@@ -25,7 +25,7 @@ describe.skipIf(!LLM_LIVE)("link-fetch MCP tool selection (live)", () => {
       const run = await runToolSelection({
         userText: "Have a look at https://example.com/article and tell me what it's about.",
       });
-      expectToolCalled(run, "read_page");
+      expectToolCalled(run, "read_web_page");
     },
     TOOL_SELECTION_TIMEOUT,
   );
@@ -38,7 +38,7 @@ describe.skipIf(!LLM_LIVE)("link-fetch MCP tool selection (live)", () => {
       const run = await runToolSelection({
         userText: "https://example.com/package/some-lib tell me what's there",
       });
-      expectToolCalled(run, "read_page");
+      expectToolCalled(run, "read_web_page");
       expectToolNotCalled(run, "search_web");
     },
     TOOL_SELECTION_TIMEOUT,

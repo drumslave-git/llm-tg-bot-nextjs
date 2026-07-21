@@ -22,6 +22,7 @@
     "release:major": "npm version major --no-git-tag-version"
   },
   "dependencies": {
+    "@ghostery/adblocker-playwright": "^2.18.1",
     "@grammyjs/runner": "^2.0.3",
     "@grammyjs/types": "^3.28.0",
     "@modelcontextprotocol/sdk": "^1.29.0",

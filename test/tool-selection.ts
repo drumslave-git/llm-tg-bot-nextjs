@@ -35,7 +35,7 @@ const DEFAULT_CANNED: Record<string, McpToolCallResult> = {
     text: "Search results:\n1. Example headline — https://example.com/a\n2. Another source — https://example.com/b",
     structuredContent: { ok: true, sources: [{ title: "Example", url: "https://example.com/a" }] },
   },
-  read_page: {
+  read_web_page: {
     text: "Page content: Example Domain. This domain is for use in illustrative examples in documents.",
   },
   history_search: {

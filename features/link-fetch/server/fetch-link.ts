@@ -6,7 +6,7 @@ import { isSafePublicUrl, normalizeUrl } from "../url-safety";
 import { fetchPageWithPlaywright } from "./playwright";
 
 /**
- * The read-link boundary the `read_page` MCP tool calls. It normalizes and
+ * The read-link boundary the `read_web_page` MCP tool calls. It normalizes and
  * SSRF-checks the URL, reads the page, and formats a model-ready result. Like
  * the web-search boundary it **always resolves** (never throws) so the tool can
  * hand the model a usable success/failure message. The page fetcher is injectable

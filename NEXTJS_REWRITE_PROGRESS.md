@@ -188,6 +188,40 @@ Next: **Priority 12 — Image generation** (Analytics landed 2026-07-15 as the n
 
 ### Session log
 
+- 2026-07-21 (user-requested — ad blocking in the page reader + tool rename, done):
+  the `read_page` MCP tool is now **`read_web_page`** (clearer verb phrase for the
+  model, matching `search_web`), and the Playwright page fetcher drops ad/tracker
+  subresources via **`@ghostery/adblocker-playwright`** (new dependency) — the
+  Option A decided in the "Browser agent — ad blocking" Decision Notes row, applied
+  to the existing tool ahead of the browser agent.
+  - New `features/link-fetch/server/adblock.ts`: the Ghostery engine (prebuilt
+    EasyList/EasyPrivacy-class lists, downloaded from the Ghostery CDN on first
+    use, 15s fetch timeout) on a `globalThis` singleton like the shared Chromium.
+    **Best-effort**: a failed engine load means reads proceed unblocked and the
+    next read retries — page reading never depends on the CDN.
+  - Matching runs **inside the existing SSRF `context.route` handler** in
+    `playwright.ts`, deliberately NOT the library's `enableBlockingInPage` —
+    that registers its own page-level route which Playwright consults *before*
+    context routes and `continue()`s requests past the SSRF guard. Order in the
+    handler: SSRF verdict first (unchanged), then ad-match. The **navigation
+    request is never ad-blocked** (the model was explicitly asked to read that
+    URL); only subresources are dropped.
+  - Rename touched: `mcp-tools.ts` (constant `READ_WEB_PAGE_TOOL`),
+    `service.test.ts`, `test/tool-selection.ts` canned results,
+    `tool-selection.integration.test.ts`, `prompt.test.ts` regex. Historical
+    ledger mentions of `read_page` left as written.
+  - Proof: lint ✓, typecheck ✓, 568 unit ✓, build ✓. **Live smoke-verified**
+    (temporary test, run then deleted): the real engine downloaded and blocked
+    `securepubads.g.doubleclick.net`/`googletagmanager.com` script requests
+    while allowing a normal stylesheet, and a real `https://example.com/` read
+    through the full fetcher (SSRF + adblock route active) returned title+text.
+  - Environment note: Playwright's Chromium was missing on this dev machine
+    (`npx playwright install chromium` run — the smoke test caught it). Docker
+    prod uses the distro browser via `CHROMIUM_EXECUTABLE_PATH`, unaffected.
+  - Pitfall for the operator/next agent: the MCP registry is a boot-bound
+    singleton — a running dev server keeps offering the old `read_page` name
+    until restarted (none was running this session).
+
 - 2026-07-21 (Improvements pass 8 — §6.1 media bytes to `bytea`, done): media
   payloads no longer live in `message_media` as base64 — a new `media_blobs`
   table holds real `bytea`, one row per frame, keyed `(media_id, frame_index)`
@@ -3090,6 +3124,7 @@ writing `docs/decisions/*.md`. This table is the lightweight record.
 
 | Topic | Status | Decided by | Decision |
 | --- | --- | --- | --- |
+| Browser agent — ad blocking (2026-07-21) | done | user | **Filter-list blocking in code via `@ghostery/adblocker-playwright`** (EasyList/EasyPrivacy-class lists compiled into a request matcher hooked on Playwright request interception, per context). Becomes part of the browser-agent (priority 13) acceptance criteria; layers next to the existing SSRF `context.route()` guard and keeps the shared-browser + `newContext()`-per-job lifecycle unchanged. **Applied to the existing page-reader tool the same day** (user request; see the 2026-07-21 session-log entry), which was also renamed `read_page` → `read_web_page` for model clarity. Rejected: loading a real extension (uBlock Origin Lite) via `launchPersistentContext` + `--load-extension` (persistent profile per browser, extension assets vendored in, breaks cheap context-per-job isolation, Chromium-only, MV2 uBlock no longer runs in current Chrome). |
 | Dashboard/API auth — 1.1 (2026-07-20) | done | user | **DB-backed operator password + cookie session.** A first-run setup page sets one operator password (stored **hashed** in DB-backed settings, per `config-in-db-not-env`); `middleware.ts` and `defineRoute` both check a signed session cookie (API covered even if middleware is bypassed); login/logout pages. Rejected: an `OPERATOR_TOKEN` env var (config belongs in the DB); documenting LAN-only with no auth. |
 | Update concurrency — 1.3 (2026-07-20) | done | user | **`@grammyjs/runner`** (new dependency): per-chat sequential, cross-chat concurrent update processing — order preserved within a chat, chats independent. Audit targets before landing: the typing loop and the `AsyncLocalStorage` tool context. Rejected: a hand-rolled per-chat queue (more of our code for the same semantics); staying sequential. |
 | Trace retention — 1.5/11.1 (2026-07-20) | done | user | **Manual prune only — no automatic deletion ever.** A Debug-page action "delete traces older than \<month\>" with a two-step destructive confirm; growth continues unless the operator acts. Rejected: an automatic keep-N-months retention setting (the recommended option — the operator prefers nothing deleted without an explicit click); keep-forever with no tooling. |

@@ -8,7 +8,7 @@ import {
 } from "@/features/history/server/mcp-tools";
 import { IMAGE_GENERATE_TOOL } from "@/features/image-gen/server/mcp-tools";
 import { UPDATE_USER_ALIASES_TOOL } from "@/features/known-users/server/mcp-tools";
-import { READ_PAGE_TOOL } from "@/features/link-fetch/server/mcp-tools";
+import { READ_WEB_PAGE_TOOL } from "@/features/link-fetch/server/mcp-tools";
 import { MEMORY_TOOL_NAMES } from "@/features/memory/server/mcp-tools";
 import { SCHEDULED_TASKS_TOOL_NAMES } from "@/features/scheduled-tasks/server/mcp-tools";
 import { SEARCH_WEB_TOOL } from "@/features/web-search/server/mcp-tools";
@@ -27,7 +27,7 @@ const ALL_TOOLS = [
   HISTORY_RECALL_TOOL,
   UPDATE_USER_ALIASES_TOOL,
   SEARCH_WEB_TOOL,
-  READ_PAGE_TOOL,
+  READ_WEB_PAGE_TOOL,
   ...SCHEDULED_TASKS_TOOL_NAMES,
   ...MEMORY_TOOL_NAMES,
   IMAGE_GENERATE_TOOL,
@@ -41,7 +41,7 @@ describe("getToolsView", () => {
     expect(featureOf(HISTORY_SEARCH_TOOL)).toBe("history");
     expect(featureOf(UPDATE_USER_ALIASES_TOOL)).toBe("known-users");
     expect(featureOf(SEARCH_WEB_TOOL)).toBe("web-search");
-    expect(featureOf(READ_PAGE_TOOL)).toBe("link-fetch");
+    expect(featureOf(READ_WEB_PAGE_TOOL)).toBe("link-fetch");
     expect(featureOf(SCHEDULED_TASKS_TOOL_NAMES[0])).toBe("scheduled-tasks");
     expect(featureOf(MEMORY_TOOL_NAMES[0])).toBe("memory");
     // The owning feature is what gives the tool its `mcp-tools-image-gen` Debug scope.

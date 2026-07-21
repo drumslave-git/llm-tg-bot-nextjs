@@ -3,6 +3,7 @@ import "server-only";
 import type { Browser, BrowserContext } from "playwright";
 
 import type { FetchedPage } from "../types";
+import { getSharedAdBlocker } from "./adblock";
 import { hostResolvesPublic } from "./resolve-safety";
 
 /**
@@ -11,8 +12,9 @@ import { hostResolvesPublic } from "./resolve-safety";
  * — the same pattern the bot manager and MCP registry use — so it survives Next
  * bundle re-evaluation and dev hot-reload instead of leaking a Chromium process
  * per module copy. Each read gets its own short-lived context (isolated cookies,
- * fixed user-agent). When the browser agent feature (priority 13) lands it can
- * reuse this singleton rather than launch a second Chromium.
+ * fixed user-agent), with ad/tracker subresources dropped via the shared filter
+ * engine (see `adblock.ts`). When the browser agent feature (priority 13) lands
+ * it can reuse this singleton rather than launch a second Chromium.
  *
  * `playwright` is loaded lazily (dynamic `import` inside {@link getSharedChromium})
  * rather than at module top level. It is a `serverExternalPackage`, so a static
@@ -119,6 +121,7 @@ export async function fetchPageWithPlaywright(url: string): Promise<FetchedPage>
     }
 
     const browser = await getSharedChromium();
+    const adBlocker = await getSharedAdBlocker();
     context = await browser.newContext({ userAgent: USER_AGENT });
     // Every request — redirect hops and subresources included — is re-checked,
     // so a public page cannot bounce or embed its way to an internal address.
@@ -133,11 +136,23 @@ export async function fetchPageWithPlaywright(url: string): Promise<FetchedPage>
       } catch {
         allowed = false; // unparseable URL — cannot verify, so do not fetch
       }
-      if (allowed) return route.continue();
-      // Only a blocked *navigation* (the initial load or a redirect hop) fails
-      // the read; a blocked subresource just doesn't load.
-      if (route.request().isNavigationRequest()) blockedPrivate = true;
-      return route.abort("blockedbyclient");
+      if (!allowed) {
+        // Only a blocked *navigation* (the initial load or a redirect hop) fails
+        // the read; a blocked subresource just doesn't load.
+        if (route.request().isNavigationRequest()) blockedPrivate = true;
+        return route.abort("blockedbyclient");
+      }
+      // Ad/tracker subresources are dropped so the extracted text carries less
+      // noise and pages load faster. The navigation itself is never ad-blocked:
+      // the model was explicitly asked to read this URL.
+      if (
+        adBlocker &&
+        !route.request().isNavigationRequest() &&
+        adBlocker.shouldBlock(route.request())
+      ) {
+        return route.abort("blockedbyclient");
+      }
+      return route.continue();
     });
 
     const page = await context.newPage();
