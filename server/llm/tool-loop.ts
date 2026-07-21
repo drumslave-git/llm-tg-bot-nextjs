@@ -278,6 +278,20 @@ export async function runToolLoop(params: RunToolLoopParams): Promise<ToolLoopRe
       await params.onToolCall?.(records[i]);
       conversation.push({ role: "tool", tool_call_id: calls[i].id, content: records[i].result.text });
     }
+
+    // A tool that produced images for the model (e.g. a browser screenshot)
+    // cannot put them in the `tool` message — providers accept text there — so
+    // they follow as a vision user turn, the same shape a photo message uses.
+    const images = records.flatMap((record) => record.result.images ?? []);
+    if (images.length > 0) {
+      conversation.push({
+        role: "user",
+        content: [
+          { type: "text", text: "Image(s) produced by the tool call(s) above:" },
+          ...images.map((url) => ({ type: "image_url" as const, image_url: { url } })),
+        ],
+      });
+    }
   }
 }
 

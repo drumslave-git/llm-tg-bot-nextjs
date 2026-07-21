@@ -150,6 +150,12 @@ export const settings = pgTable(
      * that window means it for every job, not one at a time.
      */
     dailyJobsRunTime: text("daily_jobs_run_time").notNull().default("04:00"),
+    /**
+     * Largest downloaded file (in MB) the browser agent also attaches to the
+     * chat; bigger files stay in the downloads folder and are reported by name.
+     * Bounded 1–50 (Telegram's bot upload ceiling). MVP-parity default: 20.
+     */
+    browserDownloadMaxMb: integer("browser_download_max_mb").notNull().default(20),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [check("settings_singleton", sql`${t.id} = 'singleton'`)],
@@ -936,3 +942,107 @@ export const periodInsights = pgTable(
 
 export type PeriodInsightRow = typeof periodInsights.$inferSelect;
 export type PeriodInsightInsert = typeof periodInsights.$inferInsert;
+
+/**
+ * One download completed by a browser-agent run, as stored on the run row.
+ * Structural twin of `BrowserDownloadRecord` in `features/browser-agent/types.ts`
+ * (jsonb columns cannot import feature types without inverting the dependency).
+ */
+interface BrowserAgentDownloadJson {
+  /** The page the file came from (the link the agent was on). */
+  sourceUrl: string;
+  filename: string;
+  sizeBytes: number;
+  /** True when the file was small enough to also attach to the chat. */
+  inline: boolean;
+}
+
+/**
+ * One browser-agent run: a self-contained browsing goal the chat model queued via
+ * the `browse_web` tool (or the operator queued from the dashboard), executed in
+ * the background by a sub-agent LLM driving the generic browser toolset. The
+ * queue is this table — the runner picks up `queued` rows oldest-first, flips
+ * them `running`, and settles them `done`/`failed` with the final report.
+ *
+ * `chat_id` is null for dashboard-started runs: there is no chat to deliver to,
+ * so the report is only stored here. `is_owner` is resolved at enqueue time and
+ * gates the download tool for the whole run (recorded decision: anyone can start
+ * a run; downloads are owner-only). Ids are app-generated UUIDs.
+ */
+export const browserAgentRuns = pgTable(
+  "browser_agent_runs",
+  {
+    id: text("id").primaryKey(),
+    /** Chat the run reports back to, or null for a dashboard-started run. */
+    chatId: text("chat_id"),
+    /** Forum-topic thread to deliver into, or null (chat root). */
+    threadId: bigint("thread_id", { mode: "number" }),
+    /** Numeric Telegram user id of whoever asked for the run, or null (dashboard). */
+    createdByUserId: text("created_by_user_id"),
+    /** Whether the run was started by the owner — gates the download tool. */
+    isOwner: boolean("is_owner").notNull().default(false),
+    /** The self-contained browsing goal the agent works toward. */
+    goal: text("goal").notNull(),
+    /** `queued` | `running` | `done` | `failed`. */
+    status: text("status").notNull().default("queued"),
+    /** The agent's final report (delivered to the chat when one is bound). */
+    report: text("report"),
+    /** Why the run failed, when `status = 'failed'`. */
+    error: text("error"),
+    /** Browser actions the agent performed. */
+    steps: integer("steps").notNull().default(0),
+    /** Files downloaded during the run (see {@link BrowserAgentDownloadJson}). */
+    downloads: jsonb("downloads")
+      .$type<BrowserAgentDownloadJson[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    /** Trace id of the run's execution trace, for Debug drill-down. */
+    traceId: text("trace_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    /** When the runner picked the run up, or null while queued. */
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    /** When the run settled (done/failed), or null. */
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+  },
+  (t) => [
+    // The runner scans for queued rows oldest-first.
+    index("browser_agent_runs_status_idx").on(t.status, t.createdAt),
+    index("browser_agent_runs_chat_idx").on(t.chatId),
+    check(
+      "browser_agent_runs_status_check",
+      sql`${t.status} in ('queued', 'running', 'done', 'failed')`,
+    ),
+  ],
+);
+
+export type BrowserAgentRunRow = typeof browserAgentRuns.$inferSelect;
+export type BrowserAgentRunInsert = typeof browserAgentRuns.$inferInsert;
+
+/**
+ * Screenshots captured during a browser-agent run, in capture order. The bytes
+ * are stored here (JPEG) and served to the dashboard run view; trace events carry
+ * only the `(run, seq)` reference — the same "no base64 in trace JSON" convention
+ * vision media follows. Rows vanish with their run.
+ */
+export const browserRunScreenshots = pgTable(
+  "browser_run_screenshots",
+  {
+    /** Owning run. */
+    runId: text("run_id")
+      .notNull()
+      .references(() => browserAgentRuns.id, { onDelete: "cascade" }),
+    /** Capture order within the run, starting at 0. */
+    seq: integer("seq").notNull(),
+    /** Page URL at capture time. */
+    url: text("url"),
+    /** Page title at capture time. */
+    title: text("title"),
+    /** JPEG bytes of the viewport screenshot. */
+    data: bytea("data").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.runId, t.seq] })],
+);
+
+export type BrowserRunScreenshotRow = typeof browserRunScreenshots.$inferSelect;
+export type BrowserRunScreenshotInsert = typeof browserRunScreenshots.$inferInsert;

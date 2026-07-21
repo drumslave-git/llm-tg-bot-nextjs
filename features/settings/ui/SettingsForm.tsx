@@ -76,6 +76,9 @@ export function SettingsForm({
   const [maintenanceMode, setMaintenanceMode] = useState(initial.maintenanceModeEnabled);
   const [timezone, setTimezone] = useState(initial.timezone);
   const [dailyJobsRunTime, setDailyJobsRunTime] = useState(initial.dailyJobsRunTime);
+  const [browserDownloadMaxMb, setBrowserDownloadMaxMb] = useState(
+    String(initial.browserDownloadMaxMb),
+  );
 
   // Optional backends. Editing a section invalidates its own probe result.
   const embedProbe = useProbe<{ model: string; dimensions: number }>(
@@ -154,6 +157,15 @@ export function SettingsForm({
     if (dailyJobsRunTime.trim() !== initial.dailyJobsRunTime && dailyJobsRunTime.trim() !== "") {
       patch.dailyJobsRunTime = dailyJobsRunTime.trim();
     }
+    const downloadMb = Number(browserDownloadMaxMb);
+    if (
+      Number.isInteger(downloadMb) &&
+      downloadMb !== initial.browserDownloadMaxMb &&
+      downloadMb >= 1 &&
+      downloadMb <= 50
+    ) {
+      patch.browserDownloadMaxMb = downloadMb;
+    }
     if (emb.resolvedUrl !== (initial.embeddingBaseUrl ?? null)) {
       patch.embeddingBaseUrl = emb.resolvedUrl;
     }
@@ -201,6 +213,7 @@ export function SettingsForm({
       setMaintenanceMode(data.maintenanceModeEnabled);
       setTimezone(data.timezone);
       setDailyJobsRunTime(data.dailyJobsRunTime);
+      setBrowserDownloadMaxMb(String(data.browserDownloadMaxMb));
       emb.applySaved({ baseUrl: data.embeddingBaseUrl, model: data.embeddingModel });
       img.applySaved({ baseUrl: data.imageBaseUrl, model: data.imageModel });
       setSave({ kind: "saved" });
@@ -411,6 +424,25 @@ export function SettingsForm({
             value={dailyJobsRunTime}
             onChange={(e) => setDailyJobsRunTime(e.target.value)}
             placeholder="04:00"
+          />
+        )}
+      </Field>
+
+      <Field
+        id="browserDownloadMaxMb"
+        label="Browser download attach limit (MB)"
+        hint="Largest file the browser agent also attaches to the chat. Bigger files stay in the server's downloads folder and are reported by name. 1–50 (Telegram's upload ceiling)."
+      >
+        {({ id, describedBy }) => (
+          <Input
+            id={id}
+            type="number"
+            min={1}
+            max={50}
+            aria-describedby={describedBy}
+            value={browserDownloadMaxMb}
+            onChange={(e) => setBrowserDownloadMaxMb(e.target.value)}
+            placeholder="20"
           />
         )}
       </Field>

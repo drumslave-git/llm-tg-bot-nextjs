@@ -61,6 +61,16 @@ export const LLM_CALL_KINDS = {
     label: "Insight · roll up period",
     description: "Rolls scored hours up into a day/week/month/year/all-time insight.",
   },
+  "browser-agent-turn": {
+    id: "browser-agent-turn",
+    label: "Browser agent · tool turn",
+    description: "One round of a browsing run — the agent asked for browser actions and got page state back.",
+  },
+  "browser-agent-report": {
+    id: "browser-agent-report",
+    label: "Browser agent · final report",
+    description: "The round that produced a browsing run's report.",
+  },
   "scheduled-task-fire": {
     id: "scheduled-task-fire",
     label: "Scheduled task · fire",
@@ -125,6 +135,8 @@ export function callKindOf(
       return "insight-hour";
     case "scheduled-tasks":
       return "scheduled-task-fire";
+    case "browser-agent":
+      return "browser-agent-turn";
     case "self-improvement":
       return "self-improve-analyze";
     case "user-feedback":

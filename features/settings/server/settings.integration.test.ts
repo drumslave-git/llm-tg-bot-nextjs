@@ -56,6 +56,7 @@ describe("getSettings", () => {
       maintenanceModeEnabled: false,
       timezone: "UTC",
       dailyJobsRunTime: "04:00",
+      browserDownloadMaxMb: 20,
       updatedAt: null,
     });
   });

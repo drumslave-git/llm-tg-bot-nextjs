@@ -57,6 +57,8 @@ export const settingsSchema = z.object({
   timezone: z.string(),
   /** Local `HH:MM` (in `timezone`) every daily background job runs at. */
   dailyJobsRunTime: z.string(),
+  /** Largest browser-agent download (MB) also attached to the chat. */
+  browserDownloadMaxMb: z.number().int(),
   /** Last write time, or null if never configured. */
   updatedAt: z.string().datetime().nullable(),
 });
@@ -85,6 +87,8 @@ export const updateSettingsSchema = z
     maintenanceModeEnabled: z.boolean(),
     timezone: z.string().trim().min(1).max(64),
     dailyJobsRunTime: timeOfDay,
+    /** Bounded 1–50: Telegram's bot upload ceiling. */
+    browserDownloadMaxMb: z.number().int().min(1).max(50),
   })
   .partial()
   .refine((v) => Object.keys(v).length > 0, {

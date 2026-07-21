@@ -1,0 +1,65 @@
+import "server-only";
+
+import { randomUUID } from "node:crypto";
+
+import type { DrizzleDb } from "@/db/drizzle";
+import { getDb } from "@/db/drizzle";
+
+import type { BrowserAgentRun, BrowserAgentRunDetail } from "../types";
+import {
+  getBrowserAgentRunDetail,
+  insertBrowserAgentRun,
+  listBrowserAgentRuns,
+  type InsertBrowserAgentRun,
+} from "./repository";
+
+/**
+ * Browser-agent domain service — the boundary the MCP tool, the dashboard Server
+ * Components, and the Route Handlers call. It owns enqueuing (the run row is the
+ * queue) and reads; the runner (`runner.ts`) owns execution. Tracing lives in the
+ * runner, where the work actually happens — enqueuing is a plain insert.
+ */
+
+/** Input to enqueue a run (chat-bound from a tool, or chat-less from the dashboard). */
+export interface EnqueueBrowserRunInput {
+  goal: string;
+  chatId: string | null;
+  threadId?: number | null;
+  createdByUserId?: string | null;
+  isOwner: boolean;
+}
+
+/**
+ * Enqueue a browsing run. Returns the stored `queued` record; the caller signals
+ * the runner to pick it up (so this stays a pure DB write, testable without the
+ * runner singleton).
+ */
+export async function enqueueBrowserRun(
+  input: EnqueueBrowserRunInput,
+  db: DrizzleDb = getDb(),
+): Promise<BrowserAgentRun> {
+  const values: InsertBrowserAgentRun = {
+    chatId: input.chatId,
+    threadId: input.threadId ?? null,
+    createdByUserId: input.createdByUserId ?? null,
+    isOwner: input.isOwner,
+    goal: input.goal.trim(),
+  };
+  return insertBrowserAgentRun(db, randomUUID(), values);
+}
+
+/** All runs (optionally chat-scoped), newest first — for the dashboard. */
+export async function getBrowserAgentRuns(
+  chatId?: string,
+  db: DrizzleDb = getDb(),
+): Promise<BrowserAgentRun[]> {
+  return listBrowserAgentRuns(db, chatId);
+}
+
+/** One run plus its screenshot sequence numbers, or null. */
+export async function getBrowserAgentRunView(
+  id: string,
+  db: DrizzleDb = getDb(),
+): Promise<BrowserAgentRunDetail | null> {
+  return getBrowserAgentRunDetail(db, id);
+}

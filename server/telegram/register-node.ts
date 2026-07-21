@@ -5,6 +5,10 @@ import {
   stopAnalyticsScheduler,
 } from "@/features/analytics/server/scheduler";
 import {
+  startBrowserAgentRunner,
+  stopBrowserAgentRunner,
+} from "@/features/browser-agent/server/runner";
+import {
   startSummaryScheduler,
   stopSummaryScheduler,
 } from "@/features/history/server/summary-scheduler";
@@ -38,6 +42,7 @@ export function registerNode(): void {
     stopSummaryScheduler();
     stopMemoryScheduler();
     stopAnalyticsScheduler();
+    stopBrowserAgentRunner();
     // Flush any settled traces still buffered in memory before the process exits,
     // so a graceful restart doesn't lose the last window of debug history.
     await stopTraceStore().catch(() => undefined);
@@ -89,6 +94,12 @@ export function registerNode(): void {
   // month/year/all-time periods (word of the period, top topic). The numeric
   // charts don't wait for it; nothing due, or no LLM configured, is a no-op.
   startAnalyticsScheduler();
+
+  // Start the browser-agent runner: sweep any run left `running` by a previous
+  // process (a crash/redeploy mid-run) to `failed`, then drain the queued runs.
+  // New runs are picked up immediately via the enqueue signal; a run with no LLM
+  // configured settles as a failure rather than hanging.
+  startBrowserAgentRunner();
 
   // Fire-and-forget: do not block server startup on the Telegram handshake.
   void startBot().then((status) => {

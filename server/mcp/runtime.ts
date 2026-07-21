@@ -1,6 +1,10 @@
 import "server-only";
 
 import {
+  BROWSER_AGENT_TOOL_NAMES,
+  registerBrowserAgentMcpTools,
+} from "@/features/browser-agent/server/mcp-tools";
+import {
   HISTORY_TOOL_NAMES,
   registerHistoryMcpTools,
 } from "@/features/history/server/mcp-tools";
@@ -67,6 +71,11 @@ async function build(): Promise<BotMcpRegistry> {
   );
   registry.registerTools("memory", registerMemoryMcpTools, MEMORY_TOOL_NAMES);
   registry.registerTools("image-gen", registerImageGenMcpTools, IMAGE_GEN_TOOL_NAMES);
+  registry.registerTools(
+    "browser-agent",
+    registerBrowserAgentMcpTools,
+    BROWSER_AGENT_TOOL_NAMES,
+  );
   await registry.finishRegistration();
   return registry;
 }

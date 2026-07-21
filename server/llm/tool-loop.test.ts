@@ -75,6 +75,47 @@ describe("runToolLoop", () => {
     });
   });
 
+  it("feeds tool-produced images back as a vision user turn", async () => {
+    const complete = vi
+      .fn()
+      .mockResolvedValueOnce(calls([toolCall("c1", "shot", {})]))
+      .mockResolvedValueOnce(answer("seen it"));
+    const dataUrl = "data:image/jpeg;base64,AAA";
+    const callTool = vi
+      .fn()
+      .mockResolvedValue({ text: "screenshot captured", images: [dataUrl] } satisfies McpToolCallResult);
+
+    const result = await runToolLoop({ seed: [], complete, callTool });
+
+    expect(result.content).toBe("seen it");
+    // The second round's conversation carries the tool text turn AND a following
+    // vision user turn with the image — providers reject images in a `tool` role.
+    const secondConversation = complete.mock.calls[1][0];
+    const toolTurn = secondConversation.find(
+      (m: { role: string }) => m.role === "tool",
+    ) as { role: string; tool_call_id: string; content: string };
+    expect(toolTurn).toMatchObject({ tool_call_id: "c1", content: "screenshot captured" });
+    const visionTurn = secondConversation.at(-1) as {
+      role: string;
+      content: { type: string; image_url?: { url: string } }[];
+    };
+    expect(visionTurn.role).toBe("user");
+    expect(visionTurn.content).toContainEqual({ type: "image_url", image_url: { url: dataUrl } });
+  });
+
+  it("appends no vision turn when no tool returned images", async () => {
+    const complete = vi
+      .fn()
+      .mockResolvedValueOnce(calls([toolCall("c1", "t", {})]))
+      .mockResolvedValueOnce(answer("done"));
+    const callTool = vi.fn().mockResolvedValue(okResult("plain result"));
+    await runToolLoop({ seed: [], complete, callTool });
+    const secondConversation = complete.mock.calls[1][0] as { role: string; content: unknown }[];
+    expect(
+      secondConversation.every((m) => m.role !== "user" || typeof m.content === "string"),
+    ).toBe(true);
+  });
+
   it("flags a tool error but keeps going", async () => {
     const complete = vi
       .fn()

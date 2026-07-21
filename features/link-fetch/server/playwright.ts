@@ -98,20 +98,90 @@ function trimPageText(text: string): string {
 }
 
 /**
+ * A browser context with the safety routing installed: every request — redirect
+ * hops and subresources included — is DNS-checked so a public page cannot bounce
+ * or embed its way to an internal address, and ad/tracker subresources are
+ * dropped via the shared filter engine. Shared by the one-shot page reader below
+ * and the browser agent's long-lived session.
+ */
+export interface GuardedContext {
+  context: BrowserContext;
+  /**
+   * The DNS half of the URL guard for a URL about to be navigated to: a
+   * public-looking hostname may still resolve into the private network. Uses the
+   * context's per-hostname verdict cache.
+   */
+  hostAllowed(hostname: string): Promise<boolean>;
+  /**
+   * True when a *navigation* (initial load or a redirect hop) was blocked as
+   * private since the last call — read-and-reset, so each action can name the
+   * real reason behind Playwright's generic `net::ERR_BLOCKED_BY_CLIENT`.
+   */
+  consumeBlockedNavigation(): boolean;
+}
+
+/** Open a new {@link GuardedContext} on the shared Chromium instance. */
+export async function newGuardedContext(): Promise<GuardedContext> {
+  const browser = await getSharedChromium();
+  const adBlocker = await getSharedAdBlocker();
+  // One DNS verdict per hostname per context — shared by pre-navigation checks
+  // and the request interception below.
+  const dnsVerdicts = new Map<string, boolean>();
+  let blockedNavigation = false;
+
+  const context = await browser.newContext({ userAgent: USER_AGENT });
+  await context.route("**/*", async (route) => {
+    let allowed = false;
+    try {
+      const target = new URL(route.request().url());
+      allowed =
+        target.protocol !== "http:" && target.protocol !== "https:"
+          ? true // non-network scheme (data:, blob:) — nothing to reach
+          : await hostResolvesPublic(target.hostname, dnsVerdicts);
+    } catch {
+      allowed = false; // unparseable URL — cannot verify, so do not fetch
+    }
+    if (!allowed) {
+      // Only a blocked *navigation* (the initial load or a redirect hop) fails
+      // the read; a blocked subresource just doesn't load.
+      if (route.request().isNavigationRequest()) blockedNavigation = true;
+      return route.abort("blockedbyclient");
+    }
+    // Ad/tracker subresources are dropped so the extracted text carries less
+    // noise and pages load faster. The navigation itself is never ad-blocked:
+    // the model explicitly asked for this URL.
+    if (
+      adBlocker &&
+      !route.request().isNavigationRequest() &&
+      adBlocker.shouldBlock(route.request())
+    ) {
+      return route.abort("blockedbyclient");
+    }
+    return route.continue();
+  });
+
+  return {
+    context,
+    hostAllowed: (hostname) => hostResolvesPublic(hostname, dnsVerdicts),
+    consumeBlockedNavigation() {
+      const blocked = blockedNavigation;
+      blockedNavigation = false;
+      return blocked;
+    },
+  };
+}
+
+/**
  * Read one page's title + readable text with headless Chromium. Never throws:
  * a navigation/render failure resolves to a `FetchedPage` carrying the `error`,
  * so the tool boundary can always hand the model a usable result.
  */
 export async function fetchPageWithPlaywright(url: string): Promise<FetchedPage> {
-  let context: BrowserContext | null = null;
-  // One DNS verdict per hostname per page load — shared by the pre-navigation
-  // check and the request interception below.
-  const dnsVerdicts = new Map<string, boolean>();
-  let blockedPrivate = false;
+  let guarded: GuardedContext | null = null;
   try {
-    // The URL-shape guard ran at the tool boundary; this is the DNS half — a
-    // public-looking hostname may still resolve into the private network.
-    if (!(await hostResolvesPublic(new URL(url).hostname, dnsVerdicts))) {
+    guarded = await newGuardedContext();
+    // The URL-shape guard ran at the tool boundary; this is the DNS half.
+    if (!(await guarded.hostAllowed(new URL(url).hostname))) {
       return {
         url,
         title: "",
@@ -120,42 +190,7 @@ export async function fetchPageWithPlaywright(url: string): Promise<FetchedPage>
       };
     }
 
-    const browser = await getSharedChromium();
-    const adBlocker = await getSharedAdBlocker();
-    context = await browser.newContext({ userAgent: USER_AGENT });
-    // Every request — redirect hops and subresources included — is re-checked,
-    // so a public page cannot bounce or embed its way to an internal address.
-    await context.route("**/*", async (route) => {
-      let allowed = false;
-      try {
-        const target = new URL(route.request().url());
-        allowed =
-          target.protocol !== "http:" && target.protocol !== "https:"
-            ? true // non-network scheme (data:, blob:) — nothing to reach
-            : await hostResolvesPublic(target.hostname, dnsVerdicts);
-      } catch {
-        allowed = false; // unparseable URL — cannot verify, so do not fetch
-      }
-      if (!allowed) {
-        // Only a blocked *navigation* (the initial load or a redirect hop) fails
-        // the read; a blocked subresource just doesn't load.
-        if (route.request().isNavigationRequest()) blockedPrivate = true;
-        return route.abort("blockedbyclient");
-      }
-      // Ad/tracker subresources are dropped so the extracted text carries less
-      // noise and pages load faster. The navigation itself is never ad-blocked:
-      // the model was explicitly asked to read this URL.
-      if (
-        adBlocker &&
-        !route.request().isNavigationRequest() &&
-        adBlocker.shouldBlock(route.request())
-      ) {
-        return route.abort("blockedbyclient");
-      }
-      return route.continue();
-    });
-
-    const page = await context.newPage();
+    const page = await guarded.context.newPage();
     try {
       await page.goto(url, { waitUntil: "domcontentloaded", timeout: NAVIGATION_TIMEOUT_MS });
       const title = (await page.title()).trim();
@@ -167,7 +202,7 @@ export async function fetchPageWithPlaywright(url: string): Promise<FetchedPage>
   } catch (err) {
     // A navigation the interception aborted surfaces as a cryptic
     // net::ERR_BLOCKED_BY_CLIENT — name the real reason instead.
-    if (blockedPrivate) {
+    if (guarded?.consumeBlockedNavigation()) {
       return {
         url,
         title: "",
@@ -177,6 +212,6 @@ export async function fetchPageWithPlaywright(url: string): Promise<FetchedPage>
     }
     return { url, title: "", text: "", error: err instanceof Error ? err.message : String(err) };
   } finally {
-    if (context) await context.close().catch(() => {});
+    if (guarded) await guarded.context.close().catch(() => {});
   }
 }

@@ -1,0 +1,218 @@
+import "server-only";
+
+import { and, asc, desc, eq } from "drizzle-orm";
+
+import type { DrizzleDb } from "@/db/drizzle";
+import {
+  browserAgentRuns,
+  browserRunScreenshots,
+  type BrowserAgentRunRow,
+} from "@/db/schema";
+
+import type {
+  BrowserAgentRun,
+  BrowserAgentRunDetail,
+  BrowserDownloadRecord,
+  BrowserRunStatus,
+} from "../types";
+
+/**
+ * Typed persistence for browser-agent runs and their screenshots. Pure data
+ * access — no policy, no browser, no trace recording (the service/runner own
+ * those). Every function takes a {@link DrizzleDb} so it runs against the pool or
+ * a test instance.
+ */
+
+/** Columns an enqueue sets. */
+export interface InsertBrowserAgentRun {
+  chatId: string | null;
+  threadId: number | null;
+  createdByUserId: string | null;
+  isOwner: boolean;
+  goal: string;
+}
+
+function mapRow(row: BrowserAgentRunRow): BrowserAgentRun {
+  return {
+    id: row.id,
+    chatId: row.chatId,
+    threadId: row.threadId,
+    createdByUserId: row.createdByUserId,
+    isOwner: row.isOwner,
+    goal: row.goal,
+    status: row.status as BrowserRunStatus,
+    report: row.report,
+    error: row.error,
+    steps: row.steps,
+    downloads: row.downloads ?? [],
+    traceId: row.traceId,
+    createdAt: row.createdAt.toISOString(),
+    startedAt: row.startedAt?.toISOString() ?? null,
+    finishedAt: row.finishedAt?.toISOString() ?? null,
+  };
+}
+
+/** All runs (optionally scoped to one chat), newest first. */
+export async function listBrowserAgentRuns(
+  db: DrizzleDb,
+  chatId?: string,
+): Promise<BrowserAgentRun[]> {
+  const rows = await db.query.browserAgentRuns.findMany({
+    where: chatId ? eq(browserAgentRuns.chatId, chatId) : undefined,
+    orderBy: [desc(browserAgentRuns.createdAt)],
+  });
+  return rows.map(mapRow);
+}
+
+/** One run by id, or null. */
+export async function getBrowserAgentRun(
+  db: DrizzleDb,
+  id: string,
+): Promise<BrowserAgentRun | null> {
+  const row = await db.query.browserAgentRuns.findFirst({
+    where: eq(browserAgentRuns.id, id),
+  });
+  return row ? mapRow(row) : null;
+}
+
+/** One run plus the sequence numbers of its stored screenshots, or null. */
+export async function getBrowserAgentRunDetail(
+  db: DrizzleDb,
+  id: string,
+): Promise<BrowserAgentRunDetail | null> {
+  const run = await getBrowserAgentRun(db, id);
+  if (!run) return null;
+  const shots = await db
+    .select({ seq: browserRunScreenshots.seq })
+    .from(browserRunScreenshots)
+    .where(eq(browserRunScreenshots.runId, id))
+    .orderBy(asc(browserRunScreenshots.seq));
+  return { ...run, screenshotSeqs: shots.map((s) => s.seq) };
+}
+
+/** Insert a queued run with an app-generated id. Returns the stored record. */
+export async function insertBrowserAgentRun(
+  db: DrizzleDb,
+  id: string,
+  values: InsertBrowserAgentRun,
+): Promise<BrowserAgentRun> {
+  const [row] = await db
+    .insert(browserAgentRuns)
+    .values({
+      id,
+      chatId: values.chatId,
+      threadId: values.threadId,
+      createdByUserId: values.createdByUserId,
+      isOwner: values.isOwner,
+      goal: values.goal,
+      status: "queued",
+    })
+    .returning();
+  return mapRow(row);
+}
+
+/** Queued runs, oldest-first — the runner's work queue. */
+export async function listQueuedBrowserAgentRuns(db: DrizzleDb): Promise<BrowserAgentRun[]> {
+  const rows = await db
+    .select()
+    .from(browserAgentRuns)
+    .where(eq(browserAgentRuns.status, "queued"))
+    .orderBy(asc(browserAgentRuns.createdAt));
+  return rows.map(mapRow);
+}
+
+/**
+ * Claim a queued run for execution: flip it to `running` and stamp `started_at`,
+ * but only if it is still `queued`. Returns the claimed run, or null when another
+ * worker (or a redeploy) already took it — the atomic guard against double-run.
+ */
+export async function claimBrowserAgentRun(
+  db: DrizzleDb,
+  id: string,
+): Promise<BrowserAgentRun | null> {
+  const [row] = await db
+    .update(browserAgentRuns)
+    .set({ status: "running", startedAt: new Date(), traceId: null })
+    .where(and(eq(browserAgentRuns.id, id), eq(browserAgentRuns.status, "queued")))
+    .returning();
+  return row ? mapRow(row) : null;
+}
+
+/** Attach the execution trace id to a running run (for Debug drill-down). */
+export async function setBrowserAgentRunTrace(
+  db: DrizzleDb,
+  id: string,
+  traceId: string,
+): Promise<void> {
+  await db.update(browserAgentRuns).set({ traceId }).where(eq(browserAgentRuns.id, id));
+}
+
+/** Settle a run as done or failed with its report/error, steps, and downloads. */
+export async function settleBrowserAgentRun(
+  db: DrizzleDb,
+  id: string,
+  input: {
+    status: Extract<BrowserRunStatus, "done" | "failed">;
+    report?: string | null;
+    error?: string | null;
+    steps: number;
+    downloads: BrowserDownloadRecord[];
+  },
+): Promise<void> {
+  await db
+    .update(browserAgentRuns)
+    .set({
+      status: input.status,
+      report: input.report ?? null,
+      error: input.error ?? null,
+      steps: input.steps,
+      downloads: input.downloads,
+      finishedAt: new Date(),
+    })
+    .where(eq(browserAgentRuns.id, id));
+}
+
+/**
+ * Fail any run left `running` from a previous process (a crash/redeploy mid-run).
+ * Called once at startup so a dead run never blocks the dashboard as "running"
+ * forever. Returns how many were reset.
+ */
+export async function failStaleRunningRuns(db: DrizzleDb): Promise<number> {
+  const rows = await db
+    .update(browserAgentRuns)
+    .set({
+      status: "failed",
+      error: "Interrupted by a server restart",
+      finishedAt: new Date(),
+    })
+    .where(eq(browserAgentRuns.status, "running"))
+    .returning({ id: browserAgentRuns.id });
+  return rows.length;
+}
+
+/** Store one screenshot's bytes at the given capture sequence. */
+export async function insertBrowserRunScreenshot(
+  db: DrizzleDb,
+  input: { runId: string; seq: number; url: string | null; title: string | null; data: Buffer },
+): Promise<void> {
+  await db.insert(browserRunScreenshots).values({
+    runId: input.runId,
+    seq: input.seq,
+    url: input.url,
+    title: input.title,
+    data: input.data,
+  });
+}
+
+/** One screenshot's bytes by (run, seq), or null. */
+export async function getBrowserRunScreenshot(
+  db: DrizzleDb,
+  runId: string,
+  seq: number,
+): Promise<Buffer | null> {
+  const row = await db.query.browserRunScreenshots.findFirst({
+    where: and(eq(browserRunScreenshots.runId, runId), eq(browserRunScreenshots.seq, seq)),
+    columns: { data: true },
+  });
+  return row?.data ?? null;
+}

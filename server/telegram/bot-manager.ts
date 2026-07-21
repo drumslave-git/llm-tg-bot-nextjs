@@ -78,11 +78,14 @@ export function getBotStatus(): BotStatus {
 export async function sendChatMessage(
   chatId: string,
   text: string,
-  opts: { threadId?: number | null } = {},
+  opts: { threadId?: number | null; silent?: boolean } = {},
 ): Promise<{ messageId: number }> {
   const bot = store().bot;
   if (!bot) throw new Error("Telegram bot is not running");
-  const base = opts.threadId != null ? { message_thread_id: opts.threadId } : {};
+  const base = {
+    ...(opts.threadId != null ? { message_thread_id: opts.threadId } : {}),
+    ...(opts.silent ? { disable_notification: true } : {}),
+  };
   try {
     const sent = await bot.api.sendMessage(chatId, renderTelegramHtml(text), {
       ...base,
@@ -94,6 +97,26 @@ export async function sendChatMessage(
     const sent = await bot.api.sendMessage(chatId, text, base);
     return { messageId: sent.message_id };
   }
+}
+
+/**
+ * Send an out-of-band document to a chat (used by the browser-agent runner to
+ * deliver a downloaded file). Requires the poller to be running — Telegram's
+ * `api` lives on the active bot. Throws when the bot is not running so the caller
+ * can record the failure. Resolves the delivered message id.
+ */
+export async function sendChatDocument(
+  chatId: string,
+  file: { buffer: Buffer; filename: string },
+  opts: { threadId?: number | null; caption?: string } = {},
+): Promise<{ messageId: number }> {
+  const bot = store().bot;
+  if (!bot) throw new Error("Telegram bot is not running");
+  const sent = await bot.api.sendDocument(chatId, new InputFile(file.buffer, file.filename), {
+    ...(opts.threadId != null ? { message_thread_id: opts.threadId } : {}),
+    ...(opts.caption ? { caption: opts.caption } : {}),
+  });
+  return { messageId: sent.message_id };
 }
 
 /**

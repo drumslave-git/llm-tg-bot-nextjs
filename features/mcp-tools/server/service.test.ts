@@ -6,6 +6,7 @@ import {
   HISTORY_RECALL_TOOL,
   HISTORY_SEARCH_TOOL,
 } from "@/features/history/server/mcp-tools";
+import { BROWSE_WEB_TOOL } from "@/features/browser-agent/server/mcp-tools";
 import { IMAGE_GENERATE_TOOL } from "@/features/image-gen/server/mcp-tools";
 import { UPDATE_USER_ALIASES_TOOL } from "@/features/known-users/server/mcp-tools";
 import { READ_WEB_PAGE_TOOL } from "@/features/link-fetch/server/mcp-tools";
@@ -31,6 +32,7 @@ const ALL_TOOLS = [
   ...SCHEDULED_TASKS_TOOL_NAMES,
   ...MEMORY_TOOL_NAMES,
   IMAGE_GENERATE_TOOL,
+  BROWSE_WEB_TOOL,
 ].sort();
 
 describe("getToolsView", () => {
@@ -46,6 +48,7 @@ describe("getToolsView", () => {
     expect(featureOf(MEMORY_TOOL_NAMES[0])).toBe("memory");
     // The owning feature is what gives the tool its `mcp-tools-image-gen` Debug scope.
     expect(featureOf(IMAGE_GENERATE_TOOL)).toBe("image-gen");
+    expect(featureOf(BROWSE_WEB_TOOL)).toBe("browser-agent");
     expect(view.tools.every((t) => t.description.length > 0)).toBe(true);
   });
 });

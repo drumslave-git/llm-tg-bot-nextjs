@@ -132,6 +132,13 @@ export const FEATURES = {
     relatedIdsKey: "memory",
     path: "/memory",
   },
+  "browser-agent": {
+    id: "browser-agent",
+    label: "Browser agent",
+    realtimeTopic: "browser",
+    relatedIdsKey: "browser_agent_runs",
+    path: "/browser",
+  },
   analytics: {
     id: "analytics",
     label: "Analytics",
@@ -180,6 +187,11 @@ export const FEATURES = {
   "mcp-tools-image-gen": {
     id: "mcp-tools-image-gen",
     label: "Image generation tool",
+    path: "/tools",
+  },
+  "mcp-tools-browser-agent": {
+    id: "mcp-tools-browser-agent",
+    label: "Browser agent tool",
     path: "/tools",
   },
 } as const satisfies Record<string, FeatureDescriptor>;

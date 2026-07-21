@@ -9,4 +9,11 @@ export interface McpToolCallResult {
   structuredContent?: unknown;
   /** True when the tool reported an error result (`isError`). */
   isError?: boolean;
+  /**
+   * Images the tool produced *for the model to look at* (e.g. a browser
+   * screenshot), as `data:` URLs. The tool loop shows them to the model as a
+   * vision turn after the tool result; callers recording results into traces
+   * must redact these bytes (the trace convention for binary payloads).
+   */
+  images?: string[];
 }
