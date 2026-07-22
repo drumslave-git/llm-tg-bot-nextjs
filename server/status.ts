@@ -5,6 +5,7 @@ import { sql } from "drizzle-orm";
 import { getDb, type DrizzleDb } from "@/db/drizzle";
 import { getSettingsRecord } from "@/features/settings/server/repository";
 import { listModels } from "@/server/llm/client";
+import { getTraceStorageHealth, type TraceStorageHealth } from "@/server/trace/store";
 
 /**
  * System status for the dashboard overview. Every field is a *real probe* —
@@ -38,6 +39,8 @@ export interface SystemStatus {
   db: DbStatus;
   llm: LlmStatus;
   model: ModelStatus;
+  /** Trace/debug log write path — a real append probe, not a config guess. */
+  traces: TraceStorageHealth;
 }
 
 function errorMessage(err: unknown): string {
@@ -69,8 +72,12 @@ export async function getConfigReadiness(db: DrizzleDb = getDb()): Promise<Confi
   }
 }
 
-/** Probe the database, the LLM endpoint, and the model selection. */
+/** Probe the database, the LLM endpoint, the model selection, and trace storage. */
 export async function getSystemStatus(db: DrizzleDb = getDb()): Promise<SystemStatus> {
+  // Trace storage is independent of the DB — probe it first so a DB outage
+  // cannot hide a dying trace volume (each is surfaced on its own).
+  const traces = await getTraceStorageHealth();
+
   // 1. Database — a real query. If it fails, nothing downstream can be checked.
   try {
     await db.execute(sql`SELECT 1`);
@@ -80,6 +87,7 @@ export async function getSystemStatus(db: DrizzleDb = getDb()): Promise<SystemSt
       db: { connected: false, detail },
       llm: { state: "unconfigured", detail: "Requires a database connection" },
       model: { selected: false, detail: "Requires a database connection" },
+      traces,
     };
   }
 
@@ -107,7 +115,7 @@ export async function getSystemStatus(db: DrizzleDb = getDb()): Promise<SystemSt
     ? { selected: true, detail: settings.model }
     : { selected: false, detail: "No model selected" };
 
-  return { db: { connected: true, detail: "Connected" }, llm, model };
+  return { db: { connected: true, detail: "Connected" }, llm, model, traces };
 }
 
 export interface HealthReport {
@@ -117,6 +125,14 @@ export interface HealthReport {
   /** DB-stored config presence (cheap). Not a readiness gate — the LLM being down
    *  must not make the dashboard "unhealthy". Live LLM reachability is on Overview. */
   configuration: ConfigReadiness;
+  /**
+   * Trace write-path health (real append probe + standing flush failures).
+   * Informational, NEVER a readiness gate: while the volume is unwritable the
+   * only copy of the unflushed traces is this process's RAM — failing the
+   * healthcheck would make the orchestrator restart-loop the container and
+   * destroy exactly the data the operator still has a chance to save.
+   */
+  traceStorage: TraceStorageHealth;
 }
 
 /**
@@ -138,5 +154,10 @@ export async function getHealth(db: DrizzleDb = getDb()): Promise<HealthReport> 
     ? await getConfigReadiness(db)
     : { configured: false, detail: "Requires a database connection." };
 
-  return { ready: database.ok, database, configuration };
+  return {
+    ready: database.ok,
+    database,
+    configuration,
+    traceStorage: await getTraceStorageHealth(),
+  };
 }

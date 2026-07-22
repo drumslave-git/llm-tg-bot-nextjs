@@ -71,6 +71,15 @@ export default async function OverviewPage() {
         ? { label: "LLM endpoint", tone: "error", value: "Unreachable", hint: status.llm.detail }
         : { label: "LLM endpoint", tone: "warn", value: "Not configured", hint: status.llm.detail };
 
+  const tracesItem: StatusItem = status.traces.ok
+    ? { label: "Trace storage", tone: "ok", value: "Writable", hint: status.traces.detail }
+    : {
+        label: "Trace storage",
+        tone: "error",
+        value: "Not writable",
+        hint: `${status.traces.detail} — ${status.traces.pendingCount} unflushed trace(s) buffered in memory`,
+      };
+
   const items: StatusItem[] = [
     {
       label: "Database",
@@ -86,9 +95,14 @@ export default async function OverviewPage() {
       hint: status.model.detail,
     },
     botItem,
+    tracesItem,
   ];
 
-  const operational = status.db.connected && status.llm.state === "connected" && status.model.selected;
+  const operational =
+    status.db.connected &&
+    status.llm.state === "connected" &&
+    status.model.selected &&
+    status.traces.ok;
 
   return (
     <>

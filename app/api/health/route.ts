@@ -23,6 +23,9 @@ export const GET = defineRoute(async () => {
       checks: {
         database: health.database,
         configuration: health.configuration,
+        // Informational, not a readiness gate: restart-looping the container on
+        // an unwritable volume would drop the RAM-buffered traces (see getHealth).
+        traceStorage: health.traceStorage,
       },
     },
     { status: health.ready ? 200 : 503 },

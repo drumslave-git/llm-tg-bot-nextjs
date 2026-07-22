@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { getEnv } from "@/server/env";
 import type { Trace, TraceEvent, TraceStatus, TraceTrigger } from "@/lib/trace";
+import { publishEvent } from "@/server/realtime/hub";
 
 /**
  * File-backed trace store — the single backend behind the shared trace contract,
@@ -74,6 +75,22 @@ interface TraceStore {
   flushTimer: ReturnType<typeof setInterval> | null;
   /** Re-entry guard: a slow flush is never overlapped by the timer. */
   flushing: boolean;
+  /**
+   * The standing flush failure, or null while writes succeed. `at` is when the
+   * failure FIRST appeared (kept stable across retries of the same failure), so
+   * the dashboard can say "failing since …". Feeds {@link getTraceStorageHealth}.
+   */
+  lastFlushError: TraceFlushError | null;
+  /** Last overall health observed by {@link getTraceStorageHealth}; null before the first read. */
+  lastHealthOk: boolean | null;
+}
+
+/** A trace write failure the operator must act on (traces buffer in RAM meanwhile). */
+export interface TraceFlushError {
+  monthKey: string;
+  message: string;
+  /** ISO instant the failure first appeared. */
+  at: string;
 }
 
 /** Traces directory: `TRACES_DIR` (bootstrap plumbing) or a dev default under gitignored `data/`. */
@@ -95,6 +112,8 @@ function store(): TraceStore {
       dir: resolveDir(),
       flushTimer: null,
       flushing: false,
+      lastFlushError: null,
+      lastHealthOk: null,
     };
   }
   return g[STORE_KEY]!;
@@ -363,11 +382,39 @@ export function settleTrace(traceId: string, input: SettleTraceInput): void {
 
 // --- Flush + lifecycle -------------------------------------------------------
 
+function errText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Record the outcome of a flush pass. The failure's `at` survives retries of the
+ * same failure (so the UI reports "failing since" its first occurrence, not the
+ * last tick), and any ok↔failing transition is published on the `status` topic
+ * so the dashboard banner appears/clears live instead of waiting for a visit.
+ */
+function setFlushFailure(s: TraceStore, failure: TraceFlushError | null): void {
+  const was = s.lastFlushError;
+  if (
+    was &&
+    failure &&
+    was.monthKey === failure.monthKey &&
+    was.message === failure.message
+  ) {
+    return; // Same standing failure — keep the original "failing since" instant.
+  }
+  if (!was && !failure) return;
+  s.lastFlushError = failure;
+  publishEvent("status", { feature: "traces" });
+}
+
 /**
  * Append every pending (settled) trace to its month file and mirror it into the
  * month cache. Grouped by the trace's start month, so a trace that settles after
  * midnight on the 1st still lands in the previous month's file. A group whose
- * write fails stays pending and is retried next tick.
+ * write fails stays pending and is retried next tick — and the failure is
+ * surfaced (store health + `status` event), never only logged: an unwritable
+ * volume otherwise loses every buffered trace on the next restart with no
+ * warning anywhere.
  */
 export async function flushTracesNow(): Promise<void> {
   const s = store();
@@ -383,7 +430,20 @@ export async function flushTracesNow(): Promise<void> {
       else byMonth.set(key, [trace]);
     }
 
-    await mkdir(s.dir, { recursive: true });
+    let failure: TraceFlushError | null = null;
+    try {
+      await mkdir(s.dir, { recursive: true });
+    } catch (err) {
+      // No directory means no group below can write; report once and keep
+      // everything pending. Must not throw — the timer call is un-awaited.
+      console.error(`Trace flush failed creating ${s.dir}:`, err);
+      setFlushFailure(s, {
+        monthKey: monthKeyOf(new Date().toISOString()),
+        message: errText(err),
+        at: new Date().toISOString(),
+      });
+      return;
+    }
     for (const [monthKey, traces] of byMonth) {
       // Load the month at the FULL tier first: the flushed traces carry events,
       // so appending them to a header-tier list would leave it mixed.
@@ -393,6 +453,7 @@ export async function flushTracesNow(): Promise<void> {
         await appendFile(fileFor(s, monthKey), data);
       } catch (err) {
         console.error(`Trace flush failed for ${monthKey}:`, err);
+        failure = { monthKey, message: errText(err), at: new Date().toISOString() };
         continue; // Leave this group pending; retry next tick.
       }
       const list = s.months.get(monthKey)!;
@@ -402,15 +463,75 @@ export async function flushTracesNow(): Promise<void> {
       }
       s.sortedFlushed = null;
     }
+    setFlushFailure(s, failure);
   } finally {
     s.flushing = false;
   }
+}
+
+/** Operator-facing health of the trace write path — see {@link getTraceStorageHealth}. */
+export interface TraceStorageHealth {
+  ok: boolean;
+  /** The traces directory when ok; the failure message when not. */
+  detail: string;
+  /** Settled traces held only in RAM awaiting a successful flush (lost on restart). */
+  pendingCount: number;
+  /** The standing flush failure, with when it first appeared. */
+  lastFlushError: TraceFlushError | null;
+}
+
+/**
+ * Probe the REAL write path — open the current month's file for append, exactly
+ * the operation the flusher performs — and combine it with the standing flush
+ * state. Never an env-presence guess: a bind mount the container user cannot
+ * write to passes every "is it configured" check and still loses data.
+ *
+ * If the probe succeeds while a failure is standing (the operator just fixed
+ * permissions), the pending buffer is flushed immediately so recovery is
+ * reported the moment it is true, not a flush tick later.
+ */
+export async function getTraceStorageHealth(): Promise<TraceStorageHealth> {
+  const s = store();
+  let probeError: string | null = null;
+  try {
+    await mkdir(s.dir, { recursive: true });
+    // A zero-byte append: opens the real file with the real flags (surfacing
+    // EACCES/EPERM/read-only exactly like a flush) without altering content.
+    await appendFile(fileFor(s, monthKeyOf(new Date().toISOString())), "");
+  } catch (err) {
+    probeError = errText(err);
+  }
+  if (!probeError && s.lastFlushError) await flushTracesNow();
+
+  const failure = s.lastFlushError;
+  const ok = !probeError && !failure;
+  // A probe-observed transition (e.g. broken-at-boot volume fixed before any
+  // flush ran) must also reach live dashboards, not only flush transitions.
+  // Converges: the refresh this triggers re-probes the SAME state and stays quiet.
+  const prev = s.lastHealthOk;
+  s.lastHealthOk = ok;
+  if (prev !== null && prev !== ok) publishEvent("status", { feature: "traces" });
+  return {
+    ok,
+    detail: ok ? s.dir : (failure?.message ?? probeError!),
+    pendingCount: s.pending.size,
+    lastFlushError: failure,
+  };
 }
 
 /** Arm the periodic flush and warm the current month. Idempotent (boot / HMR). */
 export async function startTraceStore(): Promise<void> {
   const s = store();
   await loadMonth(s, monthKeyOf(new Date().toISOString()), "full").catch(() => undefined);
+  // Probe the write path at boot so an unwritable volume screams in the server
+  // log immediately — not only at the first failed flush, a settled trace and
+  // up to one flush interval later. The dashboard banner reads the same health.
+  const health = await getTraceStorageHealth().catch(() => null);
+  if (health && !health.ok) {
+    console.error(
+      `Trace storage is NOT writable (${health.detail}). Settled traces are buffered in memory and will be LOST on restart until this is fixed.`,
+    );
+  }
   if (s.flushTimer) return;
   const timer = setInterval(() => void flushTracesNow(), FLUSH_MS);
   if (typeof timer.unref === "function") timer.unref();

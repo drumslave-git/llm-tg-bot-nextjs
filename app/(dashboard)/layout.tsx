@@ -2,6 +2,7 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 
 import { AppShell } from "@/components/layout/AppShell";
+import { SystemAlerts } from "@/components/layout/SystemAlerts";
 import { TimezoneProvider } from "@/components/time/TimezoneProvider";
 import { getTimezone } from "@/features/settings/server/service";
 import { SESSION_COOKIE } from "@/lib/auth";
@@ -38,7 +39,11 @@ export default async function DashboardLayout({
 
   return (
     <TimezoneProvider timezone={timezone}>
-      <AppShell botStatus={readiness}>{children}</AppShell>
+      <AppShell botStatus={readiness}>
+        {/* Global data-loss alerts render above every page; see SystemAlerts. */}
+        <SystemAlerts />
+        {children}
+      </AppShell>
     </TimezoneProvider>
   );
 }

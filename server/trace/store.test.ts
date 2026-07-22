@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 import { describe, expect, it } from "vitest";
@@ -12,6 +12,7 @@ import {
   getEventsForTraces,
   getLatestTraceIdsByCorrelation,
   getTrace,
+  getTraceStorageHealth,
   listFeatures,
   listTraceMonths,
   listTraces,
@@ -437,5 +438,60 @@ describe("getLatestTraceIdsByCorrelation", () => {
     expect(unscoped.get("c:1")).toBe(feedback.id);
 
     expect((await getLatestTraceIdsByCorrelation(["missing"])).size).toBe(0);
+  });
+});
+
+describe("trace storage health", () => {
+  const currentMonthFile = () =>
+    path.join(store.dir, `traces-${new Date().toISOString().slice(0, 7)}.ndjson`);
+
+  it("reports ok against a writable directory", async () => {
+    const health = await getTraceStorageHealth();
+    expect(health.ok).toBe(true);
+    expect(health.detail).toBe(store.dir);
+    expect(health.pendingCount).toBe(0);
+    expect(health.lastFlushError).toBeNull();
+  });
+
+  it("keeps a failed flush pending, reports the failure, and recovers once writable", async () => {
+    const trace = await startTrace(baseInput);
+    await trace.succeed();
+
+    // Block the write path portably: the month file's path is occupied by a
+    // directory, so append fails the same way an unwritable volume does.
+    mkdirSync(currentMonthFile());
+    await flushTracesNow();
+
+    let health = await getTraceStorageHealth();
+    expect(health.ok).toBe(false);
+    expect(health.pendingCount).toBe(1);
+    expect(health.lastFlushError).not.toBeNull();
+    expect(health.detail).toBe(health.lastFlushError!.message);
+    // Nothing was lost: the settled trace is still readable from the buffer.
+    expect(await getTrace(trace.id)).not.toBeNull();
+
+    // Fix the path; the next health read retries the flush and reports recovery.
+    rmdirSync(currentMonthFile());
+    health = await getTraceStorageHealth();
+    expect(health.ok).toBe(true);
+    expect(health.pendingCount).toBe(0);
+    expect(health.lastFlushError).toBeNull();
+    expect(readAllLines()).toHaveLength(1);
+  });
+
+  it("keeps the FIRST failure instant while the same failure persists", async () => {
+    const trace = await startTrace(baseInput);
+    await trace.succeed();
+    mkdirSync(currentMonthFile());
+
+    await flushTracesNow();
+    const first = (await getTraceStorageHealth()).lastFlushError!.at;
+
+    // A later retry of the same failure must not move "failing since".
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    await flushTracesNow();
+    expect((await getTraceStorageHealth()).lastFlushError!.at).toBe(first);
+
+    rmdirSync(currentMonthFile());
   });
 });
