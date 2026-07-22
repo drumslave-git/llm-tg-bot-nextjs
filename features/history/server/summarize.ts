@@ -4,13 +4,12 @@ import type { DrizzleDb } from "@/db/drizzle";
 import { getDb } from "@/db/drizzle";
 import { FEATURES } from "@/lib/features";
 import type { TraceTrigger } from "@/lib/trace";
-import { llmUsageOf, type ChatCompletionResult, type ChatMessage } from "@/server/llm/client";
+import type { ChatCompletionResult, ChatMessage } from "@/server/llm/client";
 import type { JobProgress } from "@/server/jobs/progress";
 import { publishEvent } from "@/server/realtime/hub";
 import { startTrace } from "@/server/trace";
 
 import {
-  batchMessages,
   buildSummaryPrompt,
   currentSummaryDate,
   parseSummaryTopics,
@@ -18,6 +17,7 @@ import {
   type SummaryDate,
   type SummaryTopic,
 } from "../summary";
+import { completeTranscriptBatches } from "./batched-completion";
 import { loadChatDayTranscript } from "./service";
 import {
   countDaysNeedingSummary,
@@ -108,67 +108,54 @@ export async function summarizeChatDay(
   );
 
   try {
-    const messages = await loadChatDayTranscript(db, params.chatId, params.summaryDate, deps.timeZone);
+    const { messages, dayMessageCount } = await loadChatDayTranscript(
+      db,
+      params.chatId,
+      params.summaryDate,
+      deps.timeZone,
+    );
     await trace.event({
       type: "step",
       message: "day loaded",
       data: {
         chatId: params.chatId,
         summaryDate: params.summaryDate,
-        messageCount: messages.length,
+        messageCount: dayMessageCount,
+        transcriptMessages: messages.length,
         timeZone: deps.timeZone,
       },
     });
 
-    // A day whose messages were all deleted still needs its marker stamped, so it
-    // stops showing up as pending work.
+    // A day with nothing readable (all rows deleted, or only blank media rows)
+    // still needs its marker stamped, so it stops showing up as pending work.
     if (messages.length === 0) {
       await replaceSummariesForDay(db, {
         chatId: params.chatId,
         summaryDate: params.summaryDate,
-        messageCount: 0,
+        messageCount: dayMessageCount,
         topics: [],
       });
       await trace.skip("no messages", { outputSummary: "no messages to summarize" });
       return {
         chatId: params.chatId,
         summaryDate: params.summaryDate,
-        messageCount: 0,
+        messageCount: dayMessageCount,
         topicCount: 0,
         embedded: false,
       };
     }
 
-    const batches = batchMessages(messages);
-    if (batches.length > 1) {
-      await trace.event({
-        type: "step",
-        message: "transcript batched",
-        data: { batches: batches.length, reason: "day exceeds one model pass" },
-      });
-    }
-
-    const topics: SummaryTopic[] = [];
-    for (const [index, batch] of batches.entries()) {
-      const prompt = buildSummaryPrompt(params.summaryDate, batch);
-      const request: ChatMessage[] = [
+    const contents = await completeTranscriptBatches({
+      messages,
+      buildRequest: (batch) => [
         { role: "system", content: SUMMARY_SYSTEM },
-        { role: "user", content: prompt },
-      ];
-      await trace.event({
-        type: "llm_request",
-        message: batches.length > 1 ? `request (batch ${index + 1}/${batches.length})` : "request",
-        data: { messages: request },
-      });
-      const completion = await deps.complete(request);
-      await trace.event({
-        type: "llm_response",
-        message: batches.length > 1 ? `response (batch ${index + 1}/${batches.length})` : "response",
-        data: completion.responseBody ?? { content: completion.content },
-        usage: { ...llmUsageOf(completion), callKind: "history-summarize" },
-      });
-      topics.push(...parseSummaryTopics(completion.content));
-    }
+        { role: "user", content: buildSummaryPrompt(params.summaryDate, batch) },
+      ],
+      complete: deps.complete,
+      trace,
+      callKind: "history-summarize",
+    });
+    const topics: SummaryTopic[] = contents.flatMap(parseSummaryTopics);
 
     // Embed the topics so they are semantically searchable. Best-effort: a dead
     // embedding endpoint must not cost us the summaries themselves — they are
@@ -195,7 +182,7 @@ export async function summarizeChatDay(
     const stored = await replaceSummariesForDay(db, {
       chatId: params.chatId,
       summaryDate: params.summaryDate,
-      messageCount: messages.length,
+      messageCount: dayMessageCount,
       topics: rows,
     });
 
@@ -220,7 +207,7 @@ export async function summarizeChatDay(
     return {
       chatId: params.chatId,
       summaryDate: params.summaryDate,
-      messageCount: messages.length,
+      messageCount: dayMessageCount,
       topicCount: stored.length,
       embedded: vectors != null,
     };

@@ -199,6 +199,41 @@ Next: **Priority 12 — Image generation** (Analytics landed 2026-07-15 as the n
 
 ### Session log
 
+- 2026-07-22 (user-requested — chat-day transcript quality + summarizer overflow
+  recovery, done): triggered by live trace 13a5eb18 (history-summaries, chat-day
+  2026-07-16): a Cyrillic-heavy day batched at 24k chars still overflowed the
+  model's context (`500: Context size has been exceeded.` — char budgets can't
+  see tokenization; ~40% Cyrillic ≈ 2 chars/token, plus per-line ISO timestamps),
+  and since the day's marker is only stamped on success, the cron retried the
+  same oversized batch forever. Also per the user: the summarizer transcript
+  must carry vision descriptions and must not contain blank lines (an
+  uncaptioned album photo rendered as `[#id] [ts] sender: ` — nothing).
+  - `features/history/server/service.ts`: `loadChatDayTranscript` now returns
+    `{ messages, dayMessageCount }` — media suffixes from
+    `getMediaSuffixesForMessages` (` [photo: <description>]` / ` [photo]`) are
+    folded into `content`, rows with nothing readable (no text, no known media)
+    are dropped, and `dayMessageCount` is the raw row count. **Markers must
+    record the raw count** (both due-scans compare marker vs live row count;
+    recording the filtered count would leave the day dirty forever) — both jobs
+    updated accordingly. Benefits summarization AND memory extraction (shared
+    loader).
+  - New `features/history/server/batched-completion.ts`:
+    `completeTranscriptBatches` — the batch→trace→complete loop that
+    `summarizeChatDay` and `extractChatDay` each had a copy of, now shared, plus
+    overflow recovery: on `isContextOverflowError` the *remaining* messages are
+    re-batched at half the budget (floor `MIN_SUMMARY_BATCH_CHARS = 1_500`, new
+    in `features/history/summary.ts`) with a warn `step` trace event
+    (`batch exceeded the model context — re-batching at N chars`); completed
+    batches are kept. Non-overflow errors propagate unchanged.
+  - `features/history/server/summarize.ts`, `features/memory/server/extract.ts`:
+    use the shared runner; `day loaded` trace events now carry `messageCount`
+    (raw) + `transcriptMessages` (readable).
+  - Proof: typecheck ✓, lint ✓, 615 unit ✓ (6 new runner tests in
+    `batched-completion.test.ts`), integration 264 ✓ (2 new: media
+    annotation/blank-line/marker-count, overflow re-batch end-to-end), build ✓.
+  - Note: a running dev server needs a restart to pick this up; the stuck
+    2026-07-16 day should summarize on the next run.
+
 - 2026-07-21 (user-requested — context-overflow retry with stepwise history
   shrinking, done): a reply request too large for the model's context window
   (seen live: `LLM endpoint error (400): request (36280 tokens) exceeds the

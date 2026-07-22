@@ -52,6 +52,16 @@ export type SummaryDate = string;
  */
 export const SUMMARY_BATCH_CHARS = 24_000;
 
+/**
+ * Smallest batch budget the context-overflow retry may shrink to. A char budget
+ * cannot see tokenization (a Cyrillic-heavy day holds roughly twice the tokens
+ * of an English one at the same length), so an oversized batch is re-batched at
+ * half the budget until the model accepts it — but never below this floor:
+ * a pass this small failing means the endpoint is misconfigured, not the batch
+ * too big, and shrinking further would just spray tiny requests at it.
+ */
+export const MIN_SUMMARY_BATCH_CHARS = 1_500;
+
 /** Per-line transcript overhead (id anchor, timestamp, label) when costing a batch. */
 const LINE_OVERHEAD_CHARS = 48;
 

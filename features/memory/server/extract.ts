@@ -2,12 +2,13 @@ import "server-only";
 
 import type { DrizzleDb } from "@/db/drizzle";
 import { getDb } from "@/db/drizzle";
+import { completeTranscriptBatches } from "@/features/history/server/batched-completion";
 import { loadChatDayTranscript } from "@/features/history/server/service";
 import { getKnownUsersByIds } from "@/features/known-users/server/repository";
-import { batchMessages, currentSummaryDate, type SummaryDate } from "@/features/history/summary";
+import { currentSummaryDate, type SummaryDate } from "@/features/history/summary";
 import { FEATURES } from "@/lib/features";
 import type { TraceTrigger } from "@/lib/trace";
-import { llmUsageOf, type ChatCompletionResult, type ChatMessage } from "@/server/llm/client";
+import type { ChatCompletionResult, ChatMessage } from "@/server/llm/client";
 import type { JobProgress } from "@/server/jobs/progress";
 import { publishEvent } from "@/server/realtime/hub";
 import { startTrace } from "@/server/trace";
@@ -147,7 +148,7 @@ export async function extractChatDay(
   );
 
   try {
-    const messages = await loadChatDayTranscript(
+    const { messages, dayMessageCount } = await loadChatDayTranscript(
       db,
       params.chatId,
       params.extractionDate,
@@ -175,7 +176,8 @@ export async function extractChatDay(
       data: {
         chatId: params.chatId,
         extractionDate: params.extractionDate,
-        messageCount: messages.length,
+        messageCount: dayMessageCount,
+        transcriptMessages: messages.length,
         participants,
         // Named explicitly: this is the difference between "the day was quiet" and
         // "the bot cannot remember these people yet", which look identical in the
@@ -194,52 +196,34 @@ export async function extractChatDay(
       });
     }
 
-    // A day whose messages were all deleted still needs its marker stamped, so it
-    // stops coming back as pending work.
+    // A day with nothing readable (all rows deleted, or only blank media rows)
+    // still needs its marker stamped, so it stops coming back as pending work.
     if (messages.length === 0) {
-      await stampExtractionDay(db, { ...params, messageCount: 0, noteCount: 0 });
+      await stampExtractionDay(db, { ...params, messageCount: dayMessageCount, noteCount: 0 });
       await trace.skip("no messages", { outputSummary: "no messages to extract" });
-      return { ...params, messageCount: 0, noteCount: 0 };
-    }
-
-    const batches = batchMessages(messages);
-    if (batches.length > 1) {
-      await trace.event({
-        type: "step",
-        message: "transcript batched",
-        data: { batches: batches.length, reason: "day exceeds one model pass" },
-      });
+      return { ...params, messageCount: dayMessageCount, noteCount: 0 };
     }
 
     const rosterIds = participants.map((p) => p.userId);
-    const proposed: ExtractedNote[] = [];
-
-    for (const [index, batch] of batches.entries()) {
-      const label = batches.length > 1 ? ` (batch ${index + 1}/${batches.length})` : "";
-      const request: ChatMessage[] = [
+    const contents = await completeTranscriptBatches({
+      messages,
+      buildRequest: (batch) => [
         { role: "system", content: EXTRACTION_SYSTEM },
         {
           role: "user",
           content: buildExtractionRequest(params.extractionDate, batch, participants),
         },
-      ];
-      await trace.event({
-        type: "llm_request",
-        message: `request${label}`,
-        data: { messages: request },
-      });
-      const completion = await deps.complete(request);
-      await trace.event({
-        type: "llm_response",
-        message: `response${label}`,
-        data: completion.responseBody ?? { content: completion.content },
-        usage: { ...llmUsageOf(completion), callKind: "memory-extract" },
-      });
-      // Each batch is validated against the *day's* full roster, not the batch's:
-      // a person can speak in the morning and be talked about in the evening, and
-      // a fact about them extracted from the later batch is still about them.
-      proposed.push(...parseExtractedNotes(completion.content, rosterIds));
-    }
+      ],
+      complete: deps.complete,
+      trace,
+      callKind: "memory-extract",
+    });
+    // Each batch is validated against the *day's* full roster, not the batch's:
+    // a person can speak in the morning and be talked about in the evening, and
+    // a fact about them extracted from the later batch is still about them.
+    const proposed: ExtractedNote[] = contents.flatMap((content) =>
+      parseExtractedNotes(content, rosterIds),
+    );
 
     const { queued, rejected } = await queueNotes(proposed, params.chatId, db);
 
@@ -254,7 +238,7 @@ export async function extractChatDay(
 
     await stampExtractionDay(db, {
       ...params,
-      messageCount: messages.length,
+      messageCount: dayMessageCount,
       noteCount: queued.length,
     });
 
@@ -271,7 +255,7 @@ export async function extractChatDay(
 
     return {
       ...params,
-      messageCount: messages.length,
+      messageCount: dayMessageCount,
       noteCount: queued.length,
     };
   } catch (err) {

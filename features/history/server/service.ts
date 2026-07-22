@@ -4,6 +4,7 @@ import type { DrizzleDb } from "@/db/drizzle";
 import { getDb } from "@/db/drizzle";
 import { formatKnownUserLabel } from "@/features/known-users/format";
 import { getKnownUsersByIds } from "@/features/known-users/server/repository";
+import { getMediaSuffixesForMessages } from "@/features/vision/server/service";
 import type { ChatMessage } from "@/server/llm/client";
 import { FEATURES } from "@/lib/features";
 import type { TraceTrigger } from "@/lib/trace";
@@ -205,8 +206,27 @@ export async function resolveSpeakerLabels(
 /** Label used for the bot's own rows in a loaded chat-day transcript. */
 export const BOT_TRANSCRIPT_LABEL = "Bot";
 
+/** One wall-clock chat-day, loaded for a whole-day model pass. */
+export interface ChatDayTranscript {
+  /**
+   * The day's readable transcript rows: media messages carry their vision
+   * annotation (` [photo: <description>]`) folded into `content`, and rows with
+   * nothing to read (no text, no known media) are dropped — an album photo with
+   * no caption must not become an empty transcript line.
+   */
+  messages: SummarizableMessage[];
+  /**
+   * Raw stored rows in the day, including the dropped ones. This — not
+   * `messages.length` — is what a job marker must record: the due-scans compare
+   * the marker against the day's live row count, so recording the filtered count
+   * would leave the day looking changed forever.
+   */
+  dayMessageCount: number;
+}
+
 /**
- * Load one wall-clock chat-day's messages with their speakers resolved.
+ * Load one wall-clock chat-day's messages with their speakers resolved and
+ * their media annotated.
  *
  * Shared by the two nightly jobs that read a day as a whole — history
  * summarization and passive memory extraction — because both need exactly this:
@@ -219,22 +239,31 @@ export async function loadChatDayTranscript(
   chatId: string,
   date: SummaryDate,
   timeZone: string,
-): Promise<SummarizableMessage[]> {
+): Promise<ChatDayTranscript> {
   const { from, to } = summaryDayBounds(date, timeZone);
   const records = await getChatMessagesForDay(db, chatId, from, to);
+  if (records.length === 0) return { messages: [], dayMessageCount: 0 };
   const labels = await resolveSpeakerLabels(db, records);
-  return records.map((record) => ({
-    telegramMessageId: record.telegramMessageId,
-    role: record.role,
-    content: record.content,
-    label:
-      record.role === "assistant"
-        ? BOT_TRANSCRIPT_LABEL
-        : ((record.userId ? labels.get(record.userId) : undefined) ??
-          fallbackSpeakerLabel(record.userId)),
-    userId: record.role === "assistant" ? null : record.userId,
-    sentAt: record.sentAt,
-  }));
+  const mediaSuffixes = await getMediaSuffixesForMessages(
+    chatId,
+    records.map((record) => record.telegramMessageId),
+    db,
+  );
+  const messages = records
+    .map((record) => ({
+      telegramMessageId: record.telegramMessageId,
+      role: record.role,
+      content: `${record.content}${mediaSuffixes.get(record.telegramMessageId) ?? ""}`.trim(),
+      label:
+        record.role === "assistant"
+          ? BOT_TRANSCRIPT_LABEL
+          : ((record.userId ? labels.get(record.userId) : undefined) ??
+            fallbackSpeakerLabel(record.userId)),
+      userId: record.role === "assistant" ? null : record.userId,
+      sentAt: record.sentAt,
+    }))
+    .filter((message) => message.content.length > 0);
+  return { messages, dayMessageCount: records.length };
 }
 
 /**

@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { insertMedia, markDescribed } from "@/features/vision/server/repository";
 import { EMBEDDING_DIMENSIONS } from "@/lib/embeddings";
 import type { ChatCompletionResult, ChatMessage } from "@/server/llm/client";
 import { listTraces } from "@/server/trace";
@@ -236,6 +237,107 @@ describe("summarizeChatDay", () => {
 
     expect(complete.mock.calls.length).toBeGreaterThan(1);
     expect(result.topicCount).toBe(complete.mock.calls.length);
+  });
+
+  it("annotates media messages with their descriptions and drops unreadable blank lines", async () => {
+    await seedDay(YESTERDAY);
+    // #3: a photo with no caption whose image vision has described.
+    await recordIncomingMessage(
+      {
+        chatId: CHAT,
+        telegramMessageId: 3,
+        userId: "100",
+        content: "",
+        sentAt: new Date(`${YESTERDAY}T11:00:00.000Z`),
+        hasMedia: true,
+      },
+      ctx.db,
+    );
+    const media = await insertMedia(ctx.db, {
+      id: crypto.randomUUID(),
+      chatId: CHAT,
+      telegramMessageId: 3,
+      kind: "photo",
+      fileId: "file-3",
+      dataBase64: "aGk=",
+    });
+    await markDescribed(ctx.db, media!.id, "a cat asleep on a keyboard");
+    // #4: an empty media row the vision feature knows nothing about — unreadable.
+    await recordIncomingMessage(
+      {
+        chatId: CHAT,
+        telegramMessageId: 4,
+        userId: "100",
+        content: "",
+        sentAt: new Date(`${YESTERDAY}T11:01:00.000Z`),
+        hasMedia: true,
+      },
+      ctx.db,
+    );
+
+    const d = deps();
+    const result = await summarizeChatDay(
+      { chatId: CHAT, summaryDate: YESTERDAY },
+      d,
+      { kind: "test" },
+      ctx.db,
+    );
+
+    const [messages] = (d.complete as unknown as { mock: { calls: [ChatMessage[]][] } }).mock
+      .calls[0];
+    const prompt = messages[1].content as string;
+    // The described photo reads as text; the unreadable row makes no blank line.
+    expect(prompt).toContain("[photo: a cat asleep on a keyboard]");
+    expect(prompt).not.toContain("[#4]");
+    // The marker records the raw day count (4 rows), so the count comparison in
+    // the due-scan still sees the day as unchanged.
+    expect(result.messageCount).toBe(4);
+    expect(
+      await listDaysNeedingSummary(ctx.db, { timeZone: "UTC", today: "2026-07-14", limit: 10 }),
+    ).toEqual([]);
+  });
+
+  it("recovers from a model context overflow by re-batching smaller", async () => {
+    for (let i = 1; i <= 40; i += 1) {
+      await recordIncomingMessage(
+        {
+          chatId: CHAT,
+          telegramMessageId: i,
+          userId: "100",
+          content: "x".repeat(1000),
+          sentAt: new Date(`${YESTERDAY}T10:00:00.000Z`),
+        },
+        ctx.db,
+      );
+    }
+    // A model whose real context fits ~20k prompt chars: the first 24k-budget
+    // batch is rejected the way llama.cpp words it (pinned live phrasing); the
+    // re-batched halves fit.
+    let pass = 0;
+    const complete = vi.fn(async (messages: ChatMessage[]) => {
+      const prompt = messages[1].content as string;
+      if (prompt.length > 20_000) {
+        throw new Error("LLM endpoint error (500): Context size has been exceeded.");
+      }
+      pass += 1;
+      return completion(
+        JSON.stringify({ topics: [{ content: `Topic from pass ${pass}`, message_ids: [pass] }] }),
+      );
+    });
+
+    const result = await summarizeChatDay(
+      { chatId: CHAT, summaryDate: YESTERDAY },
+      deps({ complete }),
+      { kind: "test" },
+      ctx.db,
+    );
+
+    // Every pass eventually succeeded and the day settled — no stuck retry loop.
+    expect(result.topicCount).toBe(pass);
+    expect(complete.mock.calls.length).toBeGreaterThan(pass); // at least one rejection
+    expect(
+      await listDaysNeedingSummary(ctx.db, { timeZone: "UTC", today: "2026-07-14", limit: 10 }),
+    ).toEqual([]);
   });
 
   it("records the run as a trace with the full request and response bodies", async () => {
