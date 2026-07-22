@@ -5,10 +5,10 @@ import { MessageSquareHeart, SlidersHorizontal, Wand2 } from "lucide-react";
 import {
   Badge,
   Card,
+  CardAction,
   CardContent,
   CardDescription,
   CardHeader,
-  CardTitle,
   EmptyState,
   Table,
   TableBody,
@@ -16,7 +16,9 @@ import {
   TableHead,
   TableHeaderCell,
   TableRow,
+  Tabs,
   type BadgeTone,
+  type TabItem,
 } from "@/components/ui";
 import { useLiveRefresh } from "@/components/realtime/useLiveRefresh";
 import { Timestamp } from "@/components/time/Timestamp";
@@ -78,159 +80,160 @@ export function SelfImprovementPanel({ view }: { view: SelfImprovementView }) {
   useLiveRefresh("feedback");
   const { feedbacks, preferences, correction } = view;
 
-  return (
-    <div className="space-y-6">
-      <Card>
-        <CardHeader>
-          <div className="space-y-1">
-            <CardTitle>Feedback</CardTitle>
-            <CardDescription>
-              Answers collected from 👍/👎 reactions on the bot&apos;s replies, each with the
-              bot&apos;s own reflection on what went right or wrong and why.
-            </CardDescription>
-          </div>
-        </CardHeader>
-        <CardContent>
-          {feedbacks.length === 0 ? (
-            <EmptyState
-              icon={MessageSquareHeart}
-              title="No feedback yet"
-              description="When someone reacts to a bot reply with 👍 or 👎, their answer shows up here. In groups, Telegram only delivers reactions when the bot is an admin."
-            />
-          ) : (
-            <Table>
-              <TableHead>
-                <TableRow>
-                  <TableHeaderCell>When</TableHeaderCell>
-                  <TableHeaderCell>User</TableHeaderCell>
-                  <TableHeaderCell>Reaction</TableHeaderCell>
-                  <TableHeaderCell>Feedback</TableHeaderCell>
-                  <TableHeaderCell>Model</TableHeaderCell>
-                  <TableHeaderCell>Incorporated</TableHeaderCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {feedbacks.map((feedback) => (
-                  <TableRow key={feedback.id}>
-                    <TableCell className="whitespace-nowrap text-muted">
-                      <Timestamp iso={feedback.createdAt} />
-                    </TableCell>
-                    <TableCell>{feedback.userLabel}</TableCell>
-                    <TableCell>
-                      <Badge tone={feedback.reaction === "up" ? "success" : "danger"}>
-                        {feedback.reaction === "up" ? "👍" : "👎"}
+  const feedbackTab = (
+    <Card>
+      <CardHeader>
+        <CardDescription>
+          Answers collected from 👍/👎 reactions on the bot&apos;s replies, each with the
+          bot&apos;s own reflection on what went right or wrong and why.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {feedbacks.length === 0 ? (
+          <EmptyState
+            icon={MessageSquareHeart}
+            title="No feedback yet"
+            description="When someone reacts to a bot reply with 👍 or 👎, their answer shows up here. In groups, Telegram only delivers reactions when the bot is an admin."
+          />
+        ) : (
+          <Table>
+            <TableHead>
+              <TableRow>
+                <TableHeaderCell>When</TableHeaderCell>
+                <TableHeaderCell>User</TableHeaderCell>
+                <TableHeaderCell>Reaction</TableHeaderCell>
+                <TableHeaderCell>Feedback</TableHeaderCell>
+                <TableHeaderCell>Model</TableHeaderCell>
+                <TableHeaderCell>Incorporated</TableHeaderCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {feedbacks.map((feedback) => (
+                <TableRow key={feedback.id}>
+                  <TableCell className="whitespace-nowrap text-muted">
+                    <Timestamp iso={feedback.createdAt} />
+                  </TableCell>
+                  <TableCell>{feedback.userLabel}</TableCell>
+                  <TableCell>
+                    <Badge tone={feedback.reaction === "up" ? "success" : "danger"}>
+                      {feedback.reaction === "up" ? "👍" : "👎"}
+                    </Badge>
+                  </TableCell>
+                  <TableCell className="max-w-md">
+                    {feedback.feedback ? (
+                      <div className="space-y-1">
+                        <span className="whitespace-pre-wrap">{feedback.feedback}</span>
+                        <Reflection feedback={feedback} />
+                      </div>
+                    ) : (
+                      <Badge tone={STATUS_TONE[feedback.status]}>
+                        {STATUS_LABEL[feedback.status]}
                       </Badge>
-                    </TableCell>
-                    <TableCell className="max-w-md">
-                      {feedback.feedback ? (
-                        <div className="space-y-1">
-                          <span className="whitespace-pre-wrap">{feedback.feedback}</span>
-                          <Reflection feedback={feedback} />
-                        </div>
-                      ) : (
-                        <Badge tone={STATUS_TONE[feedback.status]}>
-                          {STATUS_LABEL[feedback.status]}
-                        </Badge>
-                      )}
-                    </TableCell>
-                    <TableCell className="whitespace-nowrap text-muted">{feedback.model}</TableCell>
-                    <TableCell>
-                      <IncorporationBadges feedback={feedback} />
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <div className="space-y-1">
-            <CardTitle>Communication preferences</CardTitle>
-            <CardDescription>
-              The latest learned likes/dislikes per user — injected into every reply to that
-              person.
-            </CardDescription>
-          </div>
-        </CardHeader>
-        <CardContent>
-          {preferences.length === 0 ? (
-            <EmptyState
-              icon={SlidersHorizontal}
-              title="No preferences yet"
-              description="The daily job distills completed feedback into per-user preferences."
-            />
-          ) : (
-            <Table>
-              <TableHead>
-                <TableRow>
-                  <TableHeaderCell>User</TableHeaderCell>
-                  <TableHeaderCell>Likes</TableHeaderCell>
-                  <TableHeaderCell>Dislikes</TableHeaderCell>
-                  <TableHeaderCell>Version</TableHeaderCell>
-                  <TableHeaderCell>Model</TableHeaderCell>
-                  <TableHeaderCell>Updated</TableHeaderCell>
+                    )}
+                  </TableCell>
+                  <TableCell className="whitespace-nowrap text-muted">{feedback.model}</TableCell>
+                  <TableCell>
+                    <IncorporationBadges feedback={feedback} />
+                  </TableCell>
                 </TableRow>
-              </TableHead>
-              <TableBody>
-                {preferences.map((preference) => (
-                  <TableRow key={preference.id}>
-                    <TableCell className="whitespace-nowrap">{preference.userLabel}</TableCell>
-                    <TableCell className="max-w-sm whitespace-pre-wrap">
-                      {preference.likes || <span className="text-muted">—</span>}
-                    </TableCell>
-                    <TableCell className="max-w-sm whitespace-pre-wrap">
-                      {preference.dislikes || <span className="text-muted">—</span>}
-                    </TableCell>
-                    <TableCell>
-                      <Badge tone="primary">v{preference.version}</Badge>
-                    </TableCell>
-                    <TableCell className="whitespace-nowrap text-muted">
-                      {preference.model}
-                    </TableCell>
-                    <TableCell className="whitespace-nowrap text-muted">
-                      <Timestamp iso={preference.createdAt} />
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <div className="space-y-1">
-            <CardTitle className="flex items-center gap-2">
-              Self-corrections
-              {correction ? <Badge tone="primary">v{correction.version}</Badge> : null}
-            </CardTitle>
-            <CardDescription>
-              Global guidelines distilled from feedback across all users — composed into the
-              system prompt on every reply.
-            </CardDescription>
-          </div>
-        </CardHeader>
-        <CardContent>
-          {correction ? (
-            <div className="space-y-2">
-              <p className="whitespace-pre-wrap text-sm">{correction.correction}</p>
-              <p className="text-xs text-muted">
-                {correction.model} · <Timestamp iso={correction.createdAt} />
-              </p>
-            </div>
-          ) : (
-            <EmptyState
-              icon={Wand2}
-              title="No corrections yet"
-              description="The daily job distills common complaints and praise into correction guidelines."
-            />
-          )}
-        </CardContent>
-      </Card>
-    </div>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+      </CardContent>
+    </Card>
   );
+
+  const preferencesTab = (
+    <Card>
+      <CardHeader>
+        <CardDescription>
+          The latest learned likes/dislikes per user — injected into every reply to that
+          person.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {preferences.length === 0 ? (
+          <EmptyState
+            icon={SlidersHorizontal}
+            title="No preferences yet"
+            description="The daily job distills completed feedback into per-user preferences."
+          />
+        ) : (
+          <Table>
+            <TableHead>
+              <TableRow>
+                <TableHeaderCell>User</TableHeaderCell>
+                <TableHeaderCell>Likes</TableHeaderCell>
+                <TableHeaderCell>Dislikes</TableHeaderCell>
+                <TableHeaderCell>Version</TableHeaderCell>
+                <TableHeaderCell>Model</TableHeaderCell>
+                <TableHeaderCell>Updated</TableHeaderCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {preferences.map((preference) => (
+                <TableRow key={preference.id}>
+                  <TableCell className="whitespace-nowrap">{preference.userLabel}</TableCell>
+                  <TableCell className="max-w-sm whitespace-pre-wrap">
+                    {preference.likes || <span className="text-muted">—</span>}
+                  </TableCell>
+                  <TableCell className="max-w-sm whitespace-pre-wrap">
+                    {preference.dislikes || <span className="text-muted">—</span>}
+                  </TableCell>
+                  <TableCell>
+                    <Badge tone="primary">v{preference.version}</Badge>
+                  </TableCell>
+                  <TableCell className="whitespace-nowrap text-muted">
+                    {preference.model}
+                  </TableCell>
+                  <TableCell className="whitespace-nowrap text-muted">
+                    <Timestamp iso={preference.createdAt} />
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+      </CardContent>
+    </Card>
+  );
+
+  const correctionsTab = (
+    <Card>
+      <CardHeader>
+        <CardDescription>
+          Global guidelines distilled from feedback across all users — composed into the
+          system prompt on every reply.
+        </CardDescription>
+        <CardAction>
+          {correction ? <Badge tone="primary">v{correction.version}</Badge> : null}
+        </CardAction>
+      </CardHeader>
+      <CardContent>
+        {correction ? (
+          <div className="space-y-2">
+            <p className="whitespace-pre-wrap text-sm">{correction.correction}</p>
+            <p className="text-xs text-muted">
+              {correction.model} · <Timestamp iso={correction.createdAt} />
+            </p>
+          </div>
+        ) : (
+          <EmptyState
+            icon={Wand2}
+            title="No corrections yet"
+            description="The daily job distills common complaints and praise into correction guidelines."
+          />
+        )}
+      </CardContent>
+    </Card>
+  );
+
+  const tabs: TabItem[] = [
+    { id: "feedback", label: `Feedback (${feedbacks.length})`, content: feedbackTab },
+    { id: "preferences", label: `Preferences (${preferences.length})`, content: preferencesTab },
+    { id: "corrections", label: "Self-corrections", content: correctionsTab },
+  ];
+
+  return <Tabs tabs={tabs} />;
 }

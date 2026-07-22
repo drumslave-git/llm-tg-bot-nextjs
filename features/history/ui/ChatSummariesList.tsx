@@ -6,7 +6,6 @@ import {
   CardContent,
   CardDescription,
   CardHeader,
-  CardTitle,
   EmptyState,
   ScrollArea,
 } from "@/components/ui";
@@ -19,7 +18,7 @@ import type { ChatSummaryRecord } from "../server/summaries-repository";
  * The message ids are shown, not hidden: they are what the bot follows back to
  * the original messages, so an operator debugging a bad recall can see exactly
  * which messages a topic claims to summarize and check it against the mirror
- * above.
+ * in the Messages tab.
  */
 export function ChatSummariesList({
   summaries,
@@ -29,11 +28,6 @@ export function ChatSummariesList({
   if (summaries.length === 0) {
     return (
       <Card>
-        <CardHeader>
-          <div className="space-y-1">
-            <CardTitle>Topic summaries</CardTitle>
-          </div>
-        </CardHeader>
         <CardContent>
           <EmptyState
             icon={Sparkles}
@@ -56,13 +50,10 @@ export function ChatSummariesList({
   return (
     <Card>
       <CardHeader>
-        <div className="space-y-1">
-          <CardTitle>Topic summaries</CardTitle>
-          <CardDescription>
-            What the bot searches to recall this conversation beyond the last 24
-            hours. Each topic links back to the messages it came from.
-          </CardDescription>
-        </div>
+        <CardDescription>
+          What the bot searches to recall this conversation beyond the last 24
+          hours. Each topic links back to the messages it came from.
+        </CardDescription>
       </CardHeader>
       <CardContent>
         <ScrollArea className="space-y-6">

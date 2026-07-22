@@ -12,7 +12,6 @@ import {
   CardContent,
   CardDescription,
   CardHeader,
-  CardTitle,
   EmptyState,
   ScrollArea,
   Table,
@@ -21,7 +20,9 @@ import {
   TableHead,
   TableHeaderCell,
   TableRow,
+  Tabs,
   Textarea,
+  type TabItem,
 } from "@/components/ui";
 import { useLiveRefresh } from "@/components/realtime/useLiveRefresh";
 import { Timestamp } from "@/components/time/Timestamp";
@@ -216,151 +217,152 @@ export function MemoryPanel({ view }: { view: MemoryView }) {
   useLiveRefresh("memory");
   const { entries, users, general, generalPendingNotes } = view;
 
-  return (
-    <div className="space-y-6">
-      <Card>
-        <CardHeader>
-          <div className="space-y-1">
-            <CardTitle>Pending notes</CardTitle>
-            <CardDescription>
-              Facts the bot saved during conversation, waiting for the nightly
-              job to fold them into durable memory. They are not part of memory
-              yet — the bot cannot recall them until they are consolidated.
-              Discard one here if it should never have been remembered.
-            </CardDescription>
-          </div>
-        </CardHeader>
-        <CardContent>
-          {entries.length === 0 ? (
-            <EmptyState
-              icon={Inbox}
-              title="Nothing pending"
-              description="Every saved fact has been consolidated."
-            />
-          ) : (
-            <Table>
-              <TableHead>
-                <TableRow>
-                  <TableHeaderCell>Scope</TableHeaderCell>
-                  <TableHeaderCell>Fact</TableHeaderCell>
-                  <TableHeaderCell>Saved</TableHeaderCell>
-                  <TableHeaderCell>
-                    <span className="sr-only">Actions</span>
-                  </TableHeaderCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {entries.map((entry) => (
-                  <PendingRow
-                    key={entry.id}
-                    id={entry.id}
-                    scope={entry.scope}
-                    userLabel={entry.userLabel}
-                    content={entry.content}
-                    createdAt={entry.createdAt}
-                  />
-                ))}
-              </TableBody>
-            </Table>
-          )}
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <div className="space-y-1">
-            <CardTitle>People</CardTitle>
-            <CardDescription>
-              What the bot durably knows about each person — one merged document
-              each, injected into the replies of the chats they take part in.
-            </CardDescription>
-          </div>
-        </CardHeader>
-        <CardContent>
-          {users.length === 0 ? (
-            <EmptyState
-              icon={Brain}
-              title="No one remembered yet"
-              description="The bot stores a fact about someone when it is told to remember one, or when a person reveals something lastingly true."
-            />
-          ) : (
-            <ScrollArea>
-              <ul className="space-y-6">
-                {users.map((user) => (
-                  <li
-                    key={user.userId}
-                    className="space-y-2 border-b border-border pb-6 last:border-0 last:pb-0"
-                  >
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-medium text-foreground">
-                        {user.userLabel}
-                      </span>
-                      <EmbeddedBadge embedded={user.embedded} />
-                      {user.pendingNotes > 0 ? (
-                        <Badge tone="warning">
-                          {user.pendingNotes} note
-                          {user.pendingNotes === 1 ? "" : "s"} pending
-                        </Badge>
-                      ) : null}
-                      <span className="text-sm text-muted">
-                        updated <Timestamp iso={user.updatedAt} />
-                      </span>
-                    </div>
-                    <EditableMemory
-                      content={user.content}
-                      saveUrl={`/api/memory/users/${user.userId}`}
-                      deleteUrl={`/api/memory/users/${user.userId}`}
-                      deleteLabel="Forget this person"
-                    />
-                  </li>
-                ))}
-              </ul>
-            </ScrollArea>
-          )}
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <div className="space-y-1">
-            <CardTitle>General knowledge</CardTitle>
-            <CardDescription>
-              One document of shared facts — definitions, rules, conventions,
-              and facts about people the bot cannot file under a person of their
-              own. Injected into every reply.
-            </CardDescription>
-          </div>
-          <CardAction>
-            {generalPendingNotes > 0 ? (
-              <Badge tone="warning">
-                {generalPendingNotes} note{generalPendingNotes === 1 ? "" : "s"}{" "}
-                pending
-              </Badge>
-            ) : null}
-          </CardAction>
-        </CardHeader>
-        <CardContent>
-          {general == null ? (
-            <EmptyState
-              icon={Library}
-              title="No general knowledge yet"
-              description="The bot adds to this document when it learns something shared — a definition, a rule, a convention — or a fact about someone it cannot remember as a person."
-            />
-          ) : (
-            <div className="space-y-2">
-              <span className="text-sm text-muted">
-                updated <Timestamp iso={general.updatedAt} />
-              </span>
-              <EditableMemory
-                content={general.content}
-                saveUrl="/api/memory/general"
-                deleteUrl="/api/memory/general"
-                deleteLabel="Forget all general knowledge"
-              />
-            </div>
-          )}
-        </CardContent>
-      </Card>
-    </div>
+  const pendingTab = (
+    <Card>
+      <CardHeader>
+        <CardDescription>
+          Facts the bot saved during conversation, waiting for the nightly
+          job to fold them into durable memory. They are not part of memory
+          yet — the bot cannot recall them until they are consolidated.
+          Discard one here if it should never have been remembered.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {entries.length === 0 ? (
+          <EmptyState
+            icon={Inbox}
+            title="Nothing pending"
+            description="Every saved fact has been consolidated."
+          />
+        ) : (
+          <Table>
+            <TableHead>
+              <TableRow>
+                <TableHeaderCell>Scope</TableHeaderCell>
+                <TableHeaderCell>Fact</TableHeaderCell>
+                <TableHeaderCell>Saved</TableHeaderCell>
+                <TableHeaderCell>
+                  <span className="sr-only">Actions</span>
+                </TableHeaderCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {entries.map((entry) => (
+                <PendingRow
+                  key={entry.id}
+                  id={entry.id}
+                  scope={entry.scope}
+                  userLabel={entry.userLabel}
+                  content={entry.content}
+                  createdAt={entry.createdAt}
+                />
+              ))}
+            </TableBody>
+          </Table>
+        )}
+      </CardContent>
+    </Card>
   );
+
+  const peopleTab = (
+    <Card>
+      <CardHeader>
+        <CardDescription>
+          What the bot durably knows about each person — one merged document
+          each, injected into the replies of the chats they take part in.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {users.length === 0 ? (
+          <EmptyState
+            icon={Brain}
+            title="No one remembered yet"
+            description="The bot stores a fact about someone when it is told to remember one, or when a person reveals something lastingly true."
+          />
+        ) : (
+          <ScrollArea>
+            <ul className="space-y-6">
+              {users.map((user) => (
+                <li
+                  key={user.userId}
+                  className="space-y-2 border-b border-border pb-6 last:border-0 last:pb-0"
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-medium text-foreground">
+                      {user.userLabel}
+                    </span>
+                    <EmbeddedBadge embedded={user.embedded} />
+                    {user.pendingNotes > 0 ? (
+                      <Badge tone="warning">
+                        {user.pendingNotes} note
+                        {user.pendingNotes === 1 ? "" : "s"} pending
+                      </Badge>
+                    ) : null}
+                    <span className="text-sm text-muted">
+                      updated <Timestamp iso={user.updatedAt} />
+                    </span>
+                  </div>
+                  <EditableMemory
+                    content={user.content}
+                    saveUrl={`/api/memory/users/${user.userId}`}
+                    deleteUrl={`/api/memory/users/${user.userId}`}
+                    deleteLabel="Forget this person"
+                  />
+                </li>
+              ))}
+            </ul>
+          </ScrollArea>
+        )}
+      </CardContent>
+    </Card>
+  );
+
+  const generalTab = (
+    <Card>
+      <CardHeader>
+        <CardDescription>
+          One document of shared facts — definitions, rules, conventions,
+          and facts about people the bot cannot file under a person of their
+          own. Injected into every reply.
+        </CardDescription>
+        <CardAction>
+          {generalPendingNotes > 0 ? (
+            <Badge tone="warning">
+              {generalPendingNotes} note{generalPendingNotes === 1 ? "" : "s"}{" "}
+              pending
+            </Badge>
+          ) : null}
+        </CardAction>
+      </CardHeader>
+      <CardContent>
+        {general == null ? (
+          <EmptyState
+            icon={Library}
+            title="No general knowledge yet"
+            description="The bot adds to this document when it learns something shared — a definition, a rule, a convention — or a fact about someone it cannot remember as a person."
+          />
+        ) : (
+          <div className="space-y-2">
+            <span className="text-sm text-muted">
+              updated <Timestamp iso={general.updatedAt} />
+            </span>
+            <EditableMemory
+              content={general.content}
+              saveUrl="/api/memory/general"
+              deleteUrl="/api/memory/general"
+              deleteLabel="Forget all general knowledge"
+            />
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+
+  const tabs: TabItem[] = [
+    { id: "pending", label: `Pending notes (${entries.length})`, content: pendingTab },
+    { id: "people", label: `People (${users.length})`, content: peopleTab },
+    { id: "general", label: "General knowledge", content: generalTab },
+  ];
+
+  return <Tabs tabs={tabs} />;
 }

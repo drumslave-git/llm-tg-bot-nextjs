@@ -2,7 +2,7 @@ import { ArrowLeft, Database, Download } from "lucide-react";
 import Link from "next/link";
 
 import { getDb } from "@/db/drizzle";
-import { Button, EmptyState, PageHeader } from "@/components/ui";
+import { Button, EmptyState, PageHeader, Tabs } from "@/components/ui";
 import { LiveIndicator } from "@/components/realtime/LiveIndicator";
 import { getChatHistory } from "@/features/history/server/service";
 import type { ChatMessageWithTrace } from "@/features/history/server/schema";
@@ -75,10 +75,20 @@ export default async function ChatHistoryPage({
             description={`No stored history for chat ${chatId}.`}
           />
         ) : (
-          <div className="space-y-6">
-            <ChatHistoryTable chatId={chatId} messages={messages} />
-            <ChatSummariesList summaries={summaries} />
-          </div>
+          <Tabs
+            tabs={[
+              {
+                id: "messages",
+                label: `Messages (${messages.length})`,
+                content: <ChatHistoryTable chatId={chatId} messages={messages} />,
+              },
+              {
+                id: "summaries",
+                label: `Summaries (${summaries.length})`,
+                content: <ChatSummariesList summaries={summaries} />,
+              },
+            ]}
+          />
         )
       ) : (
         <EmptyState

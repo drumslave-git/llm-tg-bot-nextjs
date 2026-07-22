@@ -207,6 +207,30 @@ Next: **Priority 12 — Image generation** (Analytics landed 2026-07-15 as the n
 
 ### Session log
 
+- 2026-07-22 (user-requested — tabs instead of stacked sections, done): per the
+  user, pages that stacked distinct content sections vertically now use the
+  shared `Tabs` component (`components/ui/Tabs.tsx`, already proven on
+  Settings). Job status cards stay above the tabs — they are page-level status,
+  not content sections. Card titles that would duplicate their tab label were
+  dropped (description kept; version/pending badges moved to `CardAction`).
+  - `app/(dashboard)/history/[chatId]/page.tsx`: `Messages (N)` /
+    `Summaries (N)` tabs (the user's example).
+  - `app/(dashboard)/groups/[chatId]/page.tsx`: `Settings` (language + notes
+    editors) / `Members (N)` tabs.
+  - `features/memory/ui/MemoryPanel.tsx`: `Pending notes (N)` / `People (N)` /
+    `General knowledge` tabs.
+  - `features/self-improvement/ui/SelfImprovementPanel.tsx`: `Feedback (N)` /
+    `Preferences (N)` / `Self-corrections` tabs.
+  - `features/history/ui/ChatSummariesList.tsx`,
+    `features/known-groups/ui/GroupMembersCard.tsx`: redundant card titles
+    removed.
+  - Left as-is deliberately: Analytics (a card grid, not sequential sections),
+    Vision and History overview (one job card + one content section), Browser
+    agent (start-run form + list is action+data, not two sections).
+  - Proof: typecheck ✓, lint ✓, 618 unit tests ✓; dev server boots clean.
+    In-browser check stopped at the operator login (agent cannot enter
+    passwords) — worth a quick visual pass on /memory and a chat history page.
+
 - 2026-07-22 (user-requested — chat-day transcript quality + summarizer overflow
   recovery, done): triggered by live trace 13a5eb18 (history-summaries, chat-day
   2026-07-16): a Cyrillic-heavy day batched at 24k chars still overflowed the

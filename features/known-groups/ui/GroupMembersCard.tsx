@@ -6,7 +6,6 @@ import {
   CardContent,
   CardDescription,
   CardHeader,
-  CardTitle,
   EmptyState,
   Table,
   TableBody,
@@ -28,13 +27,10 @@ export function GroupMembersCard({ members }: { members: GroupMember[] }) {
   return (
     <Card>
       <CardHeader>
-        <div>
-          <CardTitle>Members</CardTitle>
-          <CardDescription>
-            Known users seen in this group. This roster is injected into the model&apos;s context so
-            it can recognize who is who.
-          </CardDescription>
-        </div>
+        <CardDescription>
+          Known users seen in this group. This roster is injected into the model&apos;s context so
+          it can recognize who is who.
+        </CardDescription>
       </CardHeader>
       <CardContent>
         {members.length === 0 ? (

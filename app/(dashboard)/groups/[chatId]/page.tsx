@@ -2,7 +2,7 @@ import { ArrowLeft, Database } from "lucide-react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
-import { Button, EmptyState, PageHeader } from "@/components/ui";
+import { Button, EmptyState, PageHeader, Tabs } from "@/components/ui";
 import { LiveIndicator } from "@/components/realtime/LiveIndicator";
 import { formatKnownGroupLabel } from "@/features/known-groups/format";
 import { getGroupWithMembers } from "@/features/known-groups/server/service";
@@ -55,11 +55,25 @@ export default async function GroupDetailPage({
       />
 
       {detail ? (
-        <div className="flex flex-col gap-6">
-          <GroupLanguageEditor group={detail.group} />
-          <GroupNotesEditor group={detail.group} />
-          <GroupMembersCard members={detail.members} />
-        </div>
+        <Tabs
+          tabs={[
+            {
+              id: "settings",
+              label: "Settings",
+              content: (
+                <div className="flex flex-col gap-6">
+                  <GroupLanguageEditor group={detail.group} />
+                  <GroupNotesEditor group={detail.group} />
+                </div>
+              ),
+            },
+            {
+              id: "members",
+              label: `Members (${detail.members.length})`,
+              content: <GroupMembersCard members={detail.members} />,
+            },
+          ]}
+        />
       ) : (
         <EmptyState
           icon={Database}
