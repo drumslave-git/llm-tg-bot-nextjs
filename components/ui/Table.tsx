@@ -1,10 +1,7 @@
-import type {
-  HTMLAttributes,
-  TdHTMLAttributes,
-  ThHTMLAttributes,
-} from "react";
+import type { HTMLAttributes, TdHTMLAttributes, ThHTMLAttributes } from "react";
 
 import { cn } from "@/lib/cn";
+import { ScrollArea } from "./ScrollArea";
 
 /**
  * Shared table primitives — the presentational chrome (scroll container, borders,
@@ -25,7 +22,7 @@ const VALIGN: Record<"top" | "middle" | "bottom", string> = {
   bottom: "align-bottom",
 };
 
-/** Horizontally-scrollable, bordered wrapper around a `<table>`. */
+/** Scrollable (both axes, height-capped), bordered wrapper around a `<table>`. */
 export function Table({
   className,
   minWidth,
@@ -34,7 +31,7 @@ export function Table({
 }: HTMLAttributes<HTMLTableElement> & { minWidth?: number | string }) {
   const min = typeof minWidth === "number" ? `${minWidth}px` : minWidth;
   return (
-    <div className="overflow-x-auto rounded-lg border border-border">
+    <ScrollArea className="overflow-x-auto rounded-lg border border-border">
       <table
         className={cn("w-full border-collapse text-sm", className)}
         style={min ? { minWidth: min } : undefined}
@@ -42,15 +39,21 @@ export function Table({
       >
         {children}
       </table>
-    </div>
+    </ScrollArea>
   );
 }
 
-export function TableHead({ className, ...props }: HTMLAttributes<HTMLTableSectionElement>) {
+export function TableHead({
+  className,
+  ...props
+}: HTMLAttributes<HTMLTableSectionElement>) {
   return <thead className={className} {...props} />;
 }
 
-export function TableBody({ className, ...props }: HTMLAttributes<HTMLTableSectionElement>) {
+export function TableBody({
+  className,
+  ...props
+}: HTMLAttributes<HTMLTableSectionElement>) {
   return <tbody className={className} {...props} />;
 }
 
@@ -63,14 +66,18 @@ export function TableRow({
   header = false,
   interactive = false,
   ...props
-}: HTMLAttributes<HTMLTableRowElement> & { header?: boolean; interactive?: boolean }) {
+}: HTMLAttributes<HTMLTableRowElement> & {
+  header?: boolean;
+  interactive?: boolean;
+}) {
   return (
     <tr
       className={cn(
         header
           ? "border-b border-border"
           : "border-b border-border last:border-0",
-        interactive && "group relative cursor-pointer transition-colors hover:bg-surface-hover",
+        interactive &&
+          "group relative cursor-pointer transition-colors hover:bg-surface-hover",
         className,
       )}
       {...props}
@@ -83,7 +90,9 @@ export function TableHeaderCell({
   className,
   align = "left",
   ...props
-}: ThHTMLAttributes<HTMLTableCellElement> & { align?: "left" | "center" | "right" }) {
+}: ThHTMLAttributes<HTMLTableCellElement> & {
+  align?: "left" | "center" | "right";
+}) {
   return (
     <th
       className={cn(
@@ -107,6 +116,9 @@ export function TableCell({
   valign?: "top" | "middle" | "bottom";
 }) {
   return (
-    <td className={cn("px-3 py-2", ALIGN[align], VALIGN[valign], className)} {...props} />
+    <td
+      className={cn("px-3 py-2", ALIGN[align], VALIGN[valign], className)}
+      {...props}
+    />
   );
 }

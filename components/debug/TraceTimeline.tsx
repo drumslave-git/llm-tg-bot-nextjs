@@ -1,5 +1,6 @@
 import type { TraceEvent, TraceEventType, TraceLevel } from "@/lib/trace";
 import { Timestamp } from "@/components/time/Timestamp";
+import { ScrollArea } from "@/components/ui";
 import { formatDuration } from "@/lib/format";
 import { JsonBlock } from "./JsonBlock";
 
@@ -40,10 +41,14 @@ const LEVEL_TEXT: Record<TraceLevel, string> = {
 /** Small usage summary chips for LLM events — neutral, matching the type badge. */
 function UsageLine({ usage }: { usage: NonNullable<TraceEvent["usage"]> }) {
   const stats: Array<[label: string, value: string]> = [];
-  if (usage.promptTokens !== undefined) stats.push(["prompt", String(usage.promptTokens)]);
-  if (usage.completionTokens !== undefined) stats.push(["completion", String(usage.completionTokens)]);
-  if (usage.totalTokens !== undefined) stats.push(["total", String(usage.totalTokens)]);
-  if (usage.latencyMs !== undefined) stats.push(["latency", `${Math.round(usage.latencyMs)}ms`]);
+  if (usage.promptTokens !== undefined)
+    stats.push(["prompt", String(usage.promptTokens)]);
+  if (usage.completionTokens !== undefined)
+    stats.push(["completion", String(usage.completionTokens)]);
+  if (usage.totalTokens !== undefined)
+    stats.push(["total", String(usage.totalTokens)]);
+  if (usage.latencyMs !== undefined)
+    stats.push(["latency", `${Math.round(usage.latencyMs)}ms`]);
   if (!usage.model && stats.length === 0) return null;
   return (
     <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
@@ -82,42 +87,55 @@ export function TraceTimeline({
   startedAt: string;
 }) {
   if (events.length === 0) {
-    return <p className="text-sm text-faint">No events recorded for this trace.</p>;
+    return (
+      <p className="text-sm text-faint">No events recorded for this trace.</p>
+    );
   }
 
   return (
-    <ol className="space-y-3">
-      {events.map((event, index) => {
-        const previousTs = index === 0 ? startedAt : events[index - 1].ts;
-        const took = formatDuration(previousTs, event.ts);
-        return (
-          <li key={event.id} className="rounded-md border border-border bg-surface px-3 py-2.5">
-            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-              <span
-                className={`h-2 w-2 shrink-0 rounded-full ${LEVEL_DOT[event.level]}`}
-                aria-hidden
-              />
-              <span className="font-mono text-xs text-faint tabular-nums">#{event.seq}</span>
-              <span className="rounded bg-surface-2 px-1.5 py-0.5 font-mono text-xs text-muted">
-                {TYPE_CATEGORY[event.type]}
-              </span>
-              <span className={`text-sm font-medium ${LEVEL_TEXT[event.level]}`}>
-                {event.message}
-              </span>
-              <span className="ml-auto flex items-center gap-2 font-mono text-xs text-faint tabular-nums">
-                {took ? <span title="Time since previous step">+{took}</span> : null}
-                <Timestamp iso={event.ts} timeOnly />
-              </span>
-            </div>
-            {event.usage ? <UsageLine usage={event.usage} /> : null}
-            {event.data !== undefined && event.data !== null ? (
-              <div className="mt-2">
-                <JsonBlock value={event.data} />
+    <ScrollArea>
+      <ol className="space-y-3">
+        {events.map((event, index) => {
+          const previousTs = index === 0 ? startedAt : events[index - 1].ts;
+          const took = formatDuration(previousTs, event.ts);
+          return (
+            <li
+              key={event.id}
+              className="rounded-md border border-border bg-surface px-3 py-2.5"
+            >
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <span
+                  className={`h-2 w-2 shrink-0 rounded-full ${LEVEL_DOT[event.level]}`}
+                  aria-hidden
+                />
+                <span className="font-mono text-xs text-faint tabular-nums">
+                  #{event.seq}
+                </span>
+                <span className="rounded bg-surface-2 px-1.5 py-0.5 font-mono text-xs text-muted">
+                  {TYPE_CATEGORY[event.type]}
+                </span>
+                <span
+                  className={`text-sm font-medium ${LEVEL_TEXT[event.level]}`}
+                >
+                  {event.message}
+                </span>
+                <span className="ml-auto flex items-center gap-2 font-mono text-xs text-faint tabular-nums">
+                  {took ? (
+                    <span title="Time since previous step">+{took}</span>
+                  ) : null}
+                  <Timestamp iso={event.ts} timeOnly />
+                </span>
               </div>
-            ) : null}
-          </li>
-        );
-      })}
-    </ol>
+              {event.usage ? <UsageLine usage={event.usage} /> : null}
+              {event.data !== undefined && event.data !== null ? (
+                <div className="mt-2">
+                  <JsonBlock value={event.data} />
+                </div>
+              ) : null}
+            </li>
+          );
+        })}
+      </ol>
+    </ScrollArea>
   );
 }

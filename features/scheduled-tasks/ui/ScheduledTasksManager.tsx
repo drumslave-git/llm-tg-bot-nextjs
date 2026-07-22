@@ -16,6 +16,7 @@ import {
   EmptyState,
   Field,
   Input,
+  ScrollArea,
   Select,
   Switch,
 } from "@/components/ui";
@@ -26,7 +27,11 @@ import type { ApiErrorBody } from "@/lib/api-error";
 
 import { describeSchedule } from "../schedule";
 import type { TaskSchedulerJobInfo } from "../server/scheduler";
-import { MAX_ONE_SHOT_ATTEMPTS, type ScheduledTask, type ScheduleKind } from "../types";
+import {
+  MAX_ONE_SHOT_ATTEMPTS,
+  type ScheduledTask,
+  type ScheduleKind,
+} from "../types";
 import { TaskSchedulerCard } from "./TaskSchedulerCard";
 
 /**
@@ -76,7 +81,9 @@ function ScheduleInputs({
     const has = value.weekdays.includes(day);
     onChange({
       ...value,
-      weekdays: has ? value.weekdays.filter((d) => d !== day) : [...value.weekdays, day].sort(),
+      weekdays: has
+        ? value.weekdays.filter((d) => d !== day)
+        : [...value.weekdays, day].sort(),
     });
   };
 
@@ -88,7 +95,12 @@ function ScheduleInputs({
             id={id}
             value={value.scheduleKind}
             disabled={disabled}
-            onChange={(e) => onChange({ ...value, scheduleKind: e.target.value as ScheduleKind })}
+            onChange={(e) =>
+              onChange({
+                ...value,
+                scheduleKind: e.target.value as ScheduleKind,
+              })
+            }
           >
             <option value="once">Once</option>
             <option value="daily">Daily</option>
@@ -121,7 +133,11 @@ function ScheduleInputs({
         </Field>
       ) : null}
       {value.scheduleKind === "weekly" ? (
-        <Field id={`${idPrefix}-weekdays`} label="Weekdays" className="sm:col-span-2">
+        <Field
+          id={`${idPrefix}-weekdays`}
+          label="Weekdays"
+          className="sm:col-span-2"
+        >
           {() => (
             <div className="flex flex-wrap gap-1.5">
               {WEEKDAY_LABELS.map((label, day) => (
@@ -166,7 +182,9 @@ function CreateForm({ chats }: { chats: ChatOption[] }) {
   const [chatId, setChatId] = useState(chats[0]?.chatId ?? "");
   const [instruction, setInstruction] = useState("");
   const [schedule, setSchedule] = useState<ScheduleFields>(EMPTY_SCHEDULE);
-  const [state, setState] = useState<"idle" | "saving" | { error: string }>("idle");
+  const [state, setState] = useState<"idle" | "saving" | { error: string }>(
+    "idle",
+  );
 
   async function create() {
     setState("saving");
@@ -174,7 +192,11 @@ function CreateForm({ chats }: { chats: ChatOption[] }) {
       const res = await fetch("/api/scheduled-tasks", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ chatId: chatId.trim(), instruction: instruction.trim(), ...schedulePayload(schedule) }),
+        body: JSON.stringify({
+          chatId: chatId.trim(),
+          instruction: instruction.trim(),
+          ...schedulePayload(schedule),
+        }),
       });
       if (!res.ok) {
         setState({ error: await readError(res) });
@@ -198,11 +220,19 @@ function CreateForm({ chats }: { chats: ChatOption[] }) {
         <Field
           id="new-task-chat"
           label="Target chat"
-          hint={chats.length === 0 ? "No known chats yet — enter a Telegram chat id." : "The chat the reminder is delivered to."}
+          hint={
+            chats.length === 0
+              ? "No known chats yet — enter a Telegram chat id."
+              : "The chat the reminder is delivered to."
+          }
         >
           {({ id }) =>
             chats.length > 0 ? (
-              <Select id={id} value={chatId} onChange={(e) => setChatId(e.target.value)}>
+              <Select
+                id={id}
+                value={chatId}
+                onChange={(e) => setChatId(e.target.value)}
+              >
                 {chats.map((c) => (
                   <option key={c.chatId} value={c.chatId}>
                     {c.label}
@@ -238,16 +268,26 @@ function CreateForm({ chats }: { chats: ChatOption[] }) {
             />
           )}
         </Field>
-        <ScheduleInputs value={schedule} onChange={setSchedule} idPrefix="new-task" />
+        <ScheduleInputs
+          value={schedule}
+          onChange={setSchedule}
+          idPrefix="new-task"
+        />
         <div className="flex items-center gap-3">
           <Button
             onClick={create}
-            disabled={chatId.trim() === "" || instruction.trim().length < 2 || state === "saving"}
+            disabled={
+              chatId.trim() === "" ||
+              instruction.trim().length < 2 ||
+              state === "saving"
+            }
             leftIcon={<Plus className="h-4 w-4" />}
           >
             {state === "saving" ? "Creating…" : "Create task"}
           </Button>
-          {typeof state === "object" ? <span className="text-sm text-danger">{state.error}</span> : null}
+          {typeof state === "object" ? (
+            <span className="text-sm text-danger">{state.error}</span>
+          ) : null}
         </div>
       </CardContent>
     </Card>
@@ -319,8 +359,13 @@ function TaskCard({
     });
 
   const save = () =>
-    mutate(() => patch({ instruction: instruction.trim(), ...schedulePayload(schedule) }), () =>
-      setEditing(false),
+    mutate(
+      () =>
+        patch({
+          instruction: instruction.trim(),
+          ...schedulePayload(schedule),
+        }),
+      () => setEditing(false),
     );
 
   const toggleEnabled = () => mutate(() => patch({ enabled: !task.enabled }));
@@ -328,7 +373,9 @@ function TaskCard({
   const remove = () => {
     if (!confirm(`Delete this task? "${task.instruction}"`)) return;
     return mutate(() =>
-      fetch(`/api/scheduled-tasks/${encodeURIComponent(task.id)}`, { method: "DELETE" }),
+      fetch(`/api/scheduled-tasks/${encodeURIComponent(task.id)}`, {
+        method: "DELETE",
+      }),
     );
   };
 
@@ -341,10 +388,18 @@ function TaskCard({
         <CardContent className="space-y-3">
           <Field id={`edit-instruction-${task.id}`} label="Instruction">
             {({ id }) => (
-              <Input id={id} value={instruction} onChange={(e) => setInstruction(e.target.value)} />
+              <Input
+                id={id}
+                value={instruction}
+                onChange={(e) => setInstruction(e.target.value)}
+              />
             )}
           </Field>
-          <ScheduleInputs value={schedule} onChange={setSchedule} idPrefix={`edit-${task.id}`} />
+          <ScheduleInputs
+            value={schedule}
+            onChange={setSchedule}
+            idPrefix={`edit-${task.id}`}
+          />
           {error ? <p className="text-sm text-danger">{error}</p> : null}
         </CardContent>
         <CardFooter>
@@ -356,7 +411,13 @@ function TaskCard({
           >
             {busy ? "Saving…" : "Save"}
           </Button>
-          <Button size="sm" variant="ghost" onClick={resetEdit} disabled={busy} leftIcon={<X className="h-4 w-4" />}>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={resetEdit}
+            disabled={busy}
+            leftIcon={<X className="h-4 w-4" />}
+          >
             Cancel
           </Button>
         </CardFooter>
@@ -375,13 +436,16 @@ function TaskCard({
                 Enabled
               </Badge>
             ) : task.attempts >= MAX_ONE_SHOT_ATTEMPTS ? (
-              <Badge tone="danger">Failed — gave up after {task.attempts} attempts</Badge>
+              <Badge tone="danger">
+                Failed — gave up after {task.attempts} attempts
+              </Badge>
             ) : (
               <Badge tone="neutral">Disabled</Badge>
             )}
             {task.enabled && task.attempts > 0 ? (
               <Badge tone="warning">
-                Retrying — {task.attempts} failed attempt{task.attempts === 1 ? "" : "s"}
+                Retrying — {task.attempts} failed attempt
+                {task.attempts === 1 ? "" : "s"}
               </Badge>
             ) : null}
             {overdue ? (
@@ -410,7 +474,13 @@ function TaskCard({
           >
             <Pencil className="h-4 w-4" />
           </Button>
-          <Button size="icon" variant="ghost" onClick={remove} disabled={busy} aria-label="Delete task">
+          <Button
+            size="icon"
+            variant="ghost"
+            onClick={remove}
+            disabled={busy}
+            aria-label="Delete task"
+          >
             <Trash2 className="h-4 w-4 text-danger" />
           </Button>
         </CardAction>
@@ -423,13 +493,18 @@ function TaskCard({
                 Was due: <Timestamp iso={task.nextRunAt} /> — not delivered
               </span>
             ) : (
-              <>Next run: <Timestamp iso={task.nextRunAt} /></>
+              <>
+                Next run: <Timestamp iso={task.nextRunAt} />
+              </>
             )
           ) : (
             <span className="text-faint">No upcoming run.</span>
           )}
           {task.lastRunAt ? (
-            <> · Last run: <Timestamp iso={task.lastRunAt} /></>
+            <>
+              {" "}
+              · Last run: <Timestamp iso={task.lastRunAt} />
+            </>
           ) : null}
         </p>
         {error ? <p className="mt-2 text-sm text-danger">{error}</p> : null}
@@ -483,7 +558,7 @@ export function ScheduledTasksManager({
           description="Create a task above, or ask the bot in a chat to remind you about something."
         />
       ) : (
-        <div className="space-y-4">
+        <ScrollArea className="space-y-4">
           {tasks.map((t) => (
             <TaskCard
               key={t.id}
@@ -494,7 +569,7 @@ export function ScheduledTasksManager({
               paused={job.paused}
             />
           ))}
-        </div>
+        </ScrollArea>
       )}
     </div>
   );

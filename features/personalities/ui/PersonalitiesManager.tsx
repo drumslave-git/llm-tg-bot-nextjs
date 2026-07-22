@@ -1,6 +1,14 @@
 "use client";
 
-import { Check, Pencil, Plus, Star, Trash2, VenetianMask, X } from "lucide-react";
+import {
+  Check,
+  Pencil,
+  Plus,
+  Star,
+  Trash2,
+  VenetianMask,
+  X,
+} from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
@@ -16,6 +24,7 @@ import {
   EmptyState,
   Field,
   Input,
+  ScrollArea,
   Textarea,
 } from "@/components/ui";
 import type { ApiErrorBody } from "@/lib/api-error";
@@ -42,7 +51,9 @@ function CreateForm({ atLimit }: { atLimit: boolean }) {
   const router = useRouter();
   const [name, setName] = useState("");
   const [prompt, setPrompt] = useState("");
-  const [state, setState] = useState<"idle" | "saving" | { error: string }>("idle");
+  const [state, setState] = useState<"idle" | "saving" | { error: string }>(
+    "idle",
+  );
 
   async function create() {
     setState("saving");
@@ -114,7 +125,9 @@ function CreateForm({ atLimit }: { atLimit: boolean }) {
             {state === "saving" ? "Creating…" : "Create personality"}
           </Button>
           {atLimit ? (
-            <span className="text-sm text-muted">Limit of {MAX_PERSONALITIES} reached.</span>
+            <span className="text-sm text-muted">
+              Limit of {MAX_PERSONALITIES} reached.
+            </span>
           ) : null}
           {typeof state === "object" ? (
             <span className="text-sm text-danger">{state.error}</span>
@@ -125,7 +138,13 @@ function CreateForm({ atLimit }: { atLimit: boolean }) {
   );
 }
 
-function PersonalityCard({ personality, active }: { personality: Personality; active: boolean }) {
+function PersonalityCard({
+  personality,
+  active,
+}: {
+  personality: Personality;
+  active: boolean;
+}) {
   const router = useRouter();
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(personality.name);
@@ -170,9 +189,16 @@ function PersonalityCard({ personality, active }: { personality: Personality; ac
     );
 
   const remove = () => {
-    if (!confirm(`Delete personality "${personality.name}"? This cannot be undone.`)) return;
+    if (
+      !confirm(
+        `Delete personality "${personality.name}"? This cannot be undone.`,
+      )
+    )
+      return;
     return mutate(() =>
-      fetch(`/api/personalities/${encodeURIComponent(personality.id)}`, { method: "DELETE" }),
+      fetch(`/api/personalities/${encodeURIComponent(personality.id)}`, {
+        method: "DELETE",
+      }),
     );
   };
 
@@ -193,11 +219,22 @@ function PersonalityCard({ personality, active }: { personality: Personality; ac
         </CardHeader>
         <CardContent className="space-y-3">
           <Field id={`edit-name-${personality.id}`} label="Name">
-            {({ id }) => <Input id={id} value={name} onChange={(e) => setName(e.target.value)} />}
+            {({ id }) => (
+              <Input
+                id={id}
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+              />
+            )}
           </Field>
           <Field id={`edit-prompt-${personality.id}`} label="Prompt">
             {({ id }) => (
-              <Textarea id={id} rows={5} value={prompt} onChange={(e) => setPrompt(e.target.value)} />
+              <Textarea
+                id={id}
+                rows={5}
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+              />
             )}
           </Field>
           {error ? <p className="text-sm text-danger">{error}</p> : null}
@@ -238,7 +275,12 @@ function PersonalityCard({ personality, active }: { personality: Personality; ac
         </div>
         <CardAction>
           {active ? (
-            <Button size="sm" variant="ghost" onClick={() => setActive(null)} disabled={busy}>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setActive(null)}
+              disabled={busy}
+            >
               Deactivate
             </Button>
           ) : (
@@ -274,9 +316,13 @@ function PersonalityCard({ personality, active }: { personality: Personality; ac
       </CardHeader>
       <CardContent>
         {personality.prompt.trim() ? (
-          <p className="whitespace-pre-wrap text-sm text-muted">{personality.prompt}</p>
+          <p className="whitespace-pre-wrap text-sm text-muted">
+            {personality.prompt}
+          </p>
         ) : (
-          <p className="text-sm text-faint">No prompt — base system prompt only.</p>
+          <p className="text-sm text-faint">
+            No prompt — base system prompt only.
+          </p>
         )}
         {error ? <p className="mt-2 text-sm text-danger">{error}</p> : null}
       </CardContent>
@@ -302,11 +348,15 @@ export function PersonalitiesManager({
           description="Create a personality above, then set it active to shape every bot reply."
         />
       ) : (
-        <div className="space-y-4">
+        <ScrollArea className="space-y-4">
           {personalities.map((p) => (
-            <PersonalityCard key={p.id} personality={p} active={p.id === activeId} />
+            <PersonalityCard
+              key={p.id}
+              personality={p}
+              active={p.id === activeId}
+            />
           ))}
-        </div>
+        </ScrollArea>
       )}
     </div>
   );

@@ -16,6 +16,7 @@ import {
   Card,
   CardContent,
   EmptyState,
+  ScrollArea,
   Table,
   TableBody,
   TableCell,
@@ -27,7 +28,11 @@ import { Timestamp } from "@/components/time/Timestamp";
 import { cn } from "@/lib/cn";
 
 import { formatBytes } from "../files";
-import type { BrowserAgentRun, BrowserAgentRunDetail, BrowserRunStep } from "../types";
+import type {
+  BrowserAgentRun,
+  BrowserAgentRunDetail,
+  BrowserRunStep,
+} from "../types";
 import { runStatusBadge } from "./statusTone";
 
 /** One activity-feed row: tool, action, outcome. */
@@ -41,14 +46,23 @@ function StepRow({ step }: { step: BrowserRunStep }) {
           <X className="h-4 w-4 text-danger" />
         )}
       </span>
-      <span className="w-6 shrink-0 text-right font-mono text-xs text-faint">{step.seq}</span>
+      <span className="w-6 shrink-0 text-right font-mono text-xs text-faint">
+        {step.seq}
+      </span>
       <div className="min-w-0">
         <div className="flex flex-wrap items-baseline gap-x-2">
-          <code className="rounded bg-surface-2 px-1 py-0.5 text-xs text-muted">{step.tool}</code>
+          <code className="rounded bg-surface-2 px-1 py-0.5 text-xs text-muted">
+            {step.tool}
+          </code>
           <span className="text-foreground">{step.action}</span>
         </div>
         {step.summary ? (
-          <p className={cn("truncate text-xs", step.ok ? "text-muted" : "text-danger")}>
+          <p
+            className={cn(
+              "truncate text-xs",
+              step.ok ? "text-muted" : "text-danger",
+            )}
+          >
             {step.summary}
           </p>
         ) : null}
@@ -74,7 +88,9 @@ function RunDetail({ run }: { run: BrowserAgentRun }) {
 
     const tick = async () => {
       try {
-        const res = await fetch(`/api/browser/${run.id}`, { cache: "no-store" });
+        const res = await fetch(`/api/browser/${run.id}`, {
+          cache: "no-store",
+        });
         if (!res.ok) throw new Error(`Failed to load run (${res.status})`);
         const body = (await res.json()) as { data: BrowserAgentRunDetail };
         if (!activeRef.current) return;
@@ -110,7 +126,10 @@ function RunDetail({ run }: { run: BrowserAgentRun }) {
       {/* Live banner: what the agent is doing right now + download progress. */}
       {running ? (
         <div className="flex items-start gap-2 rounded-md border border-info/30 bg-info/10 px-3 py-2">
-          <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-info motion-reduce:animate-none" aria-hidden />
+          <Loader2
+            className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-info motion-reduce:animate-none"
+            aria-hidden
+          />
           <div className="min-w-0 text-sm">
             <p className="font-medium text-info">
               {view.status === "queued"
@@ -118,7 +137,9 @@ function RunDetail({ run }: { run: BrowserAgentRun }) {
                 : (live?.currentAction ?? "Working…")}
             </p>
             {live?.progress ? (
-              <p className="mt-0.5 font-mono text-xs text-muted">{live.progress}</p>
+              <p className="mt-0.5 font-mono text-xs text-muted">
+                {live.progress}
+              </p>
             ) : null}
           </div>
         </div>
@@ -126,7 +147,9 @@ function RunDetail({ run }: { run: BrowserAgentRun }) {
 
       {view.error ? (
         <div>
-          <p className="text-xs font-medium tracking-wide text-faint uppercase">Error</p>
+          <p className="text-xs font-medium tracking-wide text-faint uppercase">
+            Error
+          </p>
           <p className="mt-1 text-sm text-danger">{view.error}</p>
         </div>
       ) : null}
@@ -137,11 +160,13 @@ function RunDetail({ run }: { run: BrowserAgentRun }) {
           <p className="text-xs font-medium tracking-wide text-faint uppercase">
             Activity ({activity.length} step{activity.length === 1 ? "" : "s"})
           </p>
-          <ul className="mt-1 divide-y divide-border/60">
-            {activity.map((step) => (
-              <StepRow key={step.seq} step={step} />
-            ))}
-          </ul>
+          <ScrollArea className="mt-1">
+            <ul className="divide-y divide-border/60">
+              {activity.map((step) => (
+                <StepRow key={step.seq} step={step} />
+              ))}
+            </ul>
+          </ScrollArea>
         </div>
       ) : running ? (
         <p className="text-sm text-muted">No actions yet…</p>
@@ -149,14 +174,20 @@ function RunDetail({ run }: { run: BrowserAgentRun }) {
 
       {view.report ? (
         <div>
-          <p className="text-xs font-medium tracking-wide text-faint uppercase">Report</p>
-          <p className="mt-1 whitespace-pre-wrap text-sm text-foreground">{view.report}</p>
+          <p className="text-xs font-medium tracking-wide text-faint uppercase">
+            Report
+          </p>
+          <p className="mt-1 whitespace-pre-wrap text-sm text-foreground">
+            {view.report}
+          </p>
         </div>
       ) : null}
 
       {view.downloads.length > 0 ? (
         <div>
-          <p className="text-xs font-medium tracking-wide text-faint uppercase">Downloads</p>
+          <p className="text-xs font-medium tracking-wide text-faint uppercase">
+            Downloads
+          </p>
           <ul className="mt-1 space-y-1">
             {view.downloads.map((file, i) => (
               <li key={i} className="flex items-center gap-2 text-sm">
@@ -246,7 +277,11 @@ export function RunsList({ runs }: { runs: BrowserAgentRun[] }) {
               const badge = runStatusBadge(run.status);
               return (
                 <Fragment key={run.id}>
-                  <TableRow interactive onClick={() => toggle(run.id)} aria-expanded={open}>
+                  <TableRow
+                    interactive
+                    onClick={() => toggle(run.id)}
+                    aria-expanded={open}
+                  >
                     <TableCell valign="middle" className="text-muted">
                       {open ? (
                         <ChevronDown className="h-4 w-4" aria-hidden />
@@ -255,7 +290,9 @@ export function RunsList({ runs }: { runs: BrowserAgentRun[] }) {
                       )}
                     </TableCell>
                     <TableCell valign="middle" className="max-w-md">
-                      <span className={cn("line-clamp-2", !open && "truncate")}>{run.goal}</span>
+                      <span className={cn("line-clamp-2", !open && "truncate")}>
+                        {run.goal}
+                      </span>
                     </TableCell>
                     <TableCell valign="middle">
                       <Badge tone={badge.tone} dot={run.status === "running"}>
@@ -268,7 +305,10 @@ export function RunsList({ runs }: { runs: BrowserAgentRun[] }) {
                     <TableCell valign="middle" align="right">
                       {run.downloads.length}
                     </TableCell>
-                    <TableCell valign="middle" className="whitespace-nowrap text-muted">
+                    <TableCell
+                      valign="middle"
+                      className="whitespace-nowrap text-muted"
+                    >
                       <Timestamp iso={run.startedAt ?? run.createdAt} />
                     </TableCell>
                   </TableRow>

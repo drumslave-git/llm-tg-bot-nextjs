@@ -8,6 +8,7 @@ import {
   CardHeader,
   CardTitle,
   EmptyState,
+  ScrollArea,
 } from "@/components/ui";
 import type { ChatSummaryRecord } from "../server/summaries-repository";
 
@@ -20,7 +21,11 @@ import type { ChatSummaryRecord } from "../server/summaries-repository";
  * which messages a topic claims to summarize and check it against the mirror
  * above.
  */
-export function ChatSummariesList({ summaries }: { summaries: ChatSummaryRecord[] }) {
+export function ChatSummariesList({
+  summaries,
+}: {
+  summaries: ChatSummaryRecord[];
+}) {
   if (summaries.length === 0) {
     return (
       <Card>
@@ -54,41 +59,50 @@ export function ChatSummariesList({ summaries }: { summaries: ChatSummaryRecord[
         <div className="space-y-1">
           <CardTitle>Topic summaries</CardTitle>
           <CardDescription>
-            What the bot searches to recall this conversation beyond the last 24 hours. Each topic
-            links back to the messages it came from.
+            What the bot searches to recall this conversation beyond the last 24
+            hours. Each topic links back to the messages it came from.
           </CardDescription>
         </div>
       </CardHeader>
-      <CardContent className="space-y-6">
-        {[...byDate.entries()].map(([date, topics]) => (
-          <section key={date} className="space-y-3">
-            <h3 className="flex items-center gap-2 text-sm font-medium text-foreground">
-              {/* A summary date is a wall-clock day, not an instant — rendering it
+      <CardContent>
+        <ScrollArea className="space-y-6">
+          {[...byDate.entries()].map(([date, topics]) => (
+            <section key={date} className="space-y-3">
+              <h3 className="flex items-center gap-2 text-sm font-medium text-foreground">
+                {/* A summary date is a wall-clock day, not an instant — rendering it
                   through <Timestamp> would shift it by the viewer's zone offset. */}
-              <span>{date}</span>
-              <span className="text-xs font-normal text-muted">
-                {topics.length} {topics.length === 1 ? "topic" : "topics"}
-              </span>
-            </h3>
-            <ul className="space-y-3">
-              {topics.map((topic) => (
-                <li key={topic.id} className="rounded-md border border-border p-3">
-                  <p className="whitespace-pre-wrap text-sm text-foreground">{topic.content}</p>
-                  <div className="mt-2 flex flex-wrap items-center gap-2">
-                    {topic.embedded ? null : (
-                      <Badge tone="warning">Not embedded — keyword search only</Badge>
-                    )}
-                    <span className="text-xs text-muted">
-                      {topic.messageIds.length > 0
-                        ? `Messages: ${topic.messageIds.map((id) => `#${id}`).join(", ")}`
-                        : "No message ids"}
-                    </span>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          </section>
-        ))}
+                <span>{date}</span>
+                <span className="text-xs font-normal text-muted">
+                  {topics.length} {topics.length === 1 ? "topic" : "topics"}
+                </span>
+              </h3>
+              <ul className="space-y-3">
+                {topics.map((topic) => (
+                  <li
+                    key={topic.id}
+                    className="rounded-md border border-border p-3"
+                  >
+                    <p className="whitespace-pre-wrap text-sm text-foreground">
+                      {topic.content}
+                    </p>
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      {topic.embedded ? null : (
+                        <Badge tone="warning">
+                          Not embedded — keyword search only
+                        </Badge>
+                      )}
+                      <span className="text-xs text-muted">
+                        {topic.messageIds.length > 0
+                          ? `Messages: ${topic.messageIds.map((id) => `#${id}`).join(", ")}`
+                          : "No message ids"}
+                      </span>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ))}
+        </ScrollArea>
       </CardContent>
     </Card>
   );

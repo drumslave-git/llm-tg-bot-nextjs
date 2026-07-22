@@ -4,7 +4,12 @@
  */
 export { Avatar } from "./Avatar";
 export { Badge, type BadgeTone } from "./Badge";
-export { Button, type ButtonProps, type ButtonVariant, type ButtonSize } from "./Button";
+export {
+  Button,
+  type ButtonProps,
+  type ButtonVariant,
+  type ButtonSize,
+} from "./Button";
 export { Calendar, initialViewRange, type CalendarMode } from "./Calendar";
 export {
   Card,
@@ -22,6 +27,7 @@ export { Input, fieldBase } from "./Input";
 export { Label } from "./Label";
 export { PageHeader } from "./PageHeader";
 export { Progress, type ProgressTone } from "./Progress";
+export { ScrollArea } from "./ScrollArea";
 export { SegmentedControl, type SegmentedOption } from "./SegmentedControl";
 export { Select } from "./Select";
 export { Separator } from "./Separator";

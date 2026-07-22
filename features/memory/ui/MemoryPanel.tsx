@@ -14,6 +14,7 @@ import {
   CardHeader,
   CardTitle,
   EmptyState,
+  ScrollArea,
   Table,
   TableBody,
   TableCell,
@@ -167,7 +168,6 @@ function EditableMemory({
   );
 }
 
-
 /** One row of the pending queue, with a discard button. */
 function PendingRow({
   id,
@@ -200,7 +200,9 @@ function PendingRow({
           variant="ghost"
           size="sm"
           disabled={busy}
-          onClick={() => void mutate(`/api/memory/entries/${id}`, { method: "DELETE" })}
+          onClick={() =>
+            void mutate(`/api/memory/entries/${id}`, { method: "DELETE" })
+          }
           leftIcon={<Trash2 className="h-4 w-4" />}
         >
           Discard
@@ -221,10 +223,10 @@ export function MemoryPanel({ view }: { view: MemoryView }) {
           <div className="space-y-1">
             <CardTitle>Pending notes</CardTitle>
             <CardDescription>
-              Facts the bot saved during conversation, waiting for the nightly job to fold them
-              into durable memory. They are not part of memory yet — the bot cannot recall them
-              until they are consolidated. Discard one here if it should never have been
-              remembered.
+              Facts the bot saved during conversation, waiting for the nightly
+              job to fold them into durable memory. They are not part of memory
+              yet — the bot cannot recall them until they are consolidated.
+              Discard one here if it should never have been remembered.
             </CardDescription>
           </div>
         </CardHeader>
@@ -269,8 +271,8 @@ export function MemoryPanel({ view }: { view: MemoryView }) {
           <div className="space-y-1">
             <CardTitle>People</CardTitle>
             <CardDescription>
-              What the bot durably knows about each person — one merged document each, injected
-              into the replies of the chats they take part in.
+              What the bot durably knows about each person — one merged document
+              each, injected into the replies of the chats they take part in.
             </CardDescription>
           </div>
         </CardHeader>
@@ -282,30 +284,38 @@ export function MemoryPanel({ view }: { view: MemoryView }) {
               description="The bot stores a fact about someone when it is told to remember one, or when a person reveals something lastingly true."
             />
           ) : (
-            <ul className="space-y-6">
-              {users.map((user) => (
-                <li key={user.userId} className="space-y-2 border-b border-border pb-6 last:border-0 last:pb-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-medium text-foreground">{user.userLabel}</span>
-                    <EmbeddedBadge embedded={user.embedded} />
-                    {user.pendingNotes > 0 ? (
-                      <Badge tone="warning">
-                        {user.pendingNotes} note{user.pendingNotes === 1 ? "" : "s"} pending
-                      </Badge>
-                    ) : null}
-                    <span className="text-sm text-muted">
-                      updated <Timestamp iso={user.updatedAt} />
-                    </span>
-                  </div>
-                  <EditableMemory
-                    content={user.content}
-                    saveUrl={`/api/memory/users/${user.userId}`}
-                    deleteUrl={`/api/memory/users/${user.userId}`}
-                    deleteLabel="Forget this person"
-                  />
-                </li>
-              ))}
-            </ul>
+            <ScrollArea>
+              <ul className="space-y-6">
+                {users.map((user) => (
+                  <li
+                    key={user.userId}
+                    className="space-y-2 border-b border-border pb-6 last:border-0 last:pb-0"
+                  >
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-medium text-foreground">
+                        {user.userLabel}
+                      </span>
+                      <EmbeddedBadge embedded={user.embedded} />
+                      {user.pendingNotes > 0 ? (
+                        <Badge tone="warning">
+                          {user.pendingNotes} note
+                          {user.pendingNotes === 1 ? "" : "s"} pending
+                        </Badge>
+                      ) : null}
+                      <span className="text-sm text-muted">
+                        updated <Timestamp iso={user.updatedAt} />
+                      </span>
+                    </div>
+                    <EditableMemory
+                      content={user.content}
+                      saveUrl={`/api/memory/users/${user.userId}`}
+                      deleteUrl={`/api/memory/users/${user.userId}`}
+                      deleteLabel="Forget this person"
+                    />
+                  </li>
+                ))}
+              </ul>
+            </ScrollArea>
           )}
         </CardContent>
       </Card>
@@ -315,14 +325,16 @@ export function MemoryPanel({ view }: { view: MemoryView }) {
           <div className="space-y-1">
             <CardTitle>General knowledge</CardTitle>
             <CardDescription>
-              One document of shared facts — definitions, rules, conventions, and facts about
-              people the bot cannot file under a person of their own. Injected into every reply.
+              One document of shared facts — definitions, rules, conventions,
+              and facts about people the bot cannot file under a person of their
+              own. Injected into every reply.
             </CardDescription>
           </div>
           <CardAction>
             {generalPendingNotes > 0 ? (
               <Badge tone="warning">
-                {generalPendingNotes} note{generalPendingNotes === 1 ? "" : "s"} pending
+                {generalPendingNotes} note{generalPendingNotes === 1 ? "" : "s"}{" "}
+                pending
               </Badge>
             ) : null}
           </CardAction>
