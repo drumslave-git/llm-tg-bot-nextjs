@@ -50,6 +50,16 @@ export interface ReplyTransport {
     opts: { replyToMessageId?: number; threadId?: number },
   ): Promise<{ messageId: number; fileId: string; fileUniqueId: string | null }>;
   /**
+   * Deliver a reply as a Telegram voice bubble. `base64` is OGG/Opus audio —
+   * the one encoding Telegram renders as a voice message (anything else shows
+   * as a music file). Used by the voice-to-voice reply path; the text form of
+   * the reply is still what history mirrors and traces record.
+   */
+  sendVoice(
+    voice: { base64: string; filename: string },
+    opts: { replyToMessageId: number; threadId?: number },
+  ): Promise<{ messageId: number }>;
+  /**
    * Show the "typing…" chat action once. The pipeline owns the refresh loop
    * (Telegram expires the action after a few seconds), so this is a single tick.
    */

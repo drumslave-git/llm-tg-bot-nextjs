@@ -43,6 +43,7 @@ import {
   getMediaSuffixesForMessages,
   ingestMessageMedia,
   loadReplyTargetImages,
+  resolveDescribeDeps,
 } from "@/features/vision/server/service";
 import { deliverGeneratedImages } from "@/features/image-gen/server/deliver";
 import {
@@ -51,6 +52,8 @@ import {
   getPreferencesContext,
 } from "@/features/self-improvement/server/service";
 import { pokeVisionBackfill } from "@/features/vision/server/backfill-scheduler";
+import { VOICE_TURN_NOTE, VOICE_UNAVAILABLE_NOTE } from "@/features/voice/format";
+import { synthesizeVoiceReply } from "@/features/voice/server/speak";
 import { ApiError } from "@/lib/api-error";
 import { resolveRequiredLanguage } from "@/lib/language";
 import {
@@ -100,6 +103,18 @@ export interface ProcessOverrides {
 /** Telegram expires a chat action after ~5s; refresh just under that. */
 const TYPING_REFRESH_MS = 4_500;
 
+/**
+ * Begin the "typing…" refresh loop, returning its stop function. Used by the
+ * reply flow (via `deps.startTyping`) and directly around the eager voice
+ * transcription, which runs before the reply flow ever starts.
+ */
+function startTypingLoop(transport: ReplyTransport, threadId: number | undefined): () => void {
+  const tick = () => transport.sendTyping({ threadId });
+  tick();
+  const interval = setInterval(tick, TYPING_REFRESH_MS);
+  return () => clearInterval(interval);
+}
+
 /** Human label for a raw Telegram user, matching the known-user label shape. */
 function labelForTelegramUser(user: {
   id: number;
@@ -124,6 +139,17 @@ interface BuildDepsInput {
   selfCorrection: string | null;
   timeContext: string | null;
   requiredLanguage: string | null;
+  /**
+   * The current turn's effective text: the message text/caption, or — for a
+   * voice message — its transcript. What the current-turn composer renders.
+   */
+  messageText: string;
+  /**
+   * True when the incoming message was a voice message: the reply is then
+   * delivered as a voice bubble when a speech endpoint is configured
+   * (voice-to-voice, text fallback).
+   */
+  isVoiceTurn: boolean;
   /** Sink the `image_generate` tool fills; delivered after the reply. */
   collectImage: (base64: string) => void;
   visionAttachment: {
@@ -151,6 +177,8 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
     selfCorrection,
     timeContext,
     requiredLanguage,
+    messageText,
+    isVoiceTurn,
     collectImage,
     visionAttachment,
     overrides,
@@ -184,12 +212,11 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
           // description on the media row — this drops the stored bytes, so the
           // /history mirror shows it and there is nothing left to backfill.
           if (va.recognizeMessageId != null) {
-            const runtime = await getLlmRuntime().catch(() => null);
-            if (runtime) {
-              const conn = { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey };
+            const describeDeps = await resolveDescribeDeps().catch(() => null);
+            if (describeDeps) {
               const described = await describeAndStore(
                 { chatId, telegramMessageId: va.recognizeMessageId },
-                { complete: (messages) => chatCompletion(conn, { model: runtime.model, messages }) },
+                describeDeps,
               ).catch(() => null);
               if (described?.description) {
                 description = described.description;
@@ -213,13 +240,8 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
           return { imageParts: [], note: recognized };
         }
       : undefined,
-    startTyping() {
-      // Preserve the forum-topic thread so typing shows in the right place.
-      const tick = () => transport.sendTyping({ threadId });
-      tick();
-      const interval = setInterval(tick, TYPING_REFRESH_MS);
-      return () => clearInterval(interval);
-    },
+    // Preserve the forum-topic thread so typing shows in the right place.
+    startTyping: () => startTypingLoop(transport, threadId),
     loadHistory(options) {
       return getConversationWindow({
         chatId,
@@ -242,7 +264,7 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
         chatId,
         telegramMessageId: currentMessageId,
         senderLabel: from && !from.is_bot ? labelForTelegramUser(from) : null,
-        content: message.text ?? message.caption ?? "",
+        content: messageText,
         replyTo: replyTo
           ? {
               telegramMessageId: replyTo.message_id,
@@ -366,6 +388,31 @@ function buildDeps(input: BuildDepsInput): BotMessagingDeps {
     async sendReply(text: string) {
       return transport.sendReply(text, { replyToMessageId: currentMessageId });
     },
+    // Voice-to-voice (user decision): a voice message is answered with a voice
+    // bubble when the speech endpoint is configured. Synthesis or delivery
+    // failing degrades to the plain text reply — the answer always arrives.
+    sendVoiceReply: isVoiceTurn
+      ? async (text: string) => {
+          const audio = await synthesizeVoiceReply({
+            chatId,
+            correlationId: `${chatId}:${currentMessageId}`,
+            text,
+          });
+          if (audio) {
+            try {
+              const sent = await transport.sendVoice(audio, {
+                replyToMessageId: currentMessageId,
+                ...(threadId != null ? { threadId } : {}),
+              });
+              return { messageId: sent.messageId, asVoice: true };
+            } catch {
+              // fall through to the text delivery below
+            }
+          }
+          const sent = await transport.sendReply(text, { replyToMessageId: currentMessageId });
+          return { messageId: sent.messageId, asVoice: false };
+        }
+      : undefined,
   };
 }
 
@@ -467,6 +514,8 @@ export async function processUpdate(
         attachToReply: boolean;
       }
     | null = null;
+  const isVoiceMessage = Boolean(message.voice);
+  let voiceTranscript: string | null = null;
   const replyMedia = hasMedia ? null : findReplyMediaMessage(message);
   if (hasMedia || replyMedia) {
     const token = await update.resolveToken().catch(() => null);
@@ -478,7 +527,47 @@ export async function processUpdate(
           telegramMessageId: message.message_id,
           message,
         }).catch(() => null);
-        if (ingested && ingested.images.length > 0) {
+        if (isVoiceMessage) {
+          // Voice: transcribe eagerly — before any addressing decision — because
+          // in a group whether the message even summons the bot ("hey <name>, …")
+          // is only knowable from the words. The transcript lands on the media
+          // row (bytes dropped), so history annotates it with no backfill needed.
+          if (ingested) {
+            // Transcription is a real wait (seconds) that happens before the
+            // reply flow's own typing starts. When the turn is certain to be
+            // answered — a DM, or a group reply to the bot — show typing now;
+            // for other group voice messages addressing is still unknown, and
+            // typing at unaddressed chatter would announce a reply that never
+            // comes.
+            const willReply =
+              chat.type === "private" ||
+              message.reply_to_message?.from?.id === update.botInfo.id;
+            const stopTranscribeTyping = willReply
+              ? startTypingLoop(transport, message.message_thread_id)
+              : null;
+            try {
+              const describeDeps = await resolveDescribeDeps().catch(() => null);
+              if (describeDeps) {
+                const transcribed = await describeAndStore(
+                  { chatId, telegramMessageId: message.message_id },
+                  describeDeps,
+                ).catch(() => null);
+                voiceTranscript = transcribed?.description ?? null;
+              }
+            } finally {
+              stopTranscribeTyping?.();
+            }
+          }
+          // With a transcript the turn is answered from the words; without one
+          // (transcode/LLM failure — the row stays pending for the backfill) the
+          // bot owns up in a DM. In a group the empty text fails addressing, so
+          // no apology barges into the conversation.
+          visionAttachment = {
+            imageParts: [],
+            note: voiceTranscript ? VOICE_TURN_NOTE : VOICE_UNAVAILABLE_NOTE,
+            attachToReply: false,
+          };
+        } else if (ingested && ingested.images.length > 0) {
           // Pass 1 (always): recognize + store the current media in history.
           // Pass 2 (conditional): attach the images to the reply only when the
           // message also carries text (a real question). A media-only message is
@@ -494,8 +583,14 @@ export async function processUpdate(
         const loaded = await loadReplyTargetImages({ token, chatId, message: replyMedia }).catch(
           () => null,
         );
-        if (loaded && loaded.images.length > 0) {
-          const base = `The user is asking about the ${mediaKindLabel(loaded.kind)} they replied to (shown here).`;
+        // Images attach to the turn; a replied-to voice message resolves to a
+        // transcript note instead (there is nothing to show).
+        if (loaded && (loaded.images.length > 0 || loaded.note)) {
+          const label = mediaKindLabel(loaded.kind);
+          const base =
+            loaded.images.length > 0
+              ? `The user is asking about the ${label} they replied to (shown here).`
+              : `The user is asking about the ${label} they replied to.`;
           // A replied-to reference is explicit — always show the media to the reply.
           visionAttachment = {
             imageParts: toVisionParts(loaded.images),
@@ -507,6 +602,10 @@ export async function processUpdate(
     }
   }
 
+  // A voice message's effective text is its transcript: addressing, the current
+  // turn, and the reply all read the words as if they had been typed.
+  const effectiveText = isVoiceMessage ? (voiceTranscript ?? "") : text;
+
   const incoming: IncomingMessage = {
     message,
     chatId: chat.id,
@@ -514,10 +613,11 @@ export async function processUpdate(
     messageId: message.message_id,
     fromId: from?.id,
     fromIsBot: from?.is_bot ?? false,
-    text,
+    text: effectiveText,
     // A loadable image (on this message or a replied-to one) makes a caption-less
     // message real content, so it is answered and described like any other.
     hasVision: visionAttachment != null,
+    isVoice: isVoiceMessage,
   };
 
   // The reply language for this chat: the group's setting for a group, the user's
@@ -553,6 +653,8 @@ export async function processUpdate(
       selfCorrection,
       timeContext,
       requiredLanguage,
+      messageText: effectiveText,
+      isVoiceTurn: isVoiceMessage,
       collectImage: (base64) => generatedImages.push(base64),
       visionAttachment,
       overrides,

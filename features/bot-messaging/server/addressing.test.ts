@@ -97,6 +97,34 @@ describe("checkAddressed", () => {
   });
 });
 
+describe("checkAddressed — voice transcripts", () => {
+  it("hears the display name spoken in a voice message", () => {
+    expect(checkAddressed(msg({}), "group", BOT, "aria, what time is it?")).toMatchObject({
+      addressed: true,
+      source: "name",
+    });
+  });
+
+  it("hands an unnamed transcript to the analyzer instead of staying silent", () => {
+    expect(checkAddressed(msg({}), "group", BOT, "how was your weekend?")).toEqual({
+      addressed: false,
+      needsAnalyzer: true,
+    });
+  });
+
+  it("stays not-addressed when there is neither text nor transcript", () => {
+    expect(checkAddressed(msg({}), "group", BOT, "")).toEqual({ addressed: false });
+    expect(checkAddressed(msg({}), "group", BOT, "   ")).toEqual({ addressed: false });
+  });
+
+  it("prefers the typed caption over the transcript when both exist", () => {
+    // A caption that names the bot is decisive regardless of the transcript.
+    expect(
+      checkAddressed(msg({ text: "aria look" }), "group", BOT, "unrelated words"),
+    ).toMatchObject({ addressed: true, source: "name" });
+  });
+});
+
 describe("checkAddressed — handing off to the analyzer", () => {
   it("leaves group text the cheap checks could not settle undecided", () => {
     expect(checkAddressed(msg({ text: "how was your weekend?" }), "group", BOT)).toEqual({

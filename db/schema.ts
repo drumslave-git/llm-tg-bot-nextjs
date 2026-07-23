@@ -120,6 +120,44 @@ export const settings = pgTable(
      * {@link embeddingModel} follows.
      */
     imageModel: text("image_model"),
+    /**
+     * Base URL of the OpenAI-compatible endpoint serving `/v1/audio/speech`
+     * (voice replies). Blank means "reuse the LLM connection".
+     */
+    speechBaseUrl: text("speech_base_url"),
+    /**
+     * API key for the speech endpoint. Secret — never returned in plaintext. Only
+     * consulted when {@link speechBaseUrl} is set; otherwise the LLM key is used
+     * along with the LLM base URL.
+     */
+    speechApiKey: text("speech_api_key"),
+    /**
+     * Speech (TTS) model id. Null disables voice replies rather than failing a
+     * reply — the same "degrade, don't guess a model id" rule
+     * {@link embeddingModel} follows. Voice messages are still understood
+     * (transcription rides the chat model); only the spoken answer needs this.
+     */
+    speechModel: text("speech_model"),
+    /** Voice name for the speech endpoint (e.g. `alloy`). Null → endpoint default. */
+    speechVoice: text("speech_voice"),
+    /**
+     * Base URL of the OpenAI-compatible endpoint serving `/v1/audio/transcriptions`
+     * (a whisper-class STT server). Blank means "reuse the LLM connection".
+     */
+    transcriptionBaseUrl: text("transcription_base_url"),
+    /**
+     * API key for the transcription endpoint. Secret — never returned in
+     * plaintext. Only consulted when {@link transcriptionBaseUrl} is set;
+     * otherwise the LLM key is used along with the LLM base URL.
+     */
+    transcriptionApiKey: text("transcription_api_key"),
+    /**
+     * Transcription (STT) model id. When set, voice messages are transcribed on
+     * the dedicated `/v1/audio/transcriptions` endpoint; when null, transcription
+     * falls back to the chat model via an `input_audio` content part (which then
+     * requires an audio-capable chat model).
+     */
+    transcriptionModel: text("transcription_model"),
     /** Bot owner's Telegram @username (normalized: lowercase, no leading `@`). */
     ownerUsername: text("owner_username"),
     /**

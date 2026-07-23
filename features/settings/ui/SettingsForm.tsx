@@ -18,10 +18,12 @@ import {
 import { ConnectionSection } from "./ConnectionSection";
 
 /**
- * Bot settings editor. Client Component with four tabs: **Core** (the LLM
+ * Bot settings editor. Client Component with six tabs: **Core** (the LLM
  * connection + model, Telegram token, owner, and maintenance mode — without which
  * the bot cannot run), **Embeddings** (the endpoint powering semantic recall over
- * history summaries), **Images** (the endpoint powering image generation), and
+ * history summaries), **Images** (the endpoint powering image generation),
+ * **Speech** (the endpoint powering voice replies), **Transcription** (the
+ * speech-to-text endpoint for voice messages, chat-model fallback), and
  * **Integrations** (optional feature keys like Tavily for web search). One Save
  * button below the tabs persists every changed field regardless of the active
  * tab. Secret keys are write-only — shown as "configured" but their values never
@@ -43,6 +45,8 @@ export function SettingsForm({
   initialModels = [],
   initialEmbeddingModels = [],
   initialImageModels = [],
+  initialSpeechModels = [],
+  initialTranscriptionModels = [],
   knownUsers = [],
 }: {
   initial: Settings;
@@ -53,6 +57,10 @@ export function SettingsForm({
   initialEmbeddingModels?: string[];
   /** Models preloaded from the image endpoint (or the LLM one, when it serves both). */
   initialImageModels?: string[];
+  /** Models preloaded from the speech endpoint (or the LLM one, when it serves both). */
+  initialSpeechModels?: string[];
+  /** Models preloaded from the transcription endpoint (often empty — whisper servers rarely list). */
+  initialTranscriptionModels?: string[];
   /** Users who have messaged the bot — the owner is chosen from this list. */
   knownUsers?: KnownUser[];
 }) {
@@ -95,6 +103,21 @@ export function SettingsForm({
     imageProbe.reset,
   );
   const imgKey = useSecretField(initial.imageApiKeyConfigured);
+  const speechProbe = useProbe<{ model: string; modelCount: number }>("/api/settings/test-speech");
+  const spc = useBackendConnection(
+    { baseUrl: initial.speechBaseUrl, model: initial.speechModel },
+    speechProbe.reset,
+  );
+  const spcKey = useSecretField(initial.speechApiKeyConfigured);
+  const [speechVoice, setSpeechVoice] = useState(initial.speechVoice ?? "");
+  const transcriptionProbe = useProbe<{ model: string; text: string }>(
+    "/api/settings/test-transcription",
+  );
+  const stt = useBackendConnection(
+    { baseUrl: initial.transcriptionBaseUrl, model: initial.transcriptionModel },
+    transcriptionProbe.reset,
+  );
+  const sttKey = useSecretField(initial.transcriptionApiKeyConfigured);
 
   const [save, setSave] = useState<SaveState>({ kind: "idle" });
 
@@ -133,6 +156,29 @@ export function SettingsForm({
       imageBaseUrl: img.resolvedUrl,
       imageModel: img.model,
       ...(imgKey.dirty ? { imageApiKey: imgKey.value.trim() } : {}),
+    });
+  }
+
+  // Probe the speech endpoint. Like images, this checks the model is served
+  // rather than synthesizing audio — the listing already proves the connection.
+  function onTestSpeech() {
+    if (spc.model.trim() === "" || spc.urlMissing) return;
+    void speechProbe.run({
+      speechBaseUrl: spc.resolvedUrl,
+      speechModel: spc.model,
+      ...(spcKey.dirty ? { speechApiKey: spcKey.value.trim() } : {}),
+    });
+  }
+
+  // Probe the transcription endpoint with a real call (it transcribes a
+  // fraction of a second of silence): whisper-class servers often have no
+  // model listing, so only a genuine transcription proves the connection.
+  function onTestTranscription() {
+    if (stt.model.trim() === "" || stt.urlMissing) return;
+    void transcriptionProbe.run({
+      transcriptionBaseUrl: stt.resolvedUrl,
+      transcriptionModel: stt.model,
+      ...(sttKey.dirty ? { transcriptionApiKey: sttKey.value.trim() } : {}),
     });
   }
 
@@ -192,6 +238,31 @@ export function SettingsForm({
     } else if (imgKey.dirty) {
       patch.imageApiKey = imgKey.patchValue;
     }
+    if (spc.resolvedUrl !== (initial.speechBaseUrl ?? null)) {
+      patch.speechBaseUrl = spc.resolvedUrl;
+    }
+    if (spc.model !== (initial.speechModel ?? "")) {
+      patch.speechModel = spc.model === "" ? null : spc.model;
+    }
+    if (!spc.separate && initial.speechApiKeyConfigured) {
+      patch.speechApiKey = null;
+    } else if (spcKey.dirty) {
+      patch.speechApiKey = spcKey.patchValue;
+    }
+    if (speechVoice.trim() !== (initial.speechVoice ?? "")) {
+      patch.speechVoice = speechVoice.trim() === "" ? null : speechVoice.trim();
+    }
+    if (stt.resolvedUrl !== (initial.transcriptionBaseUrl ?? null)) {
+      patch.transcriptionBaseUrl = stt.resolvedUrl;
+    }
+    if (stt.model.trim() !== (initial.transcriptionModel ?? "")) {
+      patch.transcriptionModel = stt.model.trim() === "" ? null : stt.model.trim();
+    }
+    if (!stt.separate && initial.transcriptionApiKeyConfigured) {
+      patch.transcriptionApiKey = null;
+    } else if (sttKey.dirty) {
+      patch.transcriptionApiKey = sttKey.patchValue;
+    }
 
     try {
       const res = await fetch("/api/settings", {
@@ -209,6 +280,8 @@ export function SettingsForm({
       tavilyKey.clear();
       embKey.clear();
       imgKey.clear();
+      spcKey.clear();
+      sttKey.clear();
       setOwnerUserId(data.ownerUserId ?? "");
       setMaintenanceMode(data.maintenanceModeEnabled);
       setTimezone(data.timezone);
@@ -216,6 +289,9 @@ export function SettingsForm({
       setBrowserDownloadMaxMb(String(data.browserDownloadMaxMb));
       emb.applySaved({ baseUrl: data.embeddingBaseUrl, model: data.embeddingModel });
       img.applySaved({ baseUrl: data.imageBaseUrl, model: data.imageModel });
+      spc.applySaved({ baseUrl: data.speechBaseUrl, model: data.speechModel });
+      setSpeechVoice(data.speechVoice ?? "");
+      stt.applySaved({ baseUrl: data.transcriptionBaseUrl, model: data.transcriptionModel });
       setSave({ kind: "saved" });
       // Re-read server state so masked "configured" placeholders reflect the save.
       router.refresh();
@@ -245,6 +321,17 @@ export function SettingsForm({
     img.model && !listedImageModels.includes(img.model)
       ? [img.model, ...listedImageModels]
       : listedImageModels;
+
+  // Speech model options, resolved exactly like the image ones above.
+  const listedSpeechModels = !spc.separate && models.length > 0 ? models : initialSpeechModels;
+  const speechModels =
+    spc.model && !listedSpeechModels.includes(spc.model)
+      ? [spc.model, ...listedSpeechModels]
+      : listedSpeechModels;
+
+  // Transcription model suggestions (free-text field — whisper servers rarely list).
+  const transcriptionModels =
+    !stt.separate && models.length > 0 ? models : initialTranscriptionModels;
 
   const coreTab = (
     <div className="space-y-5">
@@ -515,6 +602,87 @@ export function SettingsForm({
     />
   );
 
+  const speechTab = (
+    <ConnectionSection
+      idPrefix="speech"
+      labels={{
+        intro:
+          "Speech lets the bot answer a voice message with a voice message: the reply text is synthesized on this endpoint and sent as a Telegram voice bubble. Without a speech model the bot still understands voice messages (they are transcribed by the chat model) — it just always answers in text.",
+        switchLabel: "Separate speech backend",
+        switchHint:
+          "Off: speech is requested from the same backend as the LLM. On: it is served by a different host, which you give below.",
+        urlLabel: "Speech API URL",
+        urlHint: "Required — the host serving /v1/audio/speech.",
+        urlPlaceholder: "https://speech.example.com/v1",
+        urlMissingError: "A speech API URL is required.",
+        keyLabel: "Speech API key",
+        modelLabel: "Speech model",
+        modelHint:
+          "The text-to-speech model voice replies use. Test below to confirm the endpoint actually serves it.",
+        modelEmptyOption: "No speech model (voice replies off)",
+        testLabel: "Test speech endpoint",
+        testingLabel: "Testing…",
+      }}
+      conn={spc}
+      secret={spcKey}
+      models={speechModels}
+      probe={speechProbe.state}
+      renderOk={(r) => (
+        <>
+          {r.model} — served ({r.modelCount} models)
+        </>
+      )}
+      onTest={onTestSpeech}
+    >
+      <Field
+        id="speechVoice"
+        label="Voice"
+        hint="Voice name the endpoint should speak with (e.g. alloy). Leave blank for the endpoint's default."
+      >
+        {({ id, describedBy }) => (
+          <Input
+            id={id}
+            aria-describedby={describedBy}
+            value={speechVoice}
+            onChange={(e) => setSpeechVoice(e.target.value)}
+            placeholder="alloy"
+          />
+        )}
+      </Field>
+    </ConnectionSection>
+  );
+
+  const transcriptionTab = (
+    <ConnectionSection
+      idPrefix="transcription"
+      labels={{
+        intro:
+          "Transcription turns incoming voice messages into text on a dedicated speech-to-text endpoint (whisper.cpp server, speaches, LocalAI…). When no transcription model is set, voice messages are transcribed by the chat model instead — which then must be audio-capable (served with its mmproj).",
+        switchLabel: "Separate transcription backend",
+        switchHint:
+          "Off: transcription is requested from the same backend as the LLM. On: it is served by a different host, which you give below.",
+        urlLabel: "Transcription API URL",
+        urlHint: "Required — the host serving /v1/audio/transcriptions.",
+        urlPlaceholder: "https://whisper.example.com/v1",
+        urlMissingError: "A transcription API URL is required.",
+        keyLabel: "Transcription API key",
+        modelLabel: "Transcription model",
+        modelHint:
+          "Free text — whisper-class servers often don't list models (e.g. whisper-1, Systran/faster-whisper-large-v3). Empty: voice falls back to the chat model.",
+        modelEmptyOption: "No transcription model (chat-model fallback)",
+        testLabel: "Test transcription",
+        testingLabel: "Testing…",
+      }}
+      conn={stt}
+      secret={sttKey}
+      models={transcriptionModels}
+      probe={transcriptionProbe.state}
+      freeTextModel
+      renderOk={(r) => <>{r.model} — endpoint responded</>}
+      onTest={onTestTranscription}
+    />
+  );
+
   const integrationsTab = (
     <div className="space-y-5">
       <p className="text-sm text-muted">
@@ -545,6 +713,8 @@ export function SettingsForm({
     { id: "core", label: "Core", content: coreTab },
     { id: "embeddings", label: "Embeddings", content: embeddingsTab },
     { id: "images", label: "Images", content: imagesTab },
+    { id: "speech", label: "Speech", content: speechTab },
+    { id: "transcription", label: "Transcription", content: transcriptionTab },
     { id: "integrations", label: "Integrations", content: integrationsTab },
   ];
 

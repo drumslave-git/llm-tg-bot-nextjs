@@ -897,3 +897,96 @@ describe("handleIncomingMessage — LLM addressing check", () => {
     expect(hint.content).toContain("Bob (@bob)");
   });
 });
+
+describe("voice turns", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("delivers the reply through sendVoiceReply and records a voice send", async () => {
+    const sendVoiceReply = vi.fn().mockResolvedValue({ messageId: 42, asVoice: true });
+    const d = deps({ sendVoiceReply });
+    const out = await handleIncomingMessage(
+      incoming({ text: "what's the weather?", isVoice: true, hasVision: true }),
+      d,
+    );
+    expect(out).toEqual({ status: "replied", text: "hi back" });
+    expect(sendVoiceReply).toHaveBeenCalledWith("hi back");
+    expect(d.sendReply).not.toHaveBeenCalled();
+    const output = recorder.event.mock.calls
+      .map((c) => c[0])
+      .find((e) => e.type === "output");
+    expect(output.message).toBe("send voice message");
+    expect(output.data).toMatchObject({ content: "hi back", messageId: 42, asVoice: true });
+    // The text form is still what history mirrors.
+    expect(d.recordReply).toHaveBeenCalledWith({
+      content: "hi back",
+      telegramMessageId: 42,
+      replyToMessageId: 7,
+    });
+  });
+
+  it("records a plain text send when the voice path fell back internally", async () => {
+    const sendVoiceReply = vi.fn().mockResolvedValue({ messageId: 43, asVoice: false });
+    const d = deps({ sendVoiceReply });
+    await handleIncomingMessage(incoming({ text: "hi", isVoice: true }), d);
+    const output = recorder.event.mock.calls
+      .map((c) => c[0])
+      .find((e) => e.type === "output");
+    expect(output.message).toBe("send message");
+    expect(output.data).toMatchObject({ asVoice: false });
+  });
+
+  it("addresses a group voice message by its transcript (spoken display name)", async () => {
+    const m = makeMessage({ message_id: 7, chat: { id: 5, type: "group" } });
+    const d = deps();
+    const out = await handleIncomingMessage(
+      incoming({
+        message: m,
+        chatType: "group",
+        text: "aria, what time is it?",
+        isVoice: true,
+        hasVision: true,
+      }),
+      d,
+    );
+    expect(out).toEqual({ status: "replied", text: "hi back" });
+    const step = recorder.event.mock.calls
+      .map((c) => c[0])
+      .find((e) => e.message === "addressing check");
+    expect(step.data).toMatchObject({ addressed: true, source: "name" });
+  });
+
+  it("ignores a group voice message whose transcript names nobody (no analyzer wired)", async () => {
+    const m = makeMessage({ message_id: 7, chat: { id: 5, type: "group" } });
+    const d = deps();
+    const out = await handleIncomingMessage(
+      incoming({
+        message: m,
+        chatType: "group",
+        text: "how was your weekend?",
+        isVoice: true,
+        hasVision: true,
+      }),
+      d,
+    );
+    expect(out).toEqual({ status: "ignored", reason: "not_addressed" });
+    expect(d.generateReply).not.toHaveBeenCalled();
+  });
+
+  it("keeps the maintenance notice on the text path even for a voice turn", async () => {
+    const sendVoiceReply = vi.fn();
+    const d = deps({
+      sendVoiceReply,
+      policy: { ownerUserId: "1", maintenanceModeEnabled: true },
+    });
+    const out = await handleIncomingMessage(
+      incoming({ text: "hello", isVoice: true, fromId: 100 }),
+      d,
+    );
+    expect(out).toMatchObject({ status: "ignored", reason: "maintenance_mode" });
+    expect(sendVoiceReply).not.toHaveBeenCalled();
+    expect(d.sendReply).toHaveBeenCalledOnce();
+    expect((d.sendReply as ReturnType<typeof vi.fn>).mock.calls[0][0]).toMatch(/maintenance/i);
+  });
+});

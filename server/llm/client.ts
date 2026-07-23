@@ -26,12 +26,14 @@ export const CHAT_COMPLETION_TIMEOUT_MS = 120_000;
 
 /**
  * A single content part of a multimodal message. Only `user` turns carry image
- * parts (a data: URL with base64 JPEG); text parts and plain string content
+ * or audio parts (an image as a data: URL with base64 JPEG; audio as base64
+ * WAV/MP3 for an audio-capable chat model); text parts and plain string content
  * behave identically to a text-only turn.
  */
 export type ChatContentPart =
   | { type: "text"; text: string }
-  | { type: "image_url"; image_url: { url: string } };
+  | { type: "image_url"; image_url: { url: string } }
+  | { type: "input_audio"; input_audio: { data: string; format: "wav" | "mp3" } };
 
 /** A single chat turn sent to the model. Content is plain text, or — for a
  * vision turn — an array of text/image parts. */
@@ -92,6 +94,18 @@ export function sanitizeMessagesForTrace(messages: ChatMessage[]): ChatMessage[]
   return messages.map((message) => {
     if (typeof message.content === "string") return message;
     const content = message.content.map((part) => {
+      if (part.type === "input_audio") {
+        // Audio bytes get the same treatment as image bytes: the real audio is
+        // persisted in `message_media` while pending, so the trace keeps only
+        // the format and size.
+        return {
+          type: "input_audio" as const,
+          input_audio: {
+            data: `<${part.input_audio.data.length} bytes>`,
+            format: part.input_audio.format,
+          },
+        };
+      }
       if (part.type !== "image_url") return part;
       const url = part.image_url.url;
       const match = /^data:([^;]+);base64,([\s\S]*)$/.exec(url);

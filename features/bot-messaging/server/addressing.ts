@@ -150,11 +150,17 @@ function hasCommandForBot(message: Message, username: string): boolean {
  * Decide whether the bot should treat this message as addressed to it, as far as
  * a pure check can. A group message that names nothing recognizable but still
  * carries text comes back undecided (`needsAnalyzer`) rather than not-addressed.
+ *
+ * `transcript` is the spoken text of a voice message (produced before this check
+ * runs): a voice message has no `text`/`caption`/entities, so the name check and
+ * the analyzer gate read the transcript instead — "hey <botname>, …" spoken
+ * aloud is as much a summons as typed.
  */
 export function checkAddressed(
   message: Message,
   chatType: string,
   bot: BotIdentity,
+  transcript?: string,
 ): AddressResult {
   if (chatType === "private") return { addressed: true, source: "private" };
   if (chatType !== "group" && chatType !== "supergroup") return NOT_ADDRESSED;
@@ -166,7 +172,7 @@ export function checkAddressed(
   if (hasCommandForBot(message, bot.username)) return { addressed: true, source: "command" };
   if (hasUsernameMention(message, bot.id, bot.username)) return { addressed: true, source: "mention" };
 
-  const text = messageText(message);
+  const text = messageText(message) || transcript?.trim() || "";
   if (messageNamesBot(text, bot.displayName)) {
     return { addressed: true, source: "name", reason: "display name spoken" };
   }

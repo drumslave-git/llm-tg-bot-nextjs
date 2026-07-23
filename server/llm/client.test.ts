@@ -45,6 +45,27 @@ describe("sanitizeMessagesForTrace", () => {
       image_url: { url: "data:image/png;base64,ABCD" },
     });
   });
+
+  it("replaces inline audio bytes with a compact byte-length marker, keeping the format", () => {
+    const base64 = "B".repeat(4096);
+    const messages: ChatMessage[] = [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "Transcribe this voice message." },
+          { type: "input_audio", input_audio: { data: base64, format: "wav" } },
+        ],
+      },
+    ];
+    const [sanitized] = sanitizeMessagesForTrace(messages);
+    expect(sanitized.content).toEqual([
+      { type: "text", text: "Transcribe this voice message." },
+      { type: "input_audio", input_audio: { data: "<4096 bytes>", format: "wav" } },
+    ]);
+    // The original is untouched.
+    const original = (messages[0].content as { input_audio?: { data: string } }[])[1];
+    expect(original.input_audio?.data).toBe(base64);
+  });
 });
 
 describe("isContextOverflowError", () => {

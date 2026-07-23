@@ -36,6 +36,11 @@ export const LLM_CALL_KINDS = {
     label: "Vision · describe image",
     description: "Turns an incoming image into a text description.",
   },
+  "voice-transcribe": {
+    id: "voice-transcribe",
+    label: "Voice · transcribe",
+    description: "Turns an incoming voice message into its text transcript.",
+  },
   "history-summarize": {
     id: "history-summarize",
     label: "History · summarize",
@@ -125,6 +130,8 @@ export function callKindOf(
       return event.message.includes("addressing analyzer") ? "addressing-check" : "reply-final";
     case "vision":
       return "vision-describe";
+    case "voice":
+      return "voice-transcribe";
     case "history-summaries":
       return "history-summarize";
     case "memory-extraction":

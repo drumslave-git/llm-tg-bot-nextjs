@@ -13,6 +13,13 @@ import {
   type EmbeddingRuntime,
 } from "@/server/llm/embeddings";
 import { probeImages, type ImageProbe, type ImageRuntime } from "@/server/llm/images";
+import { probeSpeech, type SpeechProbe, type SpeechRuntime } from "@/server/llm/speech";
+import {
+  probeTranscription,
+  type TranscriptionProbe,
+  type TranscriptionRuntime,
+} from "@/server/llm/transcription";
+import { tinySilenceWav } from "@/server/media/audio";
 
 /** Short timeout so opening the Settings page stays responsive against a dead endpoint. */
 const MODELS_PRELOAD_TIMEOUT_MS = 5_000;
@@ -29,6 +36,8 @@ import type {
   TestConnection,
   TestEmbeddings,
   TestImages,
+  TestSpeech,
+  TestTranscription,
   UpdateSettings,
 } from "./schema";
 
@@ -55,6 +64,13 @@ function toClientSettings(record: SettingsRecord | null): Settings {
     imageBaseUrl: record?.imageBaseUrl ?? null,
     imageModel: record?.imageModel ?? null,
     imageApiKeyConfigured: Boolean(record?.imageApiKey),
+    speechBaseUrl: record?.speechBaseUrl ?? null,
+    speechModel: record?.speechModel ?? null,
+    speechVoice: record?.speechVoice ?? null,
+    speechApiKeyConfigured: Boolean(record?.speechApiKey),
+    transcriptionBaseUrl: record?.transcriptionBaseUrl ?? null,
+    transcriptionModel: record?.transcriptionModel ?? null,
+    transcriptionApiKeyConfigured: Boolean(record?.transcriptionApiKey),
     ownerUsername: record?.ownerUsername ?? null,
     ownerUserId: record?.ownerUserId ?? null,
     maintenanceModeEnabled: record?.maintenanceModeEnabled ?? false,
@@ -179,6 +195,103 @@ export async function getImageRuntime(db: DrizzleDb = getDb()): Promise<ImageRun
 }
 
 /**
+ * Resolve the speech (TTS) connection from a settings record. Same shape as
+ * {@link toEmbeddingRuntime}: the endpoint (and its key) fall back to the LLM
+ * connection when no speech base URL is set, and a model is mandatory — without
+ * one voice replies stay off rather than guessing a model id.
+ */
+function toSpeechRuntime(record: SettingsRecord | null): SpeechRuntime | null {
+  if (!record?.speechModel) return null;
+  const ownEndpoint = Boolean(record.speechBaseUrl);
+  const baseUrl = ownEndpoint ? record.speechBaseUrl : record.llmBaseUrl;
+  if (!baseUrl) return null;
+  return {
+    baseUrl,
+    apiKey: ownEndpoint ? record.speechApiKey : record.llmApiKey,
+    model: record.speechModel,
+    voice: record.speechVoice,
+  };
+}
+
+/**
+ * Server-only: the saved speech connection + model + voice, or null when voice
+ * replies are not configured. Read at call time (like the embedding runtime) so
+ * a change takes effect without a restart. Callers must treat null as "voice
+ * replies are unavailable" and fall back to text — never throw.
+ */
+export async function getSpeechRuntime(db: DrizzleDb = getDb()): Promise<SpeechRuntime | null> {
+  return toSpeechRuntime(await getSettingsRecord(db));
+}
+
+/**
+ * Best-effort model list for the speech endpoint, so the Settings page can
+ * populate its model dropdown. Uses the speech base URL when set, else the LLM
+ * one. Never throws — an unreachable endpoint yields an empty list.
+ */
+export async function listAvailableSpeechModels(db: DrizzleDb = getDb()): Promise<string[]> {
+  const record = await getSettingsRecord(db);
+  const baseUrl = record?.speechBaseUrl || record?.llmBaseUrl;
+  if (!baseUrl) return [];
+  const apiKey = record?.speechBaseUrl ? record.speechApiKey : record?.llmApiKey;
+  try {
+    return await listModels({ baseUrl, apiKey }, MODELS_PRELOAD_TIMEOUT_MS);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Resolve the transcription (STT) connection from a settings record. Same shape
+ * as {@link toEmbeddingRuntime}: the endpoint (and its key) fall back to the LLM
+ * connection when no transcription base URL is set, and a model is mandatory —
+ * without one, voice transcription falls back to the chat model's `input_audio`
+ * path rather than calling `/v1/audio/transcriptions` with a guessed model id.
+ */
+function toTranscriptionRuntime(record: SettingsRecord | null): TranscriptionRuntime | null {
+  if (!record?.transcriptionModel) return null;
+  const ownEndpoint = Boolean(record.transcriptionBaseUrl);
+  const baseUrl = ownEndpoint ? record.transcriptionBaseUrl : record.llmBaseUrl;
+  if (!baseUrl) return null;
+  return {
+    baseUrl,
+    apiKey: ownEndpoint ? record.transcriptionApiKey : record.llmApiKey,
+    model: record.transcriptionModel,
+  };
+}
+
+/**
+ * Server-only: the saved transcription connection + model, or null when no
+ * dedicated STT endpoint is configured (voice then transcribes via the chat
+ * model's `input_audio`). Read at call time so a change takes effect without a
+ * restart.
+ */
+export async function getTranscriptionRuntime(
+  db: DrizzleDb = getDb(),
+): Promise<TranscriptionRuntime | null> {
+  return toTranscriptionRuntime(await getSettingsRecord(db));
+}
+
+/**
+ * Best-effort model list for the transcription endpoint, so the Settings page
+ * can suggest model ids. Whisper-class servers often serve
+ * `/v1/audio/transcriptions` without `/v1/models`, so an empty list is normal —
+ * the form falls back to free-text entry. Never throws.
+ */
+export async function listAvailableTranscriptionModels(
+  db: DrizzleDb = getDb(),
+): Promise<string[]> {
+  const record = await getSettingsRecord(db);
+  const baseUrl = record?.transcriptionBaseUrl || record?.llmBaseUrl;
+  if (!baseUrl) return [];
+  const apiKey = record?.transcriptionBaseUrl ? record.transcriptionApiKey : record?.llmApiKey;
+  try {
+    return await listModels({ baseUrl, apiKey }, MODELS_PRELOAD_TIMEOUT_MS);
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Best-effort model list for the image endpoint, so the Settings page can populate
  * its model dropdown. Uses the image base URL when set, else the LLM one. Never
  * throws — an unreachable endpoint yields an empty list.
@@ -297,6 +410,23 @@ function toPatch(input: UpdateSettings): SettingsPatch {
   if (input.imageApiKey !== undefined) {
     patch.imageApiKey = input.imageApiKey === "" ? null : input.imageApiKey;
   }
+  if (input.speechBaseUrl !== undefined) patch.speechBaseUrl = input.speechBaseUrl;
+  if (input.speechModel !== undefined) patch.speechModel = input.speechModel;
+  if (input.speechApiKey !== undefined) {
+    patch.speechApiKey = input.speechApiKey === "" ? null : input.speechApiKey;
+  }
+  if (input.speechVoice !== undefined) {
+    patch.speechVoice = input.speechVoice === "" ? null : input.speechVoice;
+  }
+  if (input.transcriptionBaseUrl !== undefined) {
+    patch.transcriptionBaseUrl = input.transcriptionBaseUrl;
+  }
+  if (input.transcriptionModel !== undefined) {
+    patch.transcriptionModel = input.transcriptionModel;
+  }
+  if (input.transcriptionApiKey !== undefined) {
+    patch.transcriptionApiKey = input.transcriptionApiKey === "" ? null : input.transcriptionApiKey;
+  }
   if (input.maintenanceModeEnabled !== undefined) {
     patch.maintenanceModeEnabled = input.maintenanceModeEnabled;
   }
@@ -342,13 +472,24 @@ async function ownerPatch(
 
 /** Redact secrets before they reach trace storage. */
 function redact(input: UpdateSettings): Record<string, unknown> {
-  const { apiKey, telegramBotToken, tavilyApiKey, embeddingApiKey, imageApiKey, ...rest } = input;
+  const {
+    apiKey,
+    telegramBotToken,
+    tavilyApiKey,
+    embeddingApiKey,
+    imageApiKey,
+    speechApiKey,
+    transcriptionApiKey,
+    ...rest
+  } = input;
   const out: Record<string, unknown> = { ...rest };
   if (apiKey !== undefined) out.apiKey = "«redacted»";
   if (telegramBotToken !== undefined) out.telegramBotToken = "«redacted»";
   if (tavilyApiKey !== undefined) out.tavilyApiKey = "«redacted»";
   if (embeddingApiKey !== undefined) out.embeddingApiKey = "«redacted»";
   if (imageApiKey !== undefined) out.imageApiKey = "«redacted»";
+  if (speechApiKey !== undefined) out.speechApiKey = "«redacted»";
+  if (transcriptionApiKey !== undefined) out.transcriptionApiKey = "«redacted»";
   return out;
 }
 
@@ -521,6 +662,120 @@ export async function testImages(
   );
 }
 
+/**
+ * Probe the speech configuration, recording the attempt as a trace. Same contract
+ * as {@link testImages}: submitted values are merged over the stored record and
+ * resolved through the *runtime* resolver, so a passing test means the connection
+ * voice replies will actually use works.
+ */
+export async function testSpeech(
+  input: TestSpeech,
+  trigger: TraceTrigger,
+  db: DrizzleDb = getDb(),
+): Promise<SpeechProbe> {
+  const record = await getSettingsRecord(db);
+  const runtime = toSpeechRuntime({
+    ...(record ?? EMPTY_RECORD),
+    speechBaseUrl:
+      input.speechBaseUrl !== undefined ? input.speechBaseUrl : (record?.speechBaseUrl ?? null),
+    speechApiKey:
+      input.speechApiKey !== undefined
+        ? input.speechApiKey || null
+        : (record?.speechApiKey ?? null),
+    speechModel:
+      input.speechModel !== undefined ? input.speechModel : (record?.speechModel ?? null),
+  });
+
+  return withTrace(
+    {
+      feature: FEATURE.id,
+      action: "test-speech",
+      trigger,
+      inputSummary: input.speechModel ?? record?.speechModel ?? "(no model)",
+    },
+    async (trace) => {
+      if (!runtime) {
+        throw ApiError.badRequest(
+          "Choose a speech model (and a base URL, unless the LLM connection serves speech).",
+        );
+      }
+      await trace.event({
+        type: "external_call",
+        message: `GET ${runtime.baseUrl} /models`,
+        data: { model: runtime.model },
+      });
+      const probe = await probeSpeech(runtime);
+      await trace.event({
+        type: "output",
+        message: `speech model "${probe.model}" is served by the endpoint`,
+        data: probe,
+      });
+      await trace.succeed({ outputSummary: `${probe.model} served (${probe.modelCount} models)` });
+      return probe;
+    },
+  );
+}
+
+/**
+ * Probe the transcription configuration by actually transcribing a fraction of a
+ * second of generated silence — a **real** probe, like embeddings: whisper-class
+ * servers often have no `/v1/models`, so only a genuine `/v1/audio/transcriptions`
+ * call proves the endpoint, key, and model work. Recorded as a trace; submitted
+ * values are merged over the stored record and resolved through the runtime
+ * resolver, so a passing test means the voice path's connection works.
+ */
+export async function testTranscription(
+  input: TestTranscription,
+  trigger: TraceTrigger,
+  db: DrizzleDb = getDb(),
+): Promise<TranscriptionProbe> {
+  const record = await getSettingsRecord(db);
+  const runtime = toTranscriptionRuntime({
+    ...(record ?? EMPTY_RECORD),
+    transcriptionBaseUrl:
+      input.transcriptionBaseUrl !== undefined
+        ? input.transcriptionBaseUrl
+        : (record?.transcriptionBaseUrl ?? null),
+    transcriptionApiKey:
+      input.transcriptionApiKey !== undefined
+        ? input.transcriptionApiKey || null
+        : (record?.transcriptionApiKey ?? null),
+    transcriptionModel:
+      input.transcriptionModel !== undefined
+        ? input.transcriptionModel
+        : (record?.transcriptionModel ?? null),
+  });
+
+  return withTrace(
+    {
+      feature: FEATURE.id,
+      action: "test-transcription",
+      trigger,
+      inputSummary: input.transcriptionModel ?? record?.transcriptionModel ?? "(no model)",
+    },
+    async (trace) => {
+      if (!runtime) {
+        throw ApiError.badRequest(
+          "Choose a transcription model (and a base URL, unless the LLM connection serves transcription).",
+        );
+      }
+      await trace.event({
+        type: "external_call",
+        message: `POST ${runtime.baseUrl} /audio/transcriptions`,
+        data: { model: runtime.model },
+      });
+      const probe = await probeTranscription(runtime, tinySilenceWav());
+      await trace.event({
+        type: "output",
+        message: `transcription endpoint responded`,
+        data: probe,
+      });
+      await trace.succeed({ outputSummary: `${probe.model} transcribed the probe audio` });
+      return probe;
+    },
+  );
+}
+
 /** Field defaults for merging a partial probe input onto a never-written settings row. */
 const EMPTY_RECORD: SettingsRecord = {
   llmBaseUrl: null,
@@ -535,6 +790,13 @@ const EMPTY_RECORD: SettingsRecord = {
   imageBaseUrl: null,
   imageApiKey: null,
   imageModel: null,
+  speechBaseUrl: null,
+  speechApiKey: null,
+  speechModel: null,
+  speechVoice: null,
+  transcriptionBaseUrl: null,
+  transcriptionApiKey: null,
+  transcriptionModel: null,
   ownerUsername: null,
   ownerUserId: null,
   maintenanceModeEnabled: false,

@@ -41,6 +41,8 @@ export function ConnectionSection<T>({
   probe,
   renderOk,
   onTest,
+  freeTextModel,
+  children,
 }: {
   /** Stable field-id prefix, e.g. "embedding" → `embeddingBaseUrl`, `embeddingModel`. */
   idPrefix: string;
@@ -52,6 +54,14 @@ export function ConnectionSection<T>({
   /** The success badge content for this probe's payload. */
   renderOk: (result: T) => ReactNode;
   onTest: () => void;
+  /**
+   * Render the model as a free-text input (with `models` as datalist
+   * suggestions) instead of a strict select. For backends whose model ids the
+   * endpoint cannot list (whisper-class servers often have no `/v1/models`).
+   */
+  freeTextModel?: boolean;
+  /** Extra backend-specific fields, rendered between the model select and the probe row. */
+  children?: ReactNode;
 }) {
   return (
     <div className="space-y-5">
@@ -119,23 +129,45 @@ export function ConnectionSection<T>({
       ) : null}
 
       <Field id={`${idPrefix}Model`} label={labels.modelLabel} hint={labels.modelHint}>
-        {({ id, describedBy }) => (
-          <Select
-            id={id}
-            aria-describedby={describedBy}
-            value={conn.model}
-            disabled={models.length === 0}
-            onChange={(e) => conn.setModel(e.target.value)}
-          >
-            <option value="">{labels.modelEmptyOption}</option>
-            {models.map((m) => (
-              <option key={m} value={m}>
-                {m}
-              </option>
-            ))}
-          </Select>
-        )}
+        {({ id, describedBy }) =>
+          freeTextModel ? (
+            <>
+              <Input
+                id={id}
+                aria-describedby={describedBy}
+                value={conn.model}
+                onChange={(e) => conn.setModel(e.target.value)}
+                placeholder={labels.modelEmptyOption}
+                list={`${idPrefix}ModelOptions`}
+              />
+              {models.length > 0 ? (
+                <datalist id={`${idPrefix}ModelOptions`}>
+                  {models.map((m) => (
+                    <option key={m} value={m} />
+                  ))}
+                </datalist>
+              ) : null}
+            </>
+          ) : (
+            <Select
+              id={id}
+              aria-describedby={describedBy}
+              value={conn.model}
+              disabled={models.length === 0}
+              onChange={(e) => conn.setModel(e.target.value)}
+            >
+              <option value="">{labels.modelEmptyOption}</option>
+              {models.map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+            </Select>
+          )
+        }
       </Field>
+
+      {children}
 
       <div className="flex flex-wrap items-center gap-3">
         <Button

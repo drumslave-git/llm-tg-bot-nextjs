@@ -47,6 +47,20 @@ export const settingsSchema = z.object({
   imageModel: model.nullable(),
   /** Whether an image API key is stored (the value itself is never exposed). */
   imageApiKeyConfigured: z.boolean(),
+  /** Speech endpoint base URL, or null to reuse the LLM connection. */
+  speechBaseUrl: baseUrl.nullable(),
+  /** Selected speech (TTS) model id, or null when none picked (voice replies off). */
+  speechModel: model.nullable(),
+  /** Voice name for the speech endpoint, or null for the endpoint default. */
+  speechVoice: z.string().nullable(),
+  /** Whether a speech API key is stored (the value itself is never exposed). */
+  speechApiKeyConfigured: z.boolean(),
+  /** Transcription endpoint base URL, or null to reuse the LLM connection. */
+  transcriptionBaseUrl: baseUrl.nullable(),
+  /** Selected transcription model id, or null → voice falls back to the chat model. */
+  transcriptionModel: model.nullable(),
+  /** Whether a transcription API key is stored (the value itself is never exposed). */
+  transcriptionApiKeyConfigured: z.boolean(),
   /** Owner's numeric user id (chosen from known users), or null when unset. */
   ownerUserId: z.string().nullable(),
   /** Owner's @username, denormalized from the chosen known user (display only). */
@@ -83,6 +97,13 @@ export const updateSettingsSchema = z
     imageBaseUrl: baseUrl.nullable(),
     imageApiKey: apiKey.nullable(),
     imageModel: model.nullable(),
+    speechBaseUrl: baseUrl.nullable(),
+    speechApiKey: apiKey.nullable(),
+    speechModel: model.nullable(),
+    speechVoice: z.string().trim().max(100).nullable(),
+    transcriptionBaseUrl: baseUrl.nullable(),
+    transcriptionApiKey: apiKey.nullable(),
+    transcriptionModel: model.nullable(),
     ownerUserId: ownerUserId.nullable(),
     maintenanceModeEnabled: z.boolean(),
     timezone: z.string().trim().min(1).max(64),
@@ -135,3 +156,31 @@ export const testImagesSchema = z.object({
 });
 
 export type TestImages = z.infer<typeof testImagesSchema>;
+
+/**
+ * Input for the speech probe. Optional-everywhere for the same reason as
+ * {@link testEmbeddingsSchema}: omitted fields fall back to what is stored, so the
+ * saved configuration can be tested without re-entering the secret. A blank base
+ * URL means "use the LLM connection", exactly as at runtime.
+ */
+export const testSpeechSchema = z.object({
+  speechBaseUrl: baseUrl.nullable().optional(),
+  speechApiKey: apiKey.nullable().optional(),
+  speechModel: model.nullable().optional(),
+});
+
+export type TestSpeech = z.infer<typeof testSpeechSchema>;
+
+/**
+ * Input for the transcription probe. Optional-everywhere for the same reason as
+ * {@link testEmbeddingsSchema}: omitted fields fall back to what is stored, so the
+ * saved configuration can be tested without re-entering the secret. A blank base
+ * URL means "use the LLM connection", exactly as at runtime.
+ */
+export const testTranscriptionSchema = z.object({
+  transcriptionBaseUrl: baseUrl.nullable().optional(),
+  transcriptionApiKey: apiKey.nullable().optional(),
+  transcriptionModel: model.nullable().optional(),
+});
+
+export type TestTranscription = z.infer<typeof testTranscriptionSchema>;

@@ -34,10 +34,15 @@ const STATUS_LABEL: Record<MediaStatus, string> = {
 };
 
 function MediaCard({ media }: { media: MediaView }) {
+  const isVoice = media.kind === "voice";
   return (
     <div className="flex flex-col overflow-hidden rounded-lg border border-border bg-surface-2">
       <div className="flex aspect-video items-center justify-center overflow-hidden bg-surface-3">
-        {media.frames && media.frames.length > 1 ? (
+        {isVoice && media.preview ? (
+          // A pending voice message: its stored audio, playable while the bytes
+          // still exist (they drop once transcribed, like image bytes do).
+          <audio controls preload="none" src={media.preview} className="w-full px-3" />
+        ) : media.frames && media.frames.length > 1 ? (
           // A video/GIF: the ordered grid of every sampled frame.
           <div className="grid h-full w-full grid-cols-5 gap-px bg-border">
             {media.frames.map((frame, i) => (
@@ -65,7 +70,7 @@ function MediaCard({ media }: { media: MediaView }) {
         <div className="flex items-center justify-between gap-2">
           <Badge tone="neutral">{mediaKindLabel(media.kind)}</Badge>
           <Badge tone={STATUS_TONE[media.status]} dot>
-            {STATUS_LABEL[media.status]}
+            {isVoice && media.status === "described" ? "Transcribed" : STATUS_LABEL[media.status]}
           </Badge>
         </div>
         <div className="flex items-center justify-between gap-2 text-xs text-faint">
@@ -86,8 +91,9 @@ export function MediaGallery({ media }: { media: MediaView[] }) {
         <div>
           <CardTitle>Received media</CardTitle>
           <CardDescription>
-            Images, stickers, and video frames the bot has seen. Media on an answered message is
-            described immediately; the rest wait for the backfill job.
+            Images, stickers, video frames, and voice messages the bot has seen. Media on an
+            answered message is described (voice: transcribed) immediately; the rest wait for the
+            backfill job.
           </CardDescription>
         </div>
       </CardHeader>

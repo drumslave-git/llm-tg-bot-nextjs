@@ -34,6 +34,14 @@ export async function downloadTelegramFile(
   const buffer = Buffer.from(await res.arrayBuffer());
   const ext = filePath.split(".").pop()?.toLowerCase() ?? "jpg";
   const mimeHint =
-    ext === "png" ? "image/png" : ext === "webp" ? "image/webp" : "image/jpeg";
+    ext === "png"
+      ? "image/png"
+      : ext === "webp"
+        ? "image/webp"
+        : ext === "oga" || ext === "ogg"
+          ? "audio/ogg" // Telegram voice messages (OGG/Opus, `.oga`)
+          : ext === "mp3"
+            ? "audio/mpeg"
+            : "image/jpeg";
   return { base64: buffer.toString("base64"), mimeHint };
 }

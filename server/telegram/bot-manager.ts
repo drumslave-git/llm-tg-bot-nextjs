@@ -169,6 +169,17 @@ function grammyTransport(ctx: Context): ReplyTransport {
         fileUniqueId: largest?.file_unique_id ?? null,
       };
     },
+    async sendVoice(voice, opts) {
+      const sent = await ctx.api.sendVoice(
+        String(ctx.chat!.id),
+        new InputFile(Buffer.from(voice.base64, "base64"), voice.filename),
+        {
+          reply_parameters: { message_id: opts.replyToMessageId },
+          ...(opts.threadId != null ? { message_thread_id: opts.threadId } : {}),
+        },
+      );
+      return { messageId: sent.message_id };
+    },
     sendTyping(opts) {
       const other =
         opts.threadId != null ? { message_thread_id: opts.threadId } : undefined;

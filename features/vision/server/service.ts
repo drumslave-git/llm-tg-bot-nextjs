@@ -9,6 +9,15 @@ import { llmUsageOf, sanitizeMessagesForTrace, type ChatCompletionResult, type C
 import { publishEvent } from "@/server/realtime/hub";
 import { startTrace } from "@/server/trace";
 
+import {
+  getLlmRuntime,
+  getTranscriptionRuntime,
+} from "@/features/settings/server/service";
+import { buildTranscribeMessages, parseTranscript } from "@/features/voice/format";
+import { chatCompletion } from "@/server/llm/client";
+import { transcribeAudio, type TranscriptionResult } from "@/server/llm/transcription";
+import { toWavForTranscription } from "@/server/media/audio";
+
 import { detectMessageMedia } from "../detect";
 import { frameSequenceHint, renderMediaSuffix } from "../format";
 import type { DetectedMedia, ImagePayload, MediaAnnotation, MediaKind, MediaView } from "../types";
@@ -63,6 +72,8 @@ async function loadImage(token: string, fileId: string): Promise<ImagePayload | 
  */
 interface LoadedMedia {
   images: ImagePayload[];
+  /** Raw audio bytes for a voice message (stored as-is, transcribed later). */
+  audio: { base64: string; mimeHint: string } | null;
   /** Stored on the row + fed to the describe pass (sticker emoji / frame-sequence note). */
   hint: string | null;
   /** Injected into the current reply turn so the model reads it in context (video/GIF only). */
@@ -88,17 +99,30 @@ async function loadVideoFrames(
   );
   const kind = detected.kind === "animation" ? "animation" : "video";
   const hint = frameSequenceHint(kind, images.length);
-  return { images, hint, note: hint };
+  return { images, audio: null, hint, note: hint };
 }
 
-/** Resolve a detected media to loadable images + hints. Best-effort — null on failure. */
+/** Resolve a detected media to loadable images/audio + hints. Best-effort — null on failure. */
 async function loadDetectedMedia(
   token: string,
   detected: DetectedMedia,
 ): Promise<LoadedMedia | null> {
+  // A voice message stores its bytes as-is (OGG/Opus) — no normalization; the
+  // transcode to a model-readable format happens at transcription time.
+  if (detected.isAudio) {
+    const raw = await downloadTelegramFile(token, detected.fileId).catch(() => null);
+    if (!raw) return null;
+    return {
+      images: [],
+      audio: { base64: raw.base64, mimeHint: raw.mimeHint },
+      hint: detected.visionHint,
+      note: null,
+    };
+  }
+
   if (!detected.isVideo) {
     const image = await loadImage(token, detected.fileId);
-    return image ? { images: [image], hint: detected.visionHint, note: null } : null;
+    return image ? { images: [image], audio: null, hint: detected.visionHint, note: null } : null;
   }
 
   // Video/GIF: sample frames with ffmpeg; on any failure fall back to the
@@ -111,7 +135,7 @@ async function loadDetectedMedia(
     if (thumb) {
       const kind = detected.kind === "animation" ? "animation" : "video";
       const hint = frameSequenceHint(kind, 1);
-      return { images: [thumb], hint, note: hint };
+      return { images: [thumb], audio: null, hint, note: hint };
     }
   }
   return null;
@@ -147,7 +171,8 @@ export async function ingestMessageMedia(
   }
 
   // A still image stores its single frame; a video/GIF stores the whole frame
-  // sequence (its first frame doubles as the dashboard preview).
+  // sequence (its first frame doubles as the dashboard preview); a voice message
+  // stores its raw audio (played back on the dashboard while pending).
   const isSequence = loaded.images.length > 1;
   await insertMedia(db, {
     id: crypto.randomUUID(),
@@ -156,8 +181,8 @@ export async function ingestMessageMedia(
     kind: detected.kind,
     fileId: detected.fileId,
     fileUniqueId: detected.fileUniqueId,
-    mimeType: loaded.images[0].mimeHint,
-    dataBase64: loaded.images[0].base64,
+    mimeType: loaded.audio ? loaded.audio.mimeHint : loaded.images[0].mimeHint,
+    dataBase64: loaded.audio ? loaded.audio.base64 : loaded.images[0].base64,
     frames: isSequence ? loaded.images.map((image) => image.base64) : null,
     visionHint: loaded.hint,
   }).catch(() => null);
@@ -235,11 +260,26 @@ export async function loadReplyTargetImages(
   const detected = detectMessageMedia(params.message);
   if (!detected) return null;
 
-  // Reuse the stored image(s) — a photo, or a video's full frame sequence — when
-  // present, so a reply to old media needs no re-download or re-extraction.
   const stored = await getMediaByMessage(db, params.chatId, params.message.message_id).catch(
     () => null,
   );
+
+  // A replied-to voice message resolves to its transcript (the chat model reads
+  // text, not audio, in the reply turn). Transcription is eager, so the stored
+  // row almost always has one; without it there is nothing useful to attach.
+  if (detected.isAudio) {
+    if (stored?.description) {
+      return {
+        images: [],
+        kind: detected.kind,
+        note: `Transcript of that voice message: ${stored.description}`,
+      };
+    }
+    return null;
+  }
+
+  // Reuse the stored image(s) — a photo, or a video's full frame sequence — when
+  // present, so a reply to old media needs no re-download or re-extraction.
   const storedImages = storedMediaImages(stored);
   if (storedImages) {
     return { images: storedImages, kind: detected.kind, note: stored?.visionHint ?? null };
@@ -252,6 +292,8 @@ export async function loadReplyTargetImages(
 /** The stored image sequence for a media row (frames for a video, else the single image). */
 function storedMediaImages(media: MediaRecord | null): ImagePayload[] | null {
   if (!media) return null;
+  // A voice row's bytes are audio — never an image sequence.
+  if (media.kind === "voice") return null;
   if (media.frames && media.frames.length > 0) {
     return media.frames.map((base64) => ({ base64, mimeHint: "image/jpeg" }));
   }
@@ -265,22 +307,69 @@ function storedMediaImages(media: MediaRecord | null): ImagePayload[] | null {
 export interface DescribeDeps {
   /** Run the describe completion; returns the text plus usage/model for tracing. */
   complete: (messages: ChatMessage[]) => Promise<ChatCompletionResult>;
+  /**
+   * Where `complete` sends the request (base URL + model id), recorded on the
+   * trace's request event — the operator must be able to see which endpoint and
+   * model a describe/transcribe actually hit, especially when it fails.
+   */
+  target?: { baseUrl: string; model: string };
+  /**
+   * Dedicated STT for voice rows (`/v1/audio/transcriptions`), present when the
+   * operator configured a transcription endpoint. When set, voice transcription
+   * uses it **instead of** the chat model's `input_audio` path (user decision:
+   * support both, whisper preferred when configured).
+   */
+  transcribe?: (wav: Buffer) => Promise<TranscriptionResult>;
+  /** Where `transcribe` sends the request, recorded like {@link target}. */
+  transcribeTarget?: { baseUrl: string; model: string };
 }
 
 /**
- * Describe a message's stored media and drop its bytes. Traced under `vision`.
- * A no-op (skipped) when the message has no pending media. Best-effort: on
- * failure the row stays `pending` for the backfill job to retry.
+ * The real {@link DescribeDeps}, resolved from DB settings at call time: the
+ * chat runtime for describes (and the `input_audio` transcription fallback),
+ * plus the dedicated transcription endpoint when one is configured. Null when
+ * the LLM is not configured. Shared by the live message path and the backfill
+ * scheduler so the two can never resolve differently.
+ */
+export async function resolveDescribeDeps(): Promise<DescribeDeps | null> {
+  const runtime = await getLlmRuntime().catch(() => null);
+  if (!runtime) return null;
+  const conn = { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey };
+  const stt = await getTranscriptionRuntime().catch(() => null);
+  return {
+    complete: (messages) => chatCompletion(conn, { model: runtime.model, messages }),
+    target: { baseUrl: runtime.baseUrl, model: runtime.model },
+    ...(stt
+      ? {
+          transcribe: (wav: Buffer) => transcribeAudio(stt, wav),
+          transcribeTarget: { baseUrl: stt.baseUrl, model: stt.model },
+        }
+      : {}),
+  };
+}
+
+/**
+ * Describe a message's stored media and drop its bytes. Dispatches by kind: an
+ * image/video is captioned by the vision model (traced under `vision`/`describe`);
+ * a voice message is transcribed by the audio-capable chat model (traced under
+ * `voice`/`transcribe`) with the transcript stored as its description. A no-op
+ * (skipped) when the message has no pending media. Best-effort: on failure the
+ * row stays `pending` for the backfill job to retry.
  */
 export async function describeAndStore(
   params: { chatId: string; telegramMessageId: number },
   deps: DescribeDeps,
   db: DrizzleDb = getDb(),
 ): Promise<MediaRecord | null> {
+  const media = await getMediaByMessage(db, params.chatId, params.telegramMessageId).catch(
+    () => null,
+  );
+  const isVoice = media?.kind === "voice";
+  const feature = isVoice ? FEATURES["voice"] : FEATURE;
   const trace = await startTrace(
     {
-      feature: FEATURE.id,
-      action: "describe",
+      feature: feature.id,
+      action: isVoice ? "transcribe" : "describe",
       trigger: {
         kind: "telegram",
         actor: params.chatId,
@@ -290,7 +379,81 @@ export async function describeAndStore(
     }
   );
   try {
-    const media = await getMediaByMessage(db, params.chatId, params.telegramMessageId);
+    if (isVoice) {
+      const audioBase64 = media?.status === "pending" ? media.dataBase64 : null;
+      if (!media || !audioBase64) {
+        await trace.skip("no pending voice message to transcribe");
+        return null;
+      }
+
+      // OGG/Opus → 16 kHz mono WAV: what both transcription paths consume. A
+      // transcode failure leaves the row pending.
+      const wav = await toWavForTranscription(Buffer.from(audioBase64, "base64"));
+
+      let rawText: string;
+      if (deps.transcribe) {
+        // Dedicated STT endpoint (whisper-class), preferred when configured.
+        await trace.event({
+          type: "external_call",
+          message: "transcription request",
+          data: {
+            ...(deps.transcribeTarget
+              ? { endpoint: deps.transcribeTarget.baseUrl, model: deps.transcribeTarget.model }
+              : {}),
+            wavBytes: wav.length,
+          },
+        });
+        const result = await deps.transcribe(wav);
+        await trace.event({
+          type: "output",
+          message: "transcription response",
+          // The provider's raw response body, verbatim (full-raw-bodies rule).
+          data: result.responseBody ?? { text: result.text },
+        });
+        rawText = result.text;
+      } else {
+        // Fallback: the audio-capable chat model via an `input_audio` part.
+        const messages = buildTranscribeMessages(wav.toString("base64"), "wav");
+        // The whole request as sent — endpoint, model, and the full
+        // (byte-redacted) body — so a failing transcription names what was
+        // actually called.
+        await trace.event({
+          type: "llm_request",
+          message: "transcribe request",
+          data: {
+            ...(deps.target ? { endpoint: deps.target.baseUrl, model: deps.target.model } : {}),
+            messages: sanitizeMessagesForTrace(messages),
+          },
+        });
+
+        const result = await deps.complete(messages);
+        await trace.event({
+          type: "llm_response",
+          message: "transcribe response",
+          // The provider's raw response body, verbatim (full-raw-bodies rule).
+          data: result.responseBody ?? { content: result.content },
+          usage: { ...llmUsageOf(result), callKind: "voice-transcribe" },
+        });
+        rawText = result.content;
+      }
+
+      // "(no speech)" is terminal on purpose: leaving a speechless recording
+      // pending would make the backfill re-transcribe it forever.
+      const transcript = parseTranscript(rawText) || "(no speech)";
+      const updated = await markDescribed(db, media.id, transcript);
+      await trace.event({
+        type: "db",
+        message: "voice message transcribed",
+        data: { chars: transcript.length },
+      });
+      publishEvent(FEATURE.realtimeTopic);
+      await trace.succeed({
+        outputSummary: transcript,
+        relatedIds: { [feature.relatedIdsKey ?? FEATURE.relatedIdsKey]: [media.id] },
+      });
+      return updated ?? media;
+    }
+
     const images = media?.status === "pending" ? storedMediaImages(media) : null;
     if (!media || !images) {
       await trace.skip("no pending media to describe");
@@ -303,14 +466,18 @@ export async function describeAndStore(
     await trace.event({
       type: "llm_request",
       message: "describe request",
-      data: { messages: sanitizeMessagesForTrace(messages) },
+      data: {
+        ...(deps.target ? { endpoint: deps.target.baseUrl, model: deps.target.model } : {}),
+        messages: sanitizeMessagesForTrace(messages),
+      },
     });
 
     const result = await deps.complete(messages);
     await trace.event({
       type: "llm_response",
       message: "describe response",
-      data: { content: result.content },
+      // The provider's raw response body, verbatim (full-raw-bodies rule).
+      data: result.responseBody ?? { content: result.content },
       usage: { ...llmUsageOf(result), callKind: "vision-describe" },
     });
 

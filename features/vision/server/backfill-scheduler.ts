@@ -1,12 +1,11 @@
 import "server-only";
 
-import { getLlmRuntime } from "@/features/settings/server/service";
 import { FEATURES } from "@/lib/features";
-import { chatCompletion } from "@/server/llm/client";
 import { createIdleScheduler, type IdleJobStatus, type IdleScheduler } from "@/server/jobs/idle-scheduler";
 import { publishEvent } from "@/server/realtime/hub";
 
 import { runVisionBackfill } from "./backfill";
+import { resolveDescribeDeps } from "./service";
 
 /**
  * In-process idle scheduler for the vision backfill job, owned by a single
@@ -34,13 +33,12 @@ function scheduler(): IdleScheduler {
       debounceMs: DEBOUNCE_MS,
       onStatusChange: () => publishEvent(FEATURE.realtimeTopic),
       run: async (ctx) => {
-        const runtime = await getLlmRuntime().catch(() => null);
-        if (!runtime) return { summary: "LLM not configured" };
-        const conn = { baseUrl: runtime.baseUrl, apiKey: runtime.apiKey };
-        const result = await runVisionBackfill(
-          { complete: (messages) => chatCompletion(conn, { model: runtime.model, messages }) },
-          { isAborted: ctx.isAborted, onProgress: ctx.reportProgress },
-        );
+        const deps = await resolveDescribeDeps().catch(() => null);
+        if (!deps) return { summary: "LLM not configured" };
+        const result = await runVisionBackfill(deps, {
+          isAborted: ctx.isAborted,
+          onProgress: ctx.reportProgress,
+        });
         return { summary: result.summary };
       },
     });

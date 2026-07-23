@@ -99,11 +99,19 @@ export interface IncomingMessage {
    * other message — so it is not treated as empty.
    */
   hasVision?: boolean;
+  /**
+   * Whether this turn was a voice message. `text` is then its transcript, which
+   * the addressing check also reads (a voice message has no entities or caption
+   * for the deterministic checks to see).
+   */
+  isVoice?: boolean;
 }
 
 /** A delivered Telegram message, as reported back by the runtime. */
 export interface SentMessage {
   messageId: number;
+  /** True when the reply was delivered as a voice bubble (TTS), not text. */
+  asVoice?: boolean;
 }
 
 /**
@@ -144,6 +152,14 @@ export interface BotMessagingDeps {
   analyzeAddressing?: (messages: ChatMessage[]) => Promise<GeneratedReply>;
   /** Deliver a reply back to the originating chat; resolves with its delivered id. */
   sendReply: (text: string) => Promise<SentMessage>;
+  /**
+   * Deliver a reply as a voice bubble (TTS), present only for a voice turn with
+   * a configured speech endpoint. Used for the generated reply chunks alone —
+   * system notices (maintenance/error) always go through {@link sendReply} as
+   * text. Implementations fall back to a text send internally, reporting which
+   * form was actually delivered via {@link SentMessage.asVoice}.
+   */
+  sendVoiceReply?: (text: string) => Promise<SentMessage>;
   /**
    * Load the current-day conversation window as prior turns to inject before the
    * current message. Injected so the service stays free of DB/history coupling.
@@ -333,7 +349,12 @@ export async function handleIncomingMessage(
       }
     ));
 
-  let decision = checkAddressed(incoming.message, incoming.chatType, deps.bot);
+  let decision = checkAddressed(
+    incoming.message,
+    incoming.chatType,
+    deps.bot,
+    incoming.isVoice ? incoming.text : undefined,
+  );
   if (!decision.addressed && decision.needsAnalyzer && deps.analyzeAddressing) {
     trace = await openTrace();
     decision = await runAddressAnalyzer(incoming, deps, trace);
@@ -647,17 +668,19 @@ export async function handleIncomingMessage(
       const chunks = splitReply(reply.content);
       if (chunks.length === 0) chunks.push("");
       const outgoing = chunks.join("\n\n");
+      // A voice turn delivers through the TTS path when wired (voice-to-voice,
+      // with its own internal text fallback); everything else sends text.
+      const deliver = deps.sendVoiceReply ?? deps.sendReply;
       for (const [index, chunk] of chunks.entries()) {
-        const sent = await deps.sendReply(chunk);
-        // 5. Delivered message(s) — full content.
+        const sent = await deliver(chunk);
+        // 5. Delivered message(s) — full content (the spoken text, when voice).
+        const label = sent.asVoice ? "send voice message" : "send message";
         await trace.event({
           type: "output",
           level: "success",
           message:
-            chunks.length > 1
-              ? `send message (part ${index + 1}/${chunks.length})`
-              : "send message",
-          data: { content: chunk, messageId: sent.messageId },
+            chunks.length > 1 ? `${label} (part ${index + 1}/${chunks.length})` : label,
+          data: { content: chunk, messageId: sent.messageId, asVoice: Boolean(sent.asVoice) },
         });
         // Mirror each delivered chunk into history under its own message id
         // (best-effort — never fail a delivered reply because persistence

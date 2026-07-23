@@ -43,6 +43,16 @@ export const FEATURES = {
     realtimeTopic: "vision",
     path: "/vision",
   },
+  // Voice messages live on the vision media pipeline (`message_media`, kind
+  // `voice`) but trace as their own feature, so "what did the bot hear/say"
+  // filters cleanly: `transcribe` (voice → text) and `synthesize` (text → voice).
+  voice: {
+    id: "voice",
+    label: "Voice",
+    realtimeTopic: "vision",
+    relatedIdsKey: "message_media",
+    path: "/vision",
+  },
   history: {
     id: "history",
     label: "History",

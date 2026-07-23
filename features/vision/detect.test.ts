@@ -19,6 +19,7 @@ describe("detectMessageMedia", () => {
       fileUniqueId: "b",
       visionHint: null,
       isVideo: false,
+      isAudio: false,
       thumbnailFileId: null,
       durationSec: null,
     });
@@ -74,6 +75,7 @@ describe("detectMessageMedia", () => {
       fileUniqueId: "d",
       visionHint: null,
       isVideo: false,
+      isAudio: false,
       thumbnailFileId: null,
       durationSec: null,
     });
@@ -99,6 +101,7 @@ describe("detectMessageMedia", () => {
       fileUniqueId: "g",
       visionHint: null,
       isVideo: true,
+      isAudio: false,
       thumbnailFileId: "gthumb",
       durationSec: 2,
     });
@@ -124,6 +127,7 @@ describe("detectMessageMedia", () => {
       fileUniqueId: "v",
       visionHint: null,
       isVideo: true,
+      isAudio: false,
       thumbnailFileId: "frame",
       durationSec: 5,
     });
@@ -147,6 +151,27 @@ describe("detectMessageMedia", () => {
       thumbnailFileId: "vdthumb",
       durationSec: null,
     });
+  });
+
+  it("detects a voice message as audio to transcribe", () => {
+    const detected = detectMessageMedia(
+      msg({
+        voice: { file_id: "vc", file_unique_id: "vu", duration: 7, mime_type: "audio/ogg" },
+      }),
+    );
+    expect(detected).toEqual({
+      kind: "voice",
+      fileId: "vc",
+      fileUniqueId: "vu",
+      visionHint: null,
+      isVideo: false,
+      isAudio: true,
+      thumbnailFileId: null,
+      durationSec: 7,
+    });
+    expect(messageHasVisionMedia(msg({ voice: { file_id: "vc", file_unique_id: "vu", duration: 7 } }))).toBe(
+      true,
+    );
   });
 
   it("ignores a non-image document (e.g. a PDF)", () => {

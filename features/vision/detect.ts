@@ -35,6 +35,22 @@ function isVideoLikeDocument(document: Document): boolean {
  * duration the server needs to sample frames.
  */
 export function detectMessageMedia(message: Message): DetectedMedia | null {
+  // Voice first: a voice message carries nothing else, and its handling (store
+  // OGG bytes, transcribe) is disjoint from every image path below.
+  if (message.voice) {
+    const voice = message.voice;
+    return {
+      kind: "voice",
+      fileId: voice.file_id,
+      fileUniqueId: voice.file_unique_id ?? null,
+      visionHint: null,
+      isVideo: false,
+      isAudio: true,
+      thumbnailFileId: null,
+      durationSec: voice.duration ?? null,
+    };
+  }
+
   if (message.photo?.length) {
     const photo = message.photo[message.photo.length - 1];
     return image("photo", photo.file_id, photo.file_unique_id, null);
@@ -84,7 +100,16 @@ function image(
   fileUniqueId: string | null,
   visionHint: string | null,
 ): DetectedMedia {
-  return { kind, fileId, fileUniqueId, visionHint, isVideo: false, thumbnailFileId: null, durationSec: null };
+  return {
+    kind,
+    fileId,
+    fileUniqueId,
+    visionHint,
+    isVideo: false,
+    isAudio: false,
+    thumbnailFileId: null,
+    durationSec: null,
+  };
 }
 
 /** A video/GIF: the server samples frames from `fileId` (thumbnail as fallback). */
@@ -100,12 +125,13 @@ function video(
     fileUniqueId,
     visionHint: null,
     isVideo: true,
+    isAudio: false,
     thumbnailFileId: opts.thumbnailFileId,
     durationSec: opts.durationSec,
   };
 }
 
-/** Whether a message carries any vision-capable media. */
+/** Whether a message carries any readable media (visual or a voice message). */
 export function messageHasVisionMedia(message: Message | undefined): boolean {
   return message ? detectMessageMedia(message) !== null : false;
 }

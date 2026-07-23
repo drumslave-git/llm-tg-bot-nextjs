@@ -17,6 +17,8 @@ import {
   listAvailableEmbeddingModels,
   listAvailableImageModels,
   listAvailableModels,
+  listAvailableSpeechModels,
+  listAvailableTranscriptionModels,
 } from "@/features/settings/server/service";
 import type { Settings } from "@/features/settings/server/schema";
 import { listUsers } from "@/features/known-users/server/service";
@@ -37,15 +39,25 @@ export default async function SettingsPage() {
   let initialModels: string[] = [];
   let initialEmbeddingModels: string[] = [];
   let initialImageModels: string[] = [];
+  let initialSpeechModels: string[] = [];
+  let initialTranscriptionModels: string[] = [];
   let knownUsers: KnownUser[] = [];
   let dbError: string | null = null;
   try {
     settings = await getSettings();
     // Preload every endpoint's models so the dropdowns are populated on open.
-    [initialModels, initialEmbeddingModels, initialImageModels] = await Promise.all([
+    [
+      initialModels,
+      initialEmbeddingModels,
+      initialImageModels,
+      initialSpeechModels,
+      initialTranscriptionModels,
+    ] = await Promise.all([
       listAvailableModels(),
       listAvailableEmbeddingModels(),
       listAvailableImageModels(),
+      listAvailableSpeechModels(),
+      listAvailableTranscriptionModels(),
     ]);
     // Known users populate the owner dropdown.
     knownUsers = await listUsers();
@@ -83,6 +95,8 @@ export default async function SettingsPage() {
               initialModels={initialModels}
               initialEmbeddingModels={initialEmbeddingModels}
               initialImageModels={initialImageModels}
+              initialSpeechModels={initialSpeechModels}
+              initialTranscriptionModels={initialTranscriptionModels}
               knownUsers={knownUsers}
             />
           ) : (

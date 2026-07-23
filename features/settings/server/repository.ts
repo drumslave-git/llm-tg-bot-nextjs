@@ -36,6 +36,20 @@ export interface SettingsRecord {
   imageApiKey: string | null;
   /** Image model id; null disables image generation. */
   imageModel: string | null;
+  /** Speech endpoint base URL; null means "reuse the LLM connection". */
+  speechBaseUrl: string | null;
+  /** Speech endpoint API key (only used with `speechBaseUrl`). */
+  speechApiKey: string | null;
+  /** Speech (TTS) model id; null disables voice replies. */
+  speechModel: string | null;
+  /** Voice name for the speech endpoint; null → endpoint default. */
+  speechVoice: string | null;
+  /** Transcription endpoint base URL; null means "reuse the LLM connection". */
+  transcriptionBaseUrl: string | null;
+  /** Transcription endpoint API key (only used with `transcriptionBaseUrl`). */
+  transcriptionApiKey: string | null;
+  /** Transcription (STT) model id; null → voice falls back to the chat model. */
+  transcriptionModel: string | null;
   ownerUsername: string | null;
   ownerUserId: string | null;
   maintenanceModeEnabled: boolean;
@@ -66,6 +80,13 @@ export interface SettingsPatch {
   imageBaseUrl?: string | null;
   imageApiKey?: string | null;
   imageModel?: string | null;
+  speechBaseUrl?: string | null;
+  speechApiKey?: string | null;
+  speechModel?: string | null;
+  speechVoice?: string | null;
+  transcriptionBaseUrl?: string | null;
+  transcriptionApiKey?: string | null;
+  transcriptionModel?: string | null;
   ownerUsername?: string | null;
   ownerUserId?: string | null;
   maintenanceModeEnabled?: boolean;
@@ -108,6 +129,13 @@ function mapRow(row: SettingsRow): SettingsRecord {
     imageBaseUrl: row.imageBaseUrl,
     imageApiKey: row.imageApiKey,
     imageModel: row.imageModel,
+    speechBaseUrl: row.speechBaseUrl,
+    speechApiKey: row.speechApiKey,
+    speechModel: row.speechModel,
+    speechVoice: row.speechVoice,
+    transcriptionBaseUrl: row.transcriptionBaseUrl,
+    transcriptionApiKey: row.transcriptionApiKey,
+    transcriptionModel: row.transcriptionModel,
     ownerUsername: row.ownerUsername,
     ownerUserId: row.ownerUserId,
     maintenanceModeEnabled: row.maintenanceModeEnabled,

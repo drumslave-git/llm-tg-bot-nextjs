@@ -11,7 +11,9 @@ import {
   getEmbeddingRuntime,
   getImageRuntime,
   getSettings,
+  getSpeechRuntime,
   getTelegramBotToken,
+  getTranscriptionRuntime,
   getWebSearchApiKey,
   updateSettings,
 } from "./service";
@@ -51,6 +53,13 @@ describe("getSettings", () => {
       imageBaseUrl: null,
       imageModel: null,
       imageApiKeyConfigured: false,
+      speechBaseUrl: null,
+      speechModel: null,
+      speechVoice: null,
+      speechApiKeyConfigured: false,
+      transcriptionBaseUrl: null,
+      transcriptionModel: null,
+      transcriptionApiKeyConfigured: false,
       ownerUsername: null,
       ownerUserId: null,
       maintenanceModeEnabled: false,
@@ -365,5 +374,141 @@ describe("image runtime", () => {
 
     const { traces } = await listTraces({ feature: "settings" });
     expect(JSON.stringify(traces)).not.toContain("secret-image-key");
+  });
+});
+
+describe("speech runtime", () => {
+  it("falls back to the LLM connection when no speech endpoint is set", async () => {
+    await updateSettings(
+      {
+        llmBaseUrl: "https://llm.example.com/v1",
+        apiKey: "llm-key",
+        model: "gemma3",
+        speechModel: "kokoro",
+        speechVoice: "alloy",
+      },
+      trigger,
+      ctx.db,
+    );
+
+    // Same rule as embeddings/images: the key belongs to the host it authenticates.
+    expect(await getSpeechRuntime(ctx.db)).toEqual({
+      baseUrl: "https://llm.example.com/v1",
+      apiKey: "llm-key",
+      model: "kokoro",
+      voice: "alloy",
+    });
+  });
+
+  it("uses the speech endpoint's own key when it has its own URL", async () => {
+    await updateSettings(
+      {
+        llmBaseUrl: "https://llm.example.com/v1",
+        apiKey: "llm-key",
+        model: "gemma3",
+        speechBaseUrl: "https://speech.example.com/v1",
+        speechApiKey: "speech-key",
+        speechModel: "kokoro",
+      },
+      trigger,
+      ctx.db,
+    );
+
+    expect(await getSpeechRuntime(ctx.db)).toEqual({
+      baseUrl: "https://speech.example.com/v1",
+      apiKey: "speech-key",
+      model: "kokoro",
+      voice: null,
+    });
+  });
+
+  it("is unconfigured (not half-configured) without a model", async () => {
+    await updateSettings(
+      { llmBaseUrl: "https://llm.example.com/v1", model: "gemma3" },
+      trigger,
+      ctx.db,
+    );
+
+    // No speech model → voice replies degrade to text, rather than the endpoint
+    // being called with a guessed model id.
+    expect(await getSpeechRuntime(ctx.db)).toBeNull();
+  });
+
+  it("never exposes the speech key, but stores it — and redacts it from the trace", async () => {
+    const settings = await updateSettings({ speechApiKey: "secret-speech-key" }, trigger, ctx.db);
+
+    expect(settings.speechApiKeyConfigured).toBe(true);
+    expect(JSON.stringify(settings)).not.toContain("secret-speech-key");
+    expect((await getSettingsRecord(ctx.db))?.speechApiKey).toBe("secret-speech-key");
+
+    const { traces } = await listTraces({ feature: "settings" });
+    expect(JSON.stringify(traces)).not.toContain("secret-speech-key");
+  });
+});
+
+describe("transcription runtime", () => {
+  it("falls back to the LLM connection when no transcription endpoint is set", async () => {
+    await updateSettings(
+      {
+        llmBaseUrl: "https://llm.example.com/v1",
+        apiKey: "llm-key",
+        model: "gemma3",
+        transcriptionModel: "whisper-1",
+      },
+      trigger,
+      ctx.db,
+    );
+
+    expect(await getTranscriptionRuntime(ctx.db)).toEqual({
+      baseUrl: "https://llm.example.com/v1",
+      apiKey: "llm-key",
+      model: "whisper-1",
+    });
+  });
+
+  it("uses the transcription endpoint's own key when it has its own URL", async () => {
+    await updateSettings(
+      {
+        llmBaseUrl: "https://llm.example.com/v1",
+        apiKey: "llm-key",
+        model: "gemma3",
+        transcriptionBaseUrl: "https://whisper.example.com/v1",
+        transcriptionApiKey: "stt-key",
+        transcriptionModel: "large-v3",
+      },
+      trigger,
+      ctx.db,
+    );
+
+    expect(await getTranscriptionRuntime(ctx.db)).toEqual({
+      baseUrl: "https://whisper.example.com/v1",
+      apiKey: "stt-key",
+      model: "large-v3",
+    });
+  });
+
+  it("is unconfigured without a model — voice then falls back to the chat model", async () => {
+    await updateSettings(
+      { llmBaseUrl: "https://llm.example.com/v1", model: "gemma3" },
+      trigger,
+      ctx.db,
+    );
+
+    expect(await getTranscriptionRuntime(ctx.db)).toBeNull();
+  });
+
+  it("never exposes the transcription key, but stores it — and redacts it from the trace", async () => {
+    const settings = await updateSettings(
+      { transcriptionApiKey: "secret-stt-key" },
+      trigger,
+      ctx.db,
+    );
+
+    expect(settings.transcriptionApiKeyConfigured).toBe(true);
+    expect(JSON.stringify(settings)).not.toContain("secret-stt-key");
+    expect((await getSettingsRecord(ctx.db))?.transcriptionApiKey).toBe("secret-stt-key");
+
+    const { traces } = await listTraces({ feature: "settings" });
+    expect(JSON.stringify(traces)).not.toContain("secret-stt-key");
   });
 });

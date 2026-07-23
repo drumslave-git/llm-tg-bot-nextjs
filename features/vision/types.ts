@@ -3,8 +3,12 @@
  * services and the dashboard/debug UI can import them.
  */
 
-/** The kinds of visual media the bot can read from a Telegram message. */
-export type MediaKind = "photo" | "sticker" | "image_document" | "animation" | "video";
+/**
+ * The kinds of media the bot can read from a Telegram message: the visual kinds
+ * (described by the vision model) plus `voice` (transcribed by the audio-capable
+ * chat model — the transcript plays the role of the description).
+ */
+export type MediaKind = "photo" | "sticker" | "image_document" | "animation" | "video" | "voice";
 
 /** Lifecycle status of a stored media row. */
 export type MediaStatus = "pending" | "described" | "unavailable";
@@ -36,11 +40,16 @@ export interface DetectedMedia {
    */
   isVideo: boolean;
   /**
+   * Whether `fileId` points at audio (a voice message) whose bytes are stored
+   * as-is (OGG/Opus) and transcribed rather than decoded as an image.
+   */
+  isAudio: boolean;
+  /**
    * Telegram's single-frame JPEG thumbnail, used as a fallback when frame
    * extraction is unavailable/fails. Null when the message carries no thumbnail.
    */
   thumbnailFileId: string | null;
-  /** Media duration in seconds (video/animation), for scaling the frame count. */
+  /** Media duration in seconds (video/animation/voice), for scaling the frame count / capping transcription. */
   durationSec: number | null;
 }
 
